@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Neil OS — 個人小系統</title>
+<meta name="theme-color" content="#2F6D5F">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Neil OS">
+<style>
+  :root{
+    --bg:#F3F5F4; --card:#FFFFFF; --ink:#1E2B28; --muted:#6E7D78;
+    --line:#E2E8E5; --accent:#2F6D5F; --accent-soft:#E4EFEA;
+    --danger:#C24A3A;
+    --m1:#C24A3A; --m2:#D98E32; --m3:#9AA79F; --m4:#5FA985; --m5:#2F6D5F;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; padding:0;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Segoe UI",sans-serif;
+    background:var(--bg); color:var(--ink);
+    padding-bottom:calc(72px + env(safe-area-inset-bottom));
+    font-size:16px; line-height:1.5;
+  }
+  header{
+    padding:20px 20px 12px; background:var(--bg);
+    position:sticky; top:0; z-index:5;
+  }
+  .eyebrow{font-size:12px; letter-spacing:.12em; color:var(--muted); text-transform:uppercase;}
+  h1{margin:2px 0 0; font-size:26px; font-weight:700; letter-spacing:-0.02em;}
+  /* 生活脈搏：近 14 天心情點 */
+  .pulse{display:flex; gap:5px; margin-top:12px; align-items:flex-end; height:22px;}
+  .pulse span{width:100%; max-width:18px; border-radius:3px; background:var(--line); flex:1;}
+  .pulse .l1{background:var(--m1); height:30%;}
+  .pulse .l2{background:var(--m2); height:45%;}
+  .pulse .l3{background:var(--m3); height:60%;}
+  .pulse .l4{background:var(--m4); height:80%;}
+  .pulse .l5{background:var(--m5); height:100%;}
+  .pulse .empty{height:20%; opacity:.5;}
+  .pulse-label{font-size:11px; color:var(--muted); margin-top:6px;}
+
+  main{padding:8px 16px 16px;}
+  .view{display:none;}
+  .view.active{display:block; animation:fade .18s ease;}
+  @keyframes fade{from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:none;}}
+
+  .card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px;}
+  .card h2{margin:0 0 10px; font-size:15px; font-weight:600; color:var(--muted);}
+
+  input[type=text], textarea{
+    width:100%; border:1px solid var(--line); border-radius:10px;
+    padding:10px 12px; font:inherit; background:#FBFCFB; color:var(--ink);
+  }
+  textarea{resize:vertical; min-height:64px;}
+  input:focus, textarea:focus{outline:2px solid var(--accent); outline-offset:0; border-color:transparent;}
+  button{font:inherit; cursor:pointer;}
+  .btn{
+    background:var(--accent); color:#fff; border:none; border-radius:10px;
+    padding:10px 16px; font-weight:600; width:100%;
+  }
+  .btn:active{opacity:.85;}
+  .row{display:flex; gap:8px;}
+  .row input{flex:1;}
+  .row .btn{width:auto; white-space:nowrap;}
+
+  /* 任務 */
+  .task{display:flex; align-items:center; gap:10px; padding:10px 4px; border-bottom:1px solid var(--line);}
+  .task:last-child{border-bottom:none;}
+  .task input[type=checkbox]{width:20px; height:20px; accent-color:var(--accent); flex:none;}
+  .task .txt{flex:1; word-break:break-word;}
+  .task.done .txt{color:var(--muted); text-decoration:line-through;}
+  .del{background:none; border:none; color:var(--muted); font-size:18px; padding:4px 8px; flex:none;}
+  .del:active{color:var(--danger);}
+  .empty-hint{color:var(--muted); font-size:14px; text-align:center; padding:16px 0;}
+
+  /* 心情 */
+  .moods{display:flex; gap:6px; justify-content:space-between; margin-bottom:10px;}
+  .mood-btn{
+    flex:1; background:#FBFCFB; border:1px solid var(--line); border-radius:12px;
+    font-size:24px; padding:10px 0;
+  }
+  .mood-btn.sel{border-color:var(--accent); background:var(--accent-soft);}
+  .mood-item{display:flex; gap:10px; padding:10px 4px; border-bottom:1px solid var(--line); align-items:flex-start;}
+  .mood-item:last-child{border-bottom:none;}
+  .mood-emoji{font-size:20px; flex:none;}
+  .mood-meta{font-size:12px; color:var(--muted);}
+
+  /* 複盤 */
+  .field-label{font-size:13px; font-weight:600; margin:10px 0 4px; color:var(--ink);}
+  .review-item{padding:10px 4px; border-bottom:1px solid var(--line);}
+  .review-item:last-child{border-bottom:none;}
+  .review-date{font-weight:600; font-size:14px; color:var(--accent);}
+  .review-body{font-size:14px; color:var(--ink); white-space:pre-wrap; margin-top:4px;}
+  .saved-tag{font-size:12px; color:var(--accent); margin-left:8px;}
+
+  /* 雜記 */
+  .note-item{padding:10px 4px; border-bottom:1px solid var(--line);}
+  .note-item:last-child{border-bottom:none;}
+  .note-txt{white-space:pre-wrap; word-break:break-word;}
+  .note-meta{display:flex; justify-content:space-between; align-items:center; margin-top:4px;}
+
+  /* 底部導覽 */
+  nav{
+    position:fixed; bottom:0; left:0; right:0; z-index:10;
+    display:flex; background:var(--card); border-top:1px solid var(--line);
+    padding-bottom:env(safe-area-inset-bottom);
+  }
+  nav button{
+    flex:1; background:none; border:none; padding:10px 0 8px;
+    font-size:12px; color:var(--muted); display:flex; flex-direction:column; gap:2px; align-items:center;
+  }
+  nav button .ico{font-size:20px;}
+  nav button.active{color:var(--accent); font-weight:600;}
+
+  .toast{
+    position:fixed; left:50%; bottom:96px; transform:translateX(-50%);
+    background:var(--ink); color:#fff; padding:8px 16px; border-radius:20px;
+    font-size:14px; opacity:0; transition:opacity .2s; pointer-events:none; z-index:20;
+  }
+  .toast.show{opacity:1;}
+  @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important;} }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="eyebrow" id="todayLabel"></div>
+  <h1 id="viewTitle">任務</h1>
+  <div class="pulse" id="pulse"></div>
+  <div class="pulse-label">近 14 天心情脈搏</div>
+</header>
+
+<main>
+  <!-- 任務 -->
+  <section class="view active" id="view-tasks">
+    <div class="card">
+      <div class="row">
+        <input type="text" id="taskInput" placeholder="新增一個任務…" enterkeyhint="done">
+        <button class="btn" onclick="addTask()">加入</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>進行中</h2>
+      <div id="taskListOpen"></div>
+    </div>
+    <div class="card">
+      <h2>已完成</h2>
+      <div id="taskListDone"></div>
+    </div>
+  </section>
+
+  <!-- 複盤 -->
+  <section class="view" id="view-review">
+    <div class="card">
+      <h2 id="reviewTitle">今日複盤<span class="saved-tag" id="reviewSaved"></span></h2>
+      <div class="field-label">✅ 今天做得好的</div>
+      <textarea id="rvGood" placeholder="哪件事值得記一筆？"></textarea>
+      <div class="field-label">🪨 卡住的地方</div>
+      <textarea id="rvStuck" placeholder="今天哪裡卡關、為什麼？"></textarea>
+      <div class="field-label">🎯 明天最重要的一件事</div>
+      <textarea id="rvNext" placeholder="只選一件，明天優先做它"></textarea>
+      <div style="margin-top:12px"><button class="btn" onclick="saveReview()">儲存今日複盤</button></div>
+    </div>
+    <div class="card">
+      <h2>過去的複盤</h2>
+      <div id="reviewList"></div>
+    </div>
+  </section>
+
+  <!-- 心情 -->
+  <section class="view" id="view-mood">
+    <div class="card">
+      <h2>現在的心情</h2>
+      <div class="moods" id="moodBtns"></div>
+      <input type="text" id="moodNote" placeholder="想補充一句嗎？（可留空）">
+      <div style="margin-top:10px"><button class="btn" onclick="addMood()">記錄心情</button></div>
+    </div>
+    <div class="card">
+      <h2>心情紀錄</h2>
+      <div id="moodList"></div>
+    </div>
+  </section>
+
+  <!-- 雜記 -->
+  <section class="view" id="view-notes">
+    <div class="card">
+      <textarea id="noteInput" placeholder="任何想法、待辦靈感、雜項…"></textarea>
+      <div style="margin-top:10px"><button class="btn" onclick="addNote()">存下來</button></div>
+    </div>
+    <div class="card">
+      <h2>雜記清單</h2>
+      <div id="noteList"></div>
+    </div>
+    <div class="card">
+      <h2>資料備份</h2>
+      <p style="font-size:14px;color:var(--muted);margin:0 0 10px">資料存在這支手機的瀏覽器裡，建議定期匯出備份。</p>
+      <button class="btn" onclick="exportData()">匯出 JSON 備份</button>
+    </div>
+  </section>
+</main>
+
+<nav>
+  <button data-view="tasks" class="active" onclick="switchView('tasks',this)"><span class="ico">☑️</span>任務</button>
+  <button data-view="review" onclick="switchView('review',this)"><span class="ico">🌙</span>複盤</button>
+  <button data-view="mood" onclick="switchView('mood',this)"><span class="ico">💚</span>心情</button>
+  <button data-view="notes" onclick="switchView('notes',this)"><span class="ico">📎</span>雜記</button>
+</nav>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const STORAGE_KEY = 'personal-os-state-v1';
+const MOOD_EMOJI = ['😞','😕','😐','🙂','😄'];
+let state = { tasks: [], reviews: {}, moods: [], notes: [] };
+let selectedMood = null;
+
+/* ---------- 工具 ---------- */
+function todayKey(d = new Date()){
+  const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${dd}`;
+}
+function fmtTime(ts){
+  const d = new Date(ts);
+  return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+function esc(s){ return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 1400);
+}
+
+/* ---------- 儲存（localStorage 本地端） ---------- */
+function load(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(raw) state = Object.assign(state, JSON.parse(raw));
+  }catch(e){ /* 第一次使用或資料損毀，使用預設 */ }
+  renderAll();
+}
+let saveTimer = null;
+function save(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(()=>{
+    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+    catch(e){ toast('⚠️ 儲存失敗，儲存空間可能已滿'); }
+  }, 250);
+}
+
+/* ---------- 資料匯出備份 ---------- */
+function exportData(){
+  const blob = new Blob([JSON.stringify(state, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'neil-os-backup-' + todayKey() + '.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('備份已下載');
+}
+
+/* ---------- 導覽 ---------- */
+const TITLES = { tasks:'任務', review:'複盤', mood:'心情', notes:'雜記' };
+function switchView(name, btn){
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.getElementById('view-'+name).classList.add('active');
+  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('viewTitle').textContent = TITLES[name];
+}
+
+/* ---------- 任務 ---------- */
+function addTask(){
+  const inp = document.getElementById('taskInput');
+  const txt = inp.value.trim();
+  if(!txt) return;
+  state.tasks.unshift({ id: Date.now(), txt, done:false, ts: Date.now() });
+  inp.value = '';
+  save(); renderTasks(); toast('已加入任務');
+}
+function toggleTask(id){
+  const t = state.tasks.find(t=>t.id===id);
+  if(t){ t.done = !t.done; save(); renderTasks(); }
+}
+function delTask(id){
+  state.tasks = state.tasks.filter(t=>t.id!==id);
+  save(); renderTasks();
+}
+function renderTasks(){
+  const open = state.tasks.filter(t=>!t.done);
+  const done = state.tasks.filter(t=>t.done);
+  const html = t => `
+    <div class="task ${t.done?'done':''}">
+      <input type="checkbox" ${t.done?'checked':''} onchange="toggleTask(${t.id})">
+      <div class="txt">${esc(t.txt)}</div>
+      <button class="del" onclick="delTask(${t.id})" aria-label="刪除">✕</button>
+    </div>`;
+  document.getElementById('taskListOpen').innerHTML =
+    open.length ? open.map(html).join('') : '<div class="empty-hint">目前沒有進行中的任務 🎉</div>';
+  document.getElementById('taskListDone').innerHTML =
+    done.length ? done.map(html).join('') : '<div class="empty-hint">完成任務後會出現在這裡</div>';
+}
+
+/* ---------- 複盤 ---------- */
+function loadTodayReview(){
+  const r = state.reviews[todayKey()];
+  document.getElementById('rvGood').value  = r ? r.good  : '';
+  document.getElementById('rvStuck').value = r ? r.stuck : '';
+  document.getElementById('rvNext').value  = r ? r.next  : '';
+  document.getElementById('reviewSaved').textContent = r ? '已儲存 ✓' : '';
+}
+function saveReview(){
+  const good  = document.getElementById('rvGood').value.trim();
+  const stuck = document.getElementById('rvStuck').value.trim();
+  const next  = document.getElementById('rvNext').value.trim();
+  if(!good && !stuck && !next){ toast('先寫點什麼吧 ✍️'); return; }
+  state.reviews[todayKey()] = { good, stuck, next, ts: Date.now() };
+  save(); renderReviews(); loadTodayReview(); toast('今日複盤已儲存');
+}
+function renderReviews(){
+  const keys = Object.keys(state.reviews).sort().reverse().filter(k=>k!==todayKey());
+  const el = document.getElementById('reviewList');
+  if(!keys.length){ el.innerHTML = '<div class="empty-hint">過去的複盤會累積在這裡</div>'; return; }
+  el.innerHTML = keys.slice(0,30).map(k=>{
+    const r = state.reviews[k];
+    const parts = [];
+    if(r.good)  parts.push('✅ '+esc(r.good));
+    if(r.stuck) parts.push('🪨 '+esc(r.stuck));
+    if(r.next)  parts.push('🎯 '+esc(r.next));
+    return `<div class="review-item"><div class="review-date">${k}</div><div class="review-body">${parts.join('\n')}</div></div>`;
+  }).join('');
+}
+
+/* ---------- 心情 ---------- */
+function renderMoodBtns(){
+  document.getElementById('moodBtns').innerHTML = MOOD_EMOJI.map((e,i)=>
+    `<button class="mood-btn ${selectedMood===i+1?'sel':''}" onclick="pickMood(${i+1})">${e}</button>`).join('');
+}
+function pickMood(l){ selectedMood = l; renderMoodBtns(); }
+function addMood(){
+  if(!selectedMood){ toast('先選一個心情吧'); return; }
+  const note = document.getElementById('moodNote').value.trim();
+  state.moods.unshift({ id: Date.now(), level: selectedMood, note, ts: Date.now() });
+  document.getElementById('moodNote').value = '';
+  selectedMood = null;
+  save(); renderMoodBtns(); renderMoods(); renderPulse(); toast('心情已記錄');
+}
+function delMood(id){
+  state.moods = state.moods.filter(m=>m.id!==id);
+  save(); renderMoods(); renderPulse();
+}
+function renderMoods(){
+  const el = document.getElementById('moodList');
+  if(!state.moods.length){ el.innerHTML = '<div class="empty-hint">還沒有心情紀錄</div>'; return; }
+  el.innerHTML = state.moods.slice(0,50).map(m=>`
+    <div class="mood-item">
+      <div class="mood-emoji">${MOOD_EMOJI[m.level-1]}</div>
+      <div style="flex:1">
+        ${m.note ? `<div>${esc(m.note)}</div>` : ''}
+        <div class="mood-meta">${fmtTime(m.ts)}</div>
+      </div>
+      <button class="del" onclick="delMood(${m.id})" aria-label="刪除">✕</button>
+    </div>`).join('');
+}
+/* 生活脈搏：近 14 天，每天取當日最後一筆心情 */
+function renderPulse(){
+  const byDay = {};
+  state.moods.forEach(m=>{
+    const k = todayKey(new Date(m.ts));
+    if(!byDay[k]) byDay[k] = m.level; // moods 為新到舊，取到的第一筆即當日最後一筆
+  });
+  let html = '';
+  for(let i=13;i>=0;i--){
+    const d = new Date(); d.setDate(d.getDate()-i);
+    const lv = byDay[todayKey(d)];
+    html += `<span class="${lv ? 'l'+lv : 'empty'}"></span>`;
+  }
+  document.getElementById('pulse').innerHTML = html;
+}
+
+/* ---------- 雜記 ---------- */
+function addNote(){
+  const inp = document.getElementById('noteInput');
+  const txt = inp.value.trim();
+  if(!txt) return;
+  state.notes.unshift({ id: Date.now(), txt, ts: Date.now() });
+  inp.value = '';
+  save(); renderNotes(); toast('已存入雜記');
+}
+function delNote(id){
+  state.notes = state.notes.filter(n=>n.id!==id);
+  save(); renderNotes();
+}
+function renderNotes(){
+  const el = document.getElementById('noteList');
+  if(!state.notes.length){ el.innerHTML = '<div class="empty-hint">雜項、靈感、備忘都丟這裡</div>'; return; }
+  el.innerHTML = state.notes.map(n=>`
+    <div class="note-item">
+      <div class="note-txt">${esc(n.txt)}</div>
+      <div class="note-meta">
+        <span class="mood-meta">${fmtTime(n.ts)}</span>
+        <button class="del" onclick="delNote(${n.id})" aria-label="刪除">✕</button>
+      </div>
+    </div>`).join('');
+}
+
+/* ---------- 初始化 ---------- */
+function renderAll(){
+  renderTasks(); renderReviews(); loadTodayReview();
+  renderMoodBtns(); renderMoods(); renderPulse(); renderNotes();
+}
+(function init(){
+  const d = new Date();
+  const wk = ['日','一','二','三','四','五','六'][d.getDay()];
+  document.getElementById('todayLabel').textContent =
+    `${d.getFullYear()} 年 ${d.getMonth()+1} 月 ${d.getDate()} 日 · 星期${wk}`;
+  document.getElementById('taskInput').addEventListener('keydown', e=>{ if(e.key==='Enter') addTask(); });
+  load();
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.register('sw.js').catch(()=>{ /* 離線功能未啟用，不影響使用 */ });
+  }
+})();
+</script>
+</body>
+</html>
