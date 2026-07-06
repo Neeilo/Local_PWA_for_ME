@@ -695,7 +695,14 @@ function renderAll(){
   document.getElementById('taskInput').addEventListener('keydown',e=>{if(e.key==='Enter') addTask();});
   load();
   if('serviceWorker' in navigator){
-    navigator.serviceWorker.register('sw.js').catch(()=>{});
+    navigator.serviceWorker.register('sw.js').then(reg=>{
+      document.addEventListener('visibilitychange',()=>{
+        if(document.visibilityState==='visible') reg.update();
+      });
+    }).catch(()=>{});
+    navigator.serviceWorker.addEventListener('controllerchange',()=>{
+      location.reload();
+    });
   }
 })();
 </script>

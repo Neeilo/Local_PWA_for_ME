@@ -1,5 +1,5 @@
-/* Neil OS Service Worker v2 — cache-first 離線快取 */
-const CACHE = 'neil-os-v2';
+/* Neil OS Service Worker v3 — HTML network-first，其餘資產 cache-first */
+const CACHE = 'neil-os-v3';
 const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -16,7 +16,15 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  e.respondWith(
-    caches.match(e.request).then(hit => hit || fetch(e.request))
-  );
+  const req = e.request;
+  const isHTML = req.mode === 'navigate' || req.url.endsWith('/') || req.url.endsWith('index.html');
+  if (isHTML) {
+    e.respondWith(
+      fetch(req)
+        .then(res => { caches.open(CACHE).then(c => c.put(req, res.clone())); return res; })
+        .catch(() => caches.match(req))
+    );
+    return;
+  }
+  e.respondWith(caches.match(req).then(hit => hit || fetch(req)));
 });
