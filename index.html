@@ -364,6 +364,8 @@
 
 <script>
 const STORAGE_KEY = 'personal-os-state-v1'; // 保持相同 key，向下相容
+const CLOUD_URL = 'https://script.google.com/macros/s/AKfycbyb23fIAU7bqNS3isH0pnmx9iY0y25YiYKUySHs3-o8fo1f3FwVHB9MGIsh_6_KnYCO/exec';
+const CLOUD_SECRET = 'Neeilo-703247';
 const MOOD_EMOJI = ['😞','😕','😐','🙂','😄'];
 const OUTPUT_TYPES = ['文章','作品','系統','分享','其他'];
 let state = { tasks:[], reviews:{}, moods:[], notes:[], weeklyReviews:[], outputs:[] };
@@ -412,7 +414,65 @@ function save(){
   saveTimer=setTimeout(()=>{
     try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); }
     catch(e){ toast('⚠️ 儲存失敗，空間可能已滿'); }
+    pushAllToCloud();
   },250);
+}
+
+/* ---------- 雲端同步（Google Sheets，僅 tasks/reviews/moods/notes） ---------- */
+function cloudGet(sheet){
+  return fetch(`${CLOUD_URL}?sheet=${sheet}`).then(r=>r.json()).then(j=>j.data||[]);
+}
+function cloudReplaceAll(sheet,headers,records){
+  return fetch(CLOUD_URL,{
+    method:'POST',
+    headers:{'Content-Type':'text/plain'},
+    body:JSON.stringify({secret:CLOUD_SECRET, sheet, action:'replaceAll', headers, records})
+  }).then(r=>r.json());
+}
+function taskToCloud(t){ return {id:String(t.id), text:t.txt, is_completed:!!t.done, created_at:new Date(t.ts).toISOString()}; }
+function taskFromCloud(r){ return {id:Number(r.id)||Date.now(), txt:r.text||'', done:r.is_completed===true||r.is_completed==='TRUE'||r.is_completed==='true', ts:r.created_at?new Date(r.created_at).getTime():Date.now()}; }
+function moodToCloud(m){ return {id:String(m.id), mood_date:todayKey(new Date(m.ts)), level:m.level, note:m.note||''}; }
+function moodFromCloud(r){ return {id:Number(r.id)||Date.now(), level:Number(r.level), note:r.note||'', ts:r.mood_date?new Date(r.mood_date).getTime():Date.now()}; }
+function noteToCloud(n){ return {id:String(n.id), text:n.txt, created_at:new Date(n.ts).toISOString()}; }
+function noteFromCloud(r){ return {id:Number(r.id)||Date.now(), txt:r.text||'', ts:r.created_at?new Date(r.created_at).getTime():Date.now()}; }
+
+function pushAllToCloud(){
+  const p1=cloudReplaceAll('tasks',['id','text','is_completed','created_at'], state.tasks.map(taskToCloud));
+  const p2=cloudReplaceAll('reviews',['review_date','good','stuck','most_important'],
+    Object.keys(state.reviews).map(k=>({review_date:k, good:state.reviews[k].good||'', stuck:state.reviews[k].stuck||'', most_important:state.reviews[k].next||''})));
+  const p3=cloudReplaceAll('moods',['id','mood_date','level','note'], state.moods.map(moodToCloud));
+  const p4=cloudReplaceAll('notes',['id','text','created_at'], state.notes.map(noteToCloud));
+  Promise.all([p1,p2,p3,p4]).catch(()=>{});
+}
+
+async function pullFromCloud(){
+  try{
+    const [cTasks,cReviews,cMoods,cNotes]=await Promise.all([
+      cloudGet('tasks'), cloudGet('reviews'), cloudGet('moods'), cloudGet('notes')
+    ]);
+    const taskIds=new Set(state.tasks.map(t=>String(t.id)));
+    cTasks.forEach(r=>{ if(!taskIds.has(String(r.id))) state.tasks.push(taskFromCloud(r)); });
+
+    cReviews.forEach(row=>{
+      if(!row.review_date) return;
+      if(!state.reviews[row.review_date]){
+        state.reviews[row.review_date]={compass:'', good:row.good||'', stuck:row.stuck||'', next:row.most_important||'', ts:Date.now()};
+      }
+    });
+
+    const moodIds=new Set(state.moods.map(m=>String(m.id)));
+    cMoods.forEach(r=>{ if(!moodIds.has(String(r.id))) state.moods.push(moodFromCloud(r)); });
+
+    const noteIds=new Set(state.notes.map(n=>String(n.id)));
+    cNotes.forEach(r=>{ if(!noteIds.has(String(r.id))) state.notes.push(noteFromCloud(r)); });
+
+    state.tasks.sort((a,b)=>b.ts-a.ts);
+    state.moods.sort((a,b)=>b.ts-a.ts);
+    state.notes.sort((a,b)=>b.ts-a.ts);
+
+    localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
+    renderAll();
+  }catch(e){ /* 離線或雲端不可用，略過本次同步 */ }
 }
 
 /* ---------- 備份 ---------- */
@@ -694,6 +754,7 @@ function renderAll(){
     `${d.getFullYear()} 年 ${d.getMonth()+1} 月 ${d.getDate()} 日 · 星期${wk}`;
   document.getElementById('taskInput').addEventListener('keydown',e=>{if(e.key==='Enter') addTask();});
   load();
+  pullFromCloud();
   if('serviceWorker' in navigator){
     navigator.serviceWorker.register('sw.js').then(reg=>{
       document.addEventListener('visibilitychange',()=>{
