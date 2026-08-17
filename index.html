@@ -18,13 +18,19 @@
     --m1:#C24A3A; --m2:#D98E32; --m3:#9AA79F; --m4:#5FA985; --m5:#2F6D5F;
     --compass:#4A6FA5; --compass-soft:#E8EEF7;
     --output:#7B5EA7; --output-soft:#F0EBF8;
+    /* 優先度燈號 */
+    --p-h:#D03B3B; --p-m:#EDA100; --p-l:#0CA30C;
+    /* 記帳分類（categorical，固定配色，不隨排名變動） */
+    --c1:#2a78d6; --c2:#eb6834; --c3:#1baf7a; --c4:#eda100;
+    --c5:#e87ba4; --c6:#008300; --c7:#4a3aa7;
+    --muted-ink:#898781;
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   html,body{margin:0; padding:0;}
   body{
     font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Segoe UI",sans-serif;
     background:var(--bg); color:var(--ink);
-    padding-bottom:calc(72px + env(safe-area-inset-bottom));
+    padding-bottom:calc(78px + env(safe-area-inset-bottom));
     font-size:16px; line-height:1.5;
   }
   header{
@@ -51,7 +57,7 @@
   .card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px;}
   .card h2{margin:0 0 10px; font-size:15px; font-weight:600; color:var(--muted);}
 
-  input[type=text], textarea, select{
+  input[type=text], input[type=number], input[type=date], textarea, select{
     width:100%; border:1px solid var(--line); border-radius:10px;
     padding:10px 12px; font:inherit; background:#FBFCFB; color:var(--ink);
   }
@@ -181,10 +187,95 @@
     color:var(--muted); margin:4px 0 10px;
   }
 
-  /* 底部導覽 */
+  /* 任務優先度燈號 */
+  .prio-dot{
+    width:16px; height:16px; border-radius:50%; border:none; flex:none;
+    padding:0; display:block;
+  }
+  .prio-H{background:var(--p-h);}
+  .prio-M{background:var(--p-m);}
+  .prio-L{background:var(--p-l);}
+  .prio-pick{display:flex; gap:8px; align-items:center; margin-top:10px;}
+  .prio-pick .lbl{font-size:13px; color:var(--muted); margin-right:2px;}
+  .prio-opt{
+    background:#FBFCFB; border:1.5px solid var(--line); border-radius:20px;
+    padding:5px 12px; font-size:13px; font-weight:600; color:var(--muted);
+    display:flex; align-items:center; gap:6px;
+  }
+  .prio-opt .prio-dot{width:11px; height:11px;}
+  .prio-opt.sel{border-color:var(--ink); color:var(--ink); background:#fff;}
+
+  /* 首頁 Dashboard */
+  .dash-hero{font-size:32px; font-weight:700; letter-spacing:-0.02em; line-height:1.1;}
+  .dash-hero .cur{font-size:16px; font-weight:600; color:var(--muted); margin-right:4px;}
+  .dash-sub{font-size:13px; color:var(--muted); margin-top:2px;}
+  .donut-wrap{display:flex; align-items:center; gap:14px; margin-top:12px;}
+  .donut{width:132px; height:132px; flex:none;}
+  .donut-center{font-size:15px; font-weight:700; fill:var(--ink);}
+  .donut-center-sub{font-size:9px; fill:var(--muted-ink);}
+  .legend{flex:1; min-width:0; display:flex; flex-direction:column; gap:7px;}
+  .lg-row{display:grid; grid-template-columns:10px 1fr auto; gap:7px; align-items:center;}
+  .lg-dot{width:10px; height:10px; border-radius:3px;}
+  .lg-name{font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .lg-val{font-size:13px; font-variant-numeric:tabular-nums; color:var(--muted);}
+  .lg-bar{grid-column:2 / -1; height:3px; border-radius:2px; background:var(--line); overflow:hidden;}
+  .lg-bar i{display:block; height:100%; border-radius:2px;}
+
+  .dash-task{display:flex; align-items:center; gap:10px; padding:9px 4px; border-bottom:1px solid var(--line);}
+  .dash-task:last-child{border-bottom:none;}
+  .dash-task .txt{flex:1; word-break:break-word; font-size:15px;}
+  .dash-link{
+    display:block; width:100%; background:none; border:none; text-align:center;
+    color:var(--accent); font-size:13px; font-weight:600; padding:10px 0 2px;
+  }
+
+  /* 記帳 */
+  .amount-input{font-size:26px !important; font-weight:700; text-align:right;}
+  .cat-row{display:flex; gap:6px; flex-wrap:wrap; margin:4px 0 2px;}
+  .cat-btn{
+    background:#FBFCFB; border:1.5px solid var(--line); border-radius:20px;
+    padding:6px 13px; font-size:13px; color:var(--muted); font-weight:600;
+    display:flex; align-items:center; gap:6px;
+  }
+  .cat-btn .lg-dot{width:9px; height:9px; border-radius:50%;}
+  .cat-btn.sel{border-color:var(--ink); color:var(--ink); background:#fff;}
+  .seg{display:flex; gap:6px; margin-bottom:10px;}
+  .seg button{
+    flex:1; background:#FBFCFB; border:1.5px solid var(--line); border-radius:10px;
+    padding:8px 4px; font-size:14px; font-weight:600; color:var(--muted);
+  }
+  .seg button.sel{border-color:var(--accent); background:var(--accent-soft); color:var(--accent);}
+  .month-bar{display:flex; align-items:center; justify-content:space-between; gap:8px;}
+  .month-bar button{
+    background:#FBFCFB; border:1px solid var(--line); border-radius:9px;
+    padding:6px 14px; font-size:16px; color:var(--ink); line-height:1;
+  }
+  .month-label{font-size:15px; font-weight:700;}
+  .exp-item{display:flex; align-items:center; gap:10px; padding:10px 4px; border-bottom:1px solid var(--line);}
+  .exp-item:last-child{border-bottom:none;}
+  /* 分類以「色點 + 深色文字」呈現：文字用文字色階，識別靠色點，避免淺色底配白字的對比不足 */
+  .exp-cat{
+    font-size:12px; font-weight:600; padding:4px 9px; border-radius:7px;
+    background:#F4F6F5; color:var(--ink); white-space:nowrap; flex:none;
+    display:flex; align-items:center; gap:5px; min-width:74px;
+  }
+  .exp-cat .lg-dot{width:8px; height:8px; border-radius:50%; flex:none;}
+  .exp-body{flex:1; min-width:0;}
+  .exp-note{font-size:14px; word-break:break-word;}
+  .exp-date{font-size:12px; color:var(--muted);}
+  .exp-amt{font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; flex:none;}
+  .exp-amt.income{color:var(--accent);}
+  .edit-banner{
+    background:var(--accent-soft); border:1px solid #BCD8CC; border-radius:10px;
+    padding:8px 12px; font-size:13px; color:var(--accent); font-weight:600;
+    display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;
+  }
+  .edit-banner button{background:none; border:none; color:var(--accent); font-weight:700; font-size:13px;}
+
+  /* 底部導覽：中央圓形首頁 + 兩側各 2 個方形分頁 */
   nav{
     position:fixed; bottom:0; left:0; right:0; z-index:10;
-    display:flex; background:var(--card); border-top:1px solid var(--line);
+    display:flex; align-items:flex-end; background:var(--card); border-top:1px solid var(--line);
     padding-bottom:env(safe-area-inset-bottom);
   }
   nav button{
@@ -193,6 +284,16 @@
   }
   nav button .ico{font-size:19px;}
   nav button.active{color:var(--accent); font-weight:600;}
+  nav button[hidden]{display:none;} /* 需明寫，否則 nav button 的 display:flex 會蓋掉 [hidden] */
+  nav .home-btn{
+    flex:none; width:58px; height:58px; margin:0 6px; border-radius:50%;
+    background:var(--accent); color:#fff; box-shadow:0 3px 10px rgba(47,109,95,.32);
+    align-self:center; transform:translateY(-14px); padding:0; gap:0;
+    justify-content:center; font-size:10px; font-weight:600;
+  }
+  nav .home-btn .ico{font-size:22px;}
+  nav .home-btn.active{color:#fff;}
+  nav .home-btn:active{opacity:.9;}
 
   .toast{
     position:fixed; left:50%; bottom:96px; transform:translateX(-50%);
@@ -208,18 +309,82 @@
 
 <header>
   <div class="eyebrow" id="todayLabel"></div>
-  <h1 id="viewTitle">任務</h1>
+  <h1 id="viewTitle">首頁</h1>
   <div class="pulse" id="pulse"></div>
   <div class="pulse-label" id="pulseLabel">近 14 天心情脈搏</div>
 </header>
 
 <main>
+  <!-- 首頁 Dashboard -->
+  <section class="view active" id="view-home">
+    <!-- ① 記帳狀況 -->
+    <div class="card">
+      <h2>本月支出</h2>
+      <div id="dashExpense"></div>
+      <button class="dash-link" onclick="goView('expenses')">前往記帳 →</button>
+    </div>
+
+    <!-- ② 未完成任務前 3 筆 -->
+    <div class="card">
+      <h2>接下來要做的</h2>
+      <div id="dashTasks"></div>
+      <button class="dash-link" onclick="goView('tasks')">全部任務 →</button>
+    </div>
+
+    <!-- ③ 今日 Compass -->
+    <div class="compass-card">
+      <div class="compass-label">🧭 今日指南針<span id="dashCompassSaved" style="font-weight:400;font-size:12px;margin-left:6px;"></span></div>
+      <div id="dashCompass"></div>
+    </div>
+  </section>
+
+  <!-- 記帳 -->
+  <section class="view" id="view-expenses">
+    <div class="card">
+      <div id="expEditBanner"></div>
+      <div class="seg" id="expTypeSeg">
+        <button data-val="expense" class="sel" onclick="pickExpType('expense')">支出</button>
+        <button data-val="income" onclick="pickExpType('income')">收入</button>
+      </div>
+      <input type="number" id="expAmount" class="amount-input" inputmode="decimal" step="1" min="0" placeholder="0">
+      <div class="field-label">分類</div>
+      <div class="cat-row" id="expCatRow"></div>
+      <div class="field-label">日期</div>
+      <input type="date" id="expDate">
+      <div class="field-label">備註（可留空）</div>
+      <input type="text" id="expNote" placeholder="買了什麼？">
+      <div style="margin-top:12px"><button class="btn" id="expSubmit" onclick="submitExpense()">記一筆</button></div>
+    </div>
+
+    <div class="card">
+      <div class="month-bar">
+        <button onclick="shiftMonth(-1)" aria-label="上個月">‹</button>
+        <div style="text-align:center">
+          <div class="month-label" id="expMonthLabel"></div>
+          <div class="dash-sub" id="expMonthTotal"></div>
+        </div>
+        <button onclick="shiftMonth(1)" aria-label="下個月">›</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>當月明細</h2>
+      <div id="expList"></div>
+    </div>
+  </section>
+
   <!-- 任務 -->
-  <section class="view active" id="view-tasks">
+  <section class="view" id="view-tasks">
     <div class="card">
       <div class="row">
         <input type="text" id="taskInput" placeholder="新增一個任務…" enterkeyhint="done">
         <button class="btn" onclick="addTask()">加入</button>
+      </div>
+      <div class="prio-pick" id="newTaskPrio">
+        <span class="lbl">優先度</span>
+        <button class="prio-opt" data-val="H" onclick="pickNewPrio('H')"><span class="prio-dot prio-H"></span>高</button>
+        <button class="prio-opt sel" data-val="M" onclick="pickNewPrio('M')"><span class="prio-dot prio-M"></span>中</button>
+        <button class="prio-opt" data-val="L" onclick="pickNewPrio('L')"><span class="prio-dot prio-L"></span>低</button>
       </div>
     </div>
     <div class="card">
@@ -352,12 +517,15 @@
   </section>
 </main>
 
-<nav>
-  <button data-view="tasks" class="active" onclick="switchView('tasks',this)"><span class="ico">☑️</span>任務</button>
-  <button data-view="review" onclick="switchView('review',this)"><span class="ico">🌙</span>日誌</button>
-  <button data-view="mood" onclick="switchView('mood',this)"><span class="ico">💚</span>心情</button>
+<nav id="nav">
+  <button data-view="expenses" onclick="switchView('expenses',this)"><span class="ico">💰</span>記帳</button>
   <button data-view="notes" onclick="switchView('notes',this)"><span class="ico">📎</span>雜記</button>
-  <button data-view="growth" onclick="switchView('growth',this)"><span class="ico">🌱</span>成長</button>
+  <button data-view="home" class="home-btn active" onclick="switchView('home',this)"><span class="ico">🧭</span>首頁</button>
+  <button data-view="tasks" onclick="switchView('tasks',this)"><span class="ico">☑️</span>任務</button>
+  <button data-view="review" onclick="switchView('review',this)"><span class="ico">🌙</span>日誌</button>
+  <!-- 以下兩頁由 feature flag 控制（SHOW_MOOD / SHOW_GROWTH），預設隱藏，程式與資料全保留 -->
+  <button data-view="mood" hidden onclick="switchView('mood',this)"><span class="ico">💚</span>心情</button>
+  <button data-view="growth" hidden onclick="switchView('growth',this)"><span class="ico">🌱</span>成長</button>
 </nav>
 
 <div class="toast" id="toast"></div>
@@ -368,11 +536,38 @@ const CLOUD_URL = '__CLOUD_URL__';
 const CLOUD_SECRET = '__CLOUD_SECRET__';
 const MOOD_EMOJI = ['😞','😕','😐','🙂','😄'];
 const OUTPUT_TYPES = ['文章','作品','系統','分享','其他'];
-let state = { tasks:[], reviews:{}, moods:[], notes:[], weeklyReviews:[], outputs:[] };
+
+/* ---------- Feature flags（ADR-004：只藏入口，程式碼與資料全保留） ---------- */
+const SHOW_MOOD   = false;
+const SHOW_GROWTH = false;
+
+/* ---------- 任務優先度 ---------- */
+const PRIORITIES = ['H','M','L'];
+const PRIORITY_RANK = {H:0, M:1, L:2};
+const PRIORITY_LABEL = {H:'高', M:'中', L:'低'};
+const DEFAULT_PRIORITY = 'M';
+
+/* ---------- 記帳分類 ----------
+   顏色綁定「分類」本身，不隨金額排名變動；環上以固定分類順序繪製，
+   相鄰配色已通過 CVD 檢驗，另加 2px 底色間隙與圖例直接標籤作為第二編碼。 */
+const EXPENSE_CATEGORIES = ['餐飲','交通','日常用品','家庭','醫療','娛樂','其他'];
+const CATEGORY_COLOR = {
+  '餐飲':'#2a78d6', '交通':'#eb6834', '日常用品':'#1baf7a', '家庭':'#eda100',
+  '醫療':'#e87ba4', '娛樂':'#008300', '其他':'#4a3aa7'
+};
+const MAX_DONUT_SEGMENTS = 6; // 超過的尾端併入「其他」，維持一眼可讀
+
+const EMPTY_STATE = () => ({ tasks:[], reviews:{}, moods:[], notes:[], weeklyReviews:[], outputs:[], expenses:[] });
+let state = EMPTY_STATE();
 let selectedMood = null;
 let selectedDrive = null;
 let selectedDetect = null;
 let selectedOutputType = null;
+let newTaskPriority = DEFAULT_PRIORITY;
+let expType = 'expense';
+let expCategory = null;
+let expEditingId = null;
+let expMonth = null; // 'YYYY-MM'，記帳分頁目前檢視的月份
 
 /* ---------- 工具 ---------- */
 function todayKey(d = new Date()){
@@ -390,7 +585,10 @@ function fmtTime(ts){
   const d=new Date(ts);
   return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
-function esc(s){ return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function esc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function monthKey(d = new Date()){ return todayKey(d).slice(0,7); }
+function fmtMonth(mk){ const [y,m]=mk.split('-'); return `${y} 年 ${Number(m)} 月`; }
+function fmtAmount(n){ return Math.round(n).toLocaleString('en-US'); }
 function toast(msg){
   const t=document.getElementById('toast');
   t.textContent=msg; t.classList.add('show');
@@ -403,10 +601,21 @@ function load(){
     const raw=localStorage.getItem(STORAGE_KEY);
     if(raw){
       const parsed=JSON.parse(raw);
-      state=Object.assign({tasks:[],reviews:{},moods:[],notes:[],weeklyReviews:[],outputs:[]}, parsed);
+      state=Object.assign(EMPTY_STATE(), parsed);
     }
   }catch(e){}
+  migrate();
   renderAll();
+}
+/* 既有任務首次載入補上預設優先度 M（ADR-004 §3） */
+function migrate(){
+  let changed=false;
+  state.tasks.forEach(t=>{
+    if(!PRIORITIES.includes(t.priority)){ t.priority=DEFAULT_PRIORITY; changed=true; }
+  });
+  if(changed){
+    try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); }catch(e){}
+  }
 }
 let saveTimer=null;
 function save(){
@@ -419,8 +628,10 @@ function save(){
 }
 
 /* ---------- 雲端同步（Google Sheets，僅 tasks/reviews/moods/notes） ---------- */
+// 單一分頁讀取失敗（例如分頁尚未建立）不應中斷其他分頁的同步，故各自吞掉錯誤回空陣列。
+// 合併規則只補不刪，回空陣列不會造成資料遺失。
 function cloudGet(sheet){
-  return fetch(`${CLOUD_URL}?sheet=${sheet}`).then(r=>r.json()).then(j=>j.data||[]);
+  return fetch(`${CLOUD_URL}?sheet=${sheet}`).then(r=>r.json()).then(j=>j.data||[]).catch(()=>[]);
 }
 function cloudReplaceAll(sheet,headers,records){
   return fetch(CLOUD_URL,{
@@ -429,26 +640,46 @@ function cloudReplaceAll(sheet,headers,records){
     body:JSON.stringify({secret:CLOUD_SECRET, sheet, action:'replaceAll', headers, records})
   }).then(r=>r.json());
 }
-function taskToCloud(t){ return {id:String(t.id), text:t.txt, is_completed:!!t.done, created_at:new Date(t.ts).toISOString()}; }
-function taskFromCloud(r){ return {id:Number(r.id)||Date.now(), txt:r.text||'', done:r.is_completed===true||r.is_completed==='TRUE'||r.is_completed==='true', ts:r.created_at?new Date(r.created_at).getTime():Date.now()}; }
+function taskToCloud(t){ return {id:String(t.id), text:t.txt, is_completed:!!t.done, created_at:new Date(t.ts).toISOString(), priority:t.priority||DEFAULT_PRIORITY}; }
+function taskFromCloud(r){
+  const p=String(r.priority||'').toUpperCase();
+  return {id:Number(r.id)||Date.now(), txt:r.text||'', done:r.is_completed===true||r.is_completed==='TRUE'||r.is_completed==='true',
+          ts:r.created_at?new Date(r.created_at).getTime():Date.now(),
+          priority:PRIORITIES.includes(p)?p:DEFAULT_PRIORITY};
+}
+function expenseToCloud(e){
+  return {id:String(e.id), expense_date:e.date, type:e.type, category:e.category,
+          amount:e.amount, note:e.note||'', created_at:new Date(e.ts).toISOString()};
+}
+function expenseFromCloud(r){
+  return {id:Number(r.id)||Date.now(),
+          date:String(r.expense_date||'').slice(0,10)||todayKey(),
+          type:r.type==='income'?'income':'expense',
+          category:EXPENSE_CATEGORIES.includes(r.category)?r.category:'其他',
+          amount:Number(r.amount)||0, note:r.note||'',
+          ts:r.created_at?new Date(r.created_at).getTime():Date.now()};
+}
 function moodToCloud(m){ return {id:String(m.id), mood_date:todayKey(new Date(m.ts)), level:m.level, note:m.note||''}; }
 function moodFromCloud(r){ return {id:Number(r.id)||Date.now(), level:Number(r.level), note:r.note||'', ts:r.mood_date?new Date(r.mood_date).getTime():Date.now()}; }
 function noteToCloud(n){ return {id:String(n.id), text:n.txt, created_at:new Date(n.ts).toISOString()}; }
 function noteFromCloud(r){ return {id:Number(r.id)||Date.now(), txt:r.text||'', ts:r.created_at?new Date(r.created_at).getTime():Date.now()}; }
 
 function pushAllToCloud(){
-  const p1=cloudReplaceAll('tasks',['id','text','is_completed','created_at'], state.tasks.map(taskToCloud));
+  // tasks 欄序固定為 id | text | is_completed | created_at | priority（priority 一律最後一欄）
+  const p1=cloudReplaceAll('tasks',['id','text','is_completed','created_at','priority'], state.tasks.map(taskToCloud));
   const p2=cloudReplaceAll('reviews',['review_date','good','stuck','most_important'],
     Object.keys(state.reviews).map(k=>({review_date:k, good:state.reviews[k].good||'', stuck:state.reviews[k].stuck||'', most_important:state.reviews[k].next||''})));
   const p3=cloudReplaceAll('moods',['id','mood_date','level','note'], state.moods.map(moodToCloud));
   const p4=cloudReplaceAll('notes',['id','text','created_at'], state.notes.map(noteToCloud));
-  Promise.all([p1,p2,p3,p4]).catch(()=>{});
+  const p5=cloudReplaceAll('expenses',['id','expense_date','type','category','amount','note','created_at'],
+    state.expenses.map(expenseToCloud));
+  Promise.all([p1,p2,p3,p4,p5]).catch(()=>{});
 }
 
 async function pullFromCloud(){
   try{
-    const [cTasks,cReviews,cMoods,cNotes]=await Promise.all([
-      cloudGet('tasks'), cloudGet('reviews'), cloudGet('moods'), cloudGet('notes')
+    const [cTasks,cReviews,cMoods,cNotes,cExpenses]=await Promise.all([
+      cloudGet('tasks'), cloudGet('reviews'), cloudGet('moods'), cloudGet('notes'), cloudGet('expenses')
     ]);
     const taskIds=new Set(state.tasks.map(t=>String(t.id)));
     cTasks.forEach(r=>{ if(!taskIds.has(String(r.id))) state.tasks.push(taskFromCloud(r)); });
@@ -466,10 +697,15 @@ async function pullFromCloud(){
     const noteIds=new Set(state.notes.map(n=>String(n.id)));
     cNotes.forEach(r=>{ if(!noteIds.has(String(r.id))) state.notes.push(noteFromCloud(r)); });
 
+    const expIds=new Set(state.expenses.map(e=>String(e.id)));
+    cExpenses.forEach(r=>{ if(r.id && !expIds.has(String(r.id))) state.expenses.push(expenseFromCloud(r)); });
+
     state.tasks.sort((a,b)=>b.ts-a.ts);
     state.moods.sort((a,b)=>b.ts-a.ts);
     state.notes.sort((a,b)=>b.ts-a.ts);
+    sortExpenses();
 
+    migrate();
     localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
     renderAll();
   }catch(e){ /* 離線或雲端不可用，略過本次同步 */ }
@@ -487,26 +723,50 @@ function exportData(){
 }
 
 /* ---------- 導覽 ---------- */
-const TITLES={tasks:'任務',review:'日誌',mood:'心情',notes:'雜記',growth:'成長'};
+const TITLES={home:'首頁',expenses:'記帳',tasks:'任務',review:'日誌',mood:'心情',notes:'雜記',growth:'成長'};
 function switchView(name,btn){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.getElementById('view-'+name).classList.add('active');
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
+  if(btn) btn.classList.add('active');
   document.getElementById('viewTitle').textContent=TITLES[name];
-  const showPulse = (name==='tasks'||name==='mood');
+  // 心情脈搏隸屬心情模組，跟著 SHOW_MOOD 一起隱藏
+  const showPulse = SHOW_MOOD && (name==='tasks'||name==='mood');
   document.getElementById('pulse').style.display=showPulse?'flex':'none';
   document.getElementById('pulseLabel').style.display=showPulse?'block':'none';
+  if(name==='home') renderDashboard();
+  if(name==='expenses') renderExpenseView();
   if(name==='review') loadTodayReview();
   if(name==='growth') loadThisWeekly();
+  window.scrollTo(0,0);
+}
+/* 首頁卡片上的捷徑：切分頁並同步底部導覽的選取狀態 */
+function goView(name){
+  switchView(name, document.querySelector(`nav button[data-view="${name}"]`));
+}
+function applyFeatureFlags(){
+  const moodBtn=document.querySelector('nav button[data-view="mood"]');
+  const growthBtn=document.querySelector('nav button[data-view="growth"]');
+  if(moodBtn) moodBtn.hidden=!SHOW_MOOD;
+  if(growthBtn) growthBtn.hidden=!SHOW_GROWTH;
+  if(!SHOW_MOOD){
+    document.getElementById('pulse').style.display='none';
+    document.getElementById('pulseLabel').style.display='none';
+  }
 }
 
 /* ---------- 任務 ---------- */
+function pickNewPrio(p){
+  newTaskPriority=p;
+  document.querySelectorAll('#newTaskPrio .prio-opt').forEach(b=>{
+    b.classList.toggle('sel', b.dataset.val===p);
+  });
+}
 function addTask(){
   const inp=document.getElementById('taskInput');
   const txt=inp.value.trim();
   if(!txt) return;
-  state.tasks.unshift({id:Date.now(),txt,done:false,ts:Date.now()});
+  state.tasks.unshift({id:Date.now(),txt,done:false,ts:Date.now(),priority:newTaskPriority});
   inp.value='';
   save(); renderTasks(); toast('已加入任務');
 }
@@ -514,19 +774,38 @@ function toggleTask(id){
   const t=state.tasks.find(t=>t.id===id);
   if(t){t.done=!t.done; save(); renderTasks();}
 }
+/* 直接點燈號循環 高→中→低 */
+function cyclePriority(id){
+  const t=state.tasks.find(t=>t.id===id);
+  if(!t) return;
+  const i=PRIORITIES.indexOf(t.priority||DEFAULT_PRIORITY);
+  t.priority=PRIORITIES[(i+1)%PRIORITIES.length];
+  save(); renderTasks();
+  toast('優先度：'+PRIORITY_LABEL[t.priority]);
+}
 function delTask(id){
   state.tasks=state.tasks.filter(t=>t.id!==id);
   save(); renderTasks();
 }
+/* 紅→黃→綠；同色內 created_at 舊者優先（ADR-004 §2） */
+function byPriority(a,b){
+  const d=PRIORITY_RANK[a.priority||DEFAULT_PRIORITY]-PRIORITY_RANK[b.priority||DEFAULT_PRIORITY];
+  return d!==0 ? d : a.ts-b.ts;
+}
 function renderTasks(){
-  const open=state.tasks.filter(t=>!t.done);
+  const open=state.tasks.filter(t=>!t.done).sort(byPriority);
   const done=state.tasks.filter(t=>t.done);
-  const html=t=>`
+  const html=t=>{
+    const p=t.priority||DEFAULT_PRIORITY;
+    return `
     <div class="task ${t.done?'done':''}">
       <input type="checkbox" ${t.done?'checked':''} onchange="toggleTask(${t.id})">
+      <button class="prio-dot prio-${p}" onclick="cyclePriority(${t.id})"
+        aria-label="優先度 ${PRIORITY_LABEL[p]}，點擊切換" title="優先度：${PRIORITY_LABEL[p]}"></button>
       <div class="txt">${esc(t.txt)}</div>
       <button class="del" onclick="delTask(${t.id})" aria-label="刪除">✕</button>
     </div>`;
+  };
   document.getElementById('taskListOpen').innerHTML=
     open.length?open.map(html).join(''):'<div class="empty-hint">目前沒有進行中的任務 🎉</div>';
   document.getElementById('taskListDone').innerHTML=
@@ -741,11 +1020,211 @@ function renderOutputs(){
     </div>`).join('');
 }
 
+/* ---------- 記帳 ---------- */
+function sortExpenses(){
+  // 消費日新→舊；同日以輸入時間新→舊
+  state.expenses.sort((a,b)=> a.date===b.date ? b.ts-a.ts : (a.date<b.date?1:-1));
+}
+function expensesOfMonth(mk){ return state.expenses.filter(e=>e.date.slice(0,7)===mk); }
+function monthTotal(mk,type='expense'){
+  return expensesOfMonth(mk).filter(e=>e.type===type).reduce((s,e)=>s+e.amount,0);
+}
+/* 依固定分類順序彙總，只回傳有金額者；超過 MAX_DONUT_SEGMENTS 時尾端併入「其他」 */
+function categoryBreakdown(mk){
+  const sums={};
+  expensesOfMonth(mk).filter(e=>e.type==='expense').forEach(e=>{
+    sums[e.category]=(sums[e.category]||0)+e.amount;
+  });
+  let rows=EXPENSE_CATEGORIES.filter(c=>sums[c]>0).map(c=>({cat:c, amount:sums[c]}));
+  if(rows.length>MAX_DONUT_SEGMENTS){
+    const keep=[...rows].sort((a,b)=>b.amount-a.amount).slice(0,MAX_DONUT_SEGMENTS-1);
+    const keepSet=new Set(keep.map(r=>r.cat));
+    const restTotal=rows.filter(r=>!keepSet.has(r.cat)).reduce((s,r)=>s+r.amount,0);
+    rows=EXPENSE_CATEGORIES.filter(c=>keepSet.has(c)).map(c=>({cat:c, amount:sums[c]}));
+    rows.push({cat:'其他', amount:restTotal});
+  }
+  return rows;
+}
+
+function pickExpType(t){
+  expType=t;
+  document.querySelectorAll('#expTypeSeg button').forEach(b=>b.classList.toggle('sel', b.dataset.val===t));
+}
+function pickExpCategory(c){
+  expCategory=c;
+  document.querySelectorAll('#expCatRow .cat-btn').forEach(b=>b.classList.toggle('sel', b.dataset.val===c));
+}
+function renderCatRow(){
+  document.getElementById('expCatRow').innerHTML=EXPENSE_CATEGORIES.map(c=>
+    `<button class="cat-btn ${expCategory===c?'sel':''}" data-val="${c}" onclick="pickExpCategory('${c}')">
+       <span class="lg-dot" style="background:${CATEGORY_COLOR[c]}"></span>${c}</button>`).join('');
+}
+function resetExpenseForm(){
+  expEditingId=null; expCategory=null; expType='expense';
+  document.getElementById('expAmount').value='';
+  document.getElementById('expNote').value='';
+  document.getElementById('expDate').value=todayKey();
+  document.getElementById('expSubmit').textContent='記一筆';
+  document.getElementById('expEditBanner').innerHTML='';
+  pickExpType('expense'); renderCatRow();
+}
+function submitExpense(){
+  const amount=Number(document.getElementById('expAmount').value);
+  const date=document.getElementById('expDate').value||todayKey();
+  const note=document.getElementById('expNote').value.trim();
+  if(!amount||amount<=0){toast('先填金額吧 💰'); return;}
+  if(!expCategory){toast('選一個分類'); return;}
+  if(expEditingId){
+    const e=state.expenses.find(x=>x.id===expEditingId);
+    if(e) Object.assign(e,{date,type:expType,category:expCategory,amount,note});
+    toast('已更新這筆');
+  }else{
+    state.expenses.unshift({id:Date.now(),date,type:expType,category:expCategory,amount,note,ts:Date.now()});
+    toast('已記一筆');
+  }
+  sortExpenses();
+  expMonth=date.slice(0,7); // 跳到這筆所屬月份，才看得到剛記的紀錄
+  resetExpenseForm();
+  save(); renderExpenseView();
+}
+function editExpense(id){
+  const e=state.expenses.find(x=>x.id===id);
+  if(!e) return;
+  expEditingId=id;
+  document.getElementById('expAmount').value=e.amount;
+  document.getElementById('expDate').value=e.date;
+  document.getElementById('expNote').value=e.note||'';
+  pickExpType(e.type); pickExpCategory(e.category);
+  document.getElementById('expSubmit').textContent='更新這筆';
+  document.getElementById('expEditBanner').innerHTML=
+    `<div class="edit-banner"><span>編輯中：${esc(e.date)} ${esc(e.category)}</span>
+     <button onclick="cancelEditExpense()">取消</button></div>`;
+  window.scrollTo(0,0);
+}
+function cancelEditExpense(){ resetExpenseForm(); }
+function delExpense(id){
+  if(expEditingId===id) resetExpenseForm();
+  state.expenses=state.expenses.filter(e=>e.id!==id);
+  save(); renderExpenseView(); toast('已刪除');
+}
+function shiftMonth(n){
+  const [y,m]=expMonth.split('-').map(Number);
+  const d=new Date(y, m-1+n, 1);
+  expMonth=monthKey(d);
+  renderExpenseView();
+}
+function renderExpenseView(){
+  if(!expMonth) expMonth=monthKey();
+  const rows=expensesOfMonth(expMonth);
+  const spent=monthTotal(expMonth,'expense');
+  const earned=monthTotal(expMonth,'income');
+  document.getElementById('expMonthLabel').textContent=fmtMonth(expMonth);
+  document.getElementById('expMonthTotal').textContent=
+    `支出 NT$ ${fmtAmount(spent)}` + (earned?`　收入 NT$ ${fmtAmount(earned)}`:'');
+  const el=document.getElementById('expList');
+  if(!rows.length){ el.innerHTML='<div class="empty-hint">這個月還沒有紀錄</div>'; return; }
+  el.innerHTML=rows.map(e=>`
+    <div class="exp-item">
+      <span class="exp-cat"><span class="lg-dot" style="background:${CATEGORY_COLOR[e.category]}"></span>${esc(e.category)}</span>
+      <div class="exp-body" onclick="editExpense(${e.id})">
+        ${e.note?`<div class="exp-note">${esc(e.note)}</div>`:''}
+        <div class="exp-date">${esc(e.date)}${e.type==='income'?' · 收入':''}</div>
+      </div>
+      <div class="exp-amt ${e.type==='income'?'income':''}">${e.type==='income'?'+':'-'}${fmtAmount(e.amount)}</div>
+      <button class="del" onclick="delExpense(${e.id})" aria-label="刪除">✕</button>
+    </div>`).join('');
+}
+
+/* ---------- 首頁 Dashboard ---------- */
+/* 甜甜圈：固定分類順序繪製、區塊間留 2px 底色間隙，圖例直接標示名稱與金額
+   （相鄰色已通過 CVD 檢驗，標籤與間隙為第二編碼，識別不單靠顏色） */
+function donutSVG(rows,total){
+  const R=54, SW=17, C=2*Math.PI*R, GAP=rows.length>1?2:0;
+  let offset=0;
+  const arcs=rows.map(r=>{
+    const len=Math.max(C*(r.amount/total)-GAP, 1);
+    const seg=`<circle cx="70" cy="70" r="${R}" fill="none" stroke="${CATEGORY_COLOR[r.cat]}"
+      stroke-width="${SW}" stroke-dasharray="${len.toFixed(2)} ${(C-len).toFixed(2)}"
+      stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 70 70)"></circle>`;
+    offset+=C*(r.amount/total);
+    return seg;
+  }).join('');
+  return `<svg class="donut" viewBox="0 0 140 140" role="img" aria-label="本月各類支出佔比">
+    <circle cx="70" cy="70" r="${R}" fill="none" stroke="var(--line)" stroke-width="${SW}"></circle>
+    ${arcs}
+    <text class="donut-center" x="70" y="70" text-anchor="middle">${fmtAmount(total)}</text>
+    <text class="donut-center-sub" x="70" y="84" text-anchor="middle">TWD 本月支出</text>
+  </svg>`;
+}
+function renderDashExpense(){
+  const mk=monthKey();
+  const total=monthTotal(mk,'expense');
+  const rows=categoryBreakdown(mk);
+  const el=document.getElementById('dashExpense');
+  if(!total){
+    el.innerHTML=`<div class="dash-hero"><span class="cur">NT$</span>0</div>
+      <div class="dash-sub">${fmtMonth(mk)}　還沒有支出紀錄</div>`;
+    return;
+  }
+  const legend=rows.map(r=>{
+    const pct=Math.round(r.amount/total*100);
+    return `<div class="lg-row">
+        <span class="lg-dot" style="background:${CATEGORY_COLOR[r.cat]}"></span>
+        <span class="lg-name">${esc(r.cat)}</span>
+        <span class="lg-val">${fmtAmount(r.amount)}・${pct}%</span>
+        <span class="lg-bar"><i style="width:${pct}%;background:${CATEGORY_COLOR[r.cat]}"></i></span>
+      </div>`;
+  }).join('');
+  el.innerHTML=`
+    <div class="dash-hero"><span class="cur">NT$</span>${fmtAmount(total)}</div>
+    <div class="dash-sub">${fmtMonth(mk)}</div>
+    <div class="donut-wrap">${donutSVG(rows,total)}<div class="legend">${legend}</div></div>`;
+}
+function renderDashTasks(){
+  const top=state.tasks.filter(t=>!t.done).sort(byPriority).slice(0,3);
+  const el=document.getElementById('dashTasks');
+  if(!top.length){ el.innerHTML='<div class="empty-hint">目前沒有進行中的任務 🎉</div>'; return; }
+  el.innerHTML=top.map(t=>{
+    const p=t.priority||DEFAULT_PRIORITY;
+    return `<div class="dash-task">
+      <input type="checkbox" onchange="toggleTaskFromHome(${t.id})" aria-label="完成">
+      <span class="prio-dot prio-${p}" title="優先度：${PRIORITY_LABEL[p]}"></span>
+      <div class="txt">${esc(t.txt)}</div>
+    </div>`;
+  }).join('');
+}
+function toggleTaskFromHome(id){
+  toggleTask(id);
+  renderDashTasks();
+}
+function renderDashCompass(){
+  const r=state.reviews[todayKey()];
+  const answered=!!(r&&r.compass);
+  document.getElementById('dashCompassSaved').textContent=answered?'✓ 今天已作答':'';
+  document.getElementById('dashCompass').innerHTML = answered
+    ? `<div class="review-body">${esc(r.compass)}</div>
+       <button class="dash-link" onclick="goView('review')">到日誌修改 →</button>`
+    : `<textarea id="dashCompassInput" placeholder="今天你做了哪一個符合未來自己的選擇？哪怕只是一個小決定。" style="min-height:72px;background:#fff;"></textarea>
+       <div style="margin-top:10px"><button class="btn" onclick="saveCompassFromHome()">記下今天的選擇</button></div>`;
+}
+function saveCompassFromHome(){
+  const compass=document.getElementById('dashCompassInput').value.trim();
+  if(!compass){toast('先寫點什麼吧 ✍️'); return;}
+  const k=todayKey();
+  const r=state.reviews[k]||{compass:'',good:'',stuck:'',next:''};
+  state.reviews[k]={...r, compass, ts:Date.now()};
+  save(); renderDashCompass(); loadTodayReview(); renderReviews(); toast('今日指南針已記下 🧭');
+}
+function renderDashboard(){
+  renderDashExpense(); renderDashTasks(); renderDashCompass();
+}
+
 /* ---------- 初始化 ---------- */
 function renderAll(){
   renderTasks(); renderReviews(); loadTodayReview();
   renderMoodBtns(); renderMoods(); renderPulse();
   renderNotes(); renderWeeklyList(); renderOutputs();
+  renderExpenseView(); renderDashboard();
 }
 (function init(){
   const d=new Date();
@@ -753,6 +1232,10 @@ function renderAll(){
   document.getElementById('todayLabel').textContent=
     `${d.getFullYear()} 年 ${d.getMonth()+1} 月 ${d.getDate()} 日 · 星期${wk}`;
   document.getElementById('taskInput').addEventListener('keydown',e=>{if(e.key==='Enter') addTask();});
+  expMonth=monthKey();
+  document.getElementById('expDate').value=todayKey();
+  renderCatRow();
+  applyFeatureFlags();
   load();
   pullFromCloud();
   if('serviceWorker' in navigator){
