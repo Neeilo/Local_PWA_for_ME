@@ -29,8 +29,8 @@ var LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
 /**
  * 允許使用的 LINE userId 白名單。
  * 留空陣列 = 不限制（方便第一次跑通）。
- * 你的 userId 會寫進「執行記錄」，第一次傳訊息後去 Apps Script 左側「執行項目」找
- * 「LINE userId: Uxxxxxxxx」，填進來即可鎖定只有你能寫入。
+ * 取得自己的 userId 最快的方式：在 LINE 傳一句 whoami，bot 會直接回你。
+ * （也會寫進執行記錄，但 webhook 觸發的執行只看得到 console.log，看不到 Logger.log）
  *
  * ⚠️ Apps Script 的 doPost 讀不到 HTTP Header，驗不了 LINE 官方簽章，
  *    所以 exec 網址一旦外流，任何人都能往你的 Sheet 寫東西。白名單是唯一的防線。
@@ -89,7 +89,7 @@ function handleLineWebhook_(body) {
       handleLineEvent_(events[i]);
     }
   } catch (err) {
-    Logger.log('LINE webhook 例外：' + err);
+    console.log('LINE webhook 例外：' + err);
   }
   return ContentService
     .createTextOutput(JSON.stringify({ ok: true }))
@@ -101,14 +101,24 @@ function handleLineEvent_(event) {
   if (!event.message || event.message.type !== 'text') return;
 
   var userId = (event.source && event.source.userId) || '';
-  Logger.log('LINE userId: ' + userId);
+  console.log('LINE userId: ' + userId);
+
+  var text = String(event.message.text || '').trim();
+
+  // whoami 刻意排在白名單檢查之前：它就是用來取得要填進 ALLOWED_USER_IDS 的值，
+  // 也是萬一填錯、把自己擋在門外時唯一的救援途徑。只回傳發話者自己的 ID，
+  // 問不到別人的，所以放在白名單前面不會擴大攻擊面。
+  if (text.toLowerCase() === 'whoami') {
+    lineReply_(event.replyToken, '你的 userId：\n' + (userId || '(取不到，訊息可能來自群組)'));
+    return;
+  }
 
   if (ALLOWED_USER_IDS.length > 0 && ALLOWED_USER_IDS.indexOf(userId) === -1) {
     lineReply_(event.replyToken, '這個帳號沒有權限寫入喔。');
     return;
   }
 
-  var reply = routeLineMessage_(event.message.text || '');
+  var reply = routeLineMessage_(text);
   lineReply_(event.replyToken, reply);
 }
 
@@ -145,7 +155,7 @@ function routeLineMessage_(rawText) {
     appendToSheet_(route.sheetName, record);
     return formatSuccess_(prefix, parsed);
   } catch (err) {
-    Logger.log('寫入失敗：' + err);
+    console.log('寫入失敗：' + err);
     return '寫入失敗了：' + err.message;
   }
 }
@@ -228,6 +238,7 @@ function supportedPrefixesMessage_() {
       lines.push('・' + ROUTE_TABLE[prefix].usage);
     }
   }
+  lines.push('（輸入 whoami 可查自己的 userId）');
   return lines.join('\n');
 }
 
@@ -253,10 +264,10 @@ function lineReply_(replyToken, text) {
   var token = raw ? String(raw).trim() : '';
 
   if (!token) {
-    Logger.log('回覆略過：指令碼屬性 LINE_CHANNEL_ACCESS_TOKEN 不存在或是空字串');
+    console.log('回覆略過：指令碼屬性 LINE_CHANNEL_ACCESS_TOKEN 不存在或是空字串');
     return;
   }
-  Logger.log('權杖長度 ' + token.length + ' 字元');
+  console.log('權杖長度 ' + token.length + ' 字元');
 
   try {
     var res = UrlFetchApp.fetch(LINE_REPLY_ENDPOINT, {
@@ -272,12 +283,12 @@ function lineReply_(replyToken, text) {
 
     var code = res.getResponseCode();
     if (code === 200) {
-      Logger.log('LINE 回覆成功');
+      console.log('LINE 回覆成功');
     } else {
-      Logger.log('LINE 回覆失敗 HTTP ' + code + '：' + res.getContentText());
+      console.log('LINE 回覆失敗 HTTP ' + code + '：' + res.getContentText());
     }
   } catch (err) {
-    Logger.log('LINE 回覆連線失敗：' + err);
+    console.log('LINE 回覆連線失敗：' + err);
   }
 }
 
@@ -301,17 +312,17 @@ function diagnoseLineToken() {
     .getProperty('LINE_CHANNEL_ACCESS_TOKEN');
 
   if (raw === null) {
-    Logger.log('❌ 找不到指令碼屬性 LINE_CHANNEL_ACCESS_TOKEN（注意大小寫與前後空白）');
+    console.log('❌ 找不到指令碼屬性 LINE_CHANNEL_ACCESS_TOKEN（注意大小寫與前後空白）');
     return;
   }
 
   var token = String(raw).trim();
-  Logger.log('原始長度 ' + String(raw).length + '，去除前後空白後 ' + token.length);
+  console.log('原始長度 ' + String(raw).length + '，去除前後空白後 ' + token.length);
   if (String(raw).length !== token.length) {
-    Logger.log('⚠️ 權杖前後有多餘空白或換行，已在程式裡自動修掉，但建議回頭重存一次');
+    console.log('⚠️ 權杖前後有多餘空白或換行，已在程式裡自動修掉，但建議回頭重存一次');
   }
   if (!token) {
-    Logger.log('❌ 權杖是空字串');
+    console.log('❌ 權杖是空字串');
     return;
   }
 
@@ -322,14 +333,14 @@ function diagnoseLineToken() {
   });
 
   var code = res.getResponseCode();
-  Logger.log('LINE /v2/bot/info 回應 HTTP ' + code);
-  Logger.log(res.getContentText());
+  console.log('LINE /v2/bot/info 回應 HTTP ' + code);
+  console.log(res.getContentText());
 
   if (code === 200) {
-    Logger.log('✅ 權杖有效。若 LINE 仍不回訊息，請檢查官方帳號的「回應設定」：');
-    Logger.log('   回應模式要是「聊天機器人」，且「自動回應訊息」關閉、「Webhook」開啟。');
+    console.log('✅ 權杖有效。若 LINE 仍不回訊息，請檢查官方帳號的「回應設定」：');
+    console.log('   回應模式要是「聊天機器人」，且「自動回應訊息」關閉、「Webhook」開啟。');
   } else if (code === 401) {
-    Logger.log('❌ 權杖無效。確認貼的是 Messaging API 分頁最下方的');
-    Logger.log('   Channel access token (long-lived)，不是 Channel secret。');
+    console.log('❌ 權杖無效。確認貼的是 Messaging API 分頁最下方的');
+    console.log('   Channel access token (long-lived)，不是 Channel secret。');
   }
 }
