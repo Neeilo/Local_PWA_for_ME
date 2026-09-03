@@ -623,7 +623,9 @@ function save(){
   saveTimer=setTimeout(()=>{
     try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); }
     catch(e){ toast('⚠️ 儲存失敗，空間可能已滿'); }
-    pushAllToCloud();
+    // pushAllToCloud 是整包 replaceAll，若在 pull 補齊前送出，
+    // 會用尚未含雲端新資料的本機 state 覆寫雲端。等 pull 收工再推。
+    Promise.resolve(pullPromise).then(pushAllToCloud);
   },250);
 }
 
@@ -674,6 +676,15 @@ function pushAllToCloud(){
   const p5=cloudReplaceAll('expenses',['id','expense_date','type','category','amount','note','created_at'],
     state.expenses.map(expenseToCloud));
   Promise.all([p1,p2,p3,p4,p5]).catch(()=>{});
+}
+
+/* 統一的 pull 入口：同一時間只允許一個 pull 在跑，並記下完成時間，
+   讓 save() 能等它、讓回前景的觸發能節流。 */
+let pullPromise=null, lastPullAt=0;
+function syncFromCloud(){
+  if(pullPromise) return pullPromise;
+  pullPromise=pullFromCloud().finally(()=>{ pullPromise=null; lastPullAt=Date.now(); });
+  return pullPromise;
 }
 
 async function pullFromCloud(){
@@ -1237,7 +1248,18 @@ function renderAll(){
   renderCatRow();
   applyFeatureFlags();
   load();
-  pullFromCloud();
+  syncFromCloud();
+
+  /* 回到前景時重新 pull。App 留在背景期間，LINE 快速輸入或其他裝置
+     可能已經往雲端新增資料；不先補齊就編輯，下一次 save() 的 replaceAll
+     會把那些資料從雲端抹掉。節流避免頻繁切換前後景時重複請求。 */
+  const FOREGROUND_PULL_MIN_GAP=5000;
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState!=='visible') return;
+    if(Date.now()-lastPullAt<FOREGROUND_PULL_MIN_GAP) return;
+    syncFromCloud();
+  });
+
   if('serviceWorker' in navigator){
     navigator.serviceWorker.register('sw.js').then(reg=>{
       document.addEventListener('visibilitychange',()=>{

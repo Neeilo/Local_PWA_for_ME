@@ -25,7 +25,7 @@
 |---|---|
 | 前端 | 純 HTML / CSS / JS，單檔（`index.html`） |
 | 本地儲存 | `localStorage`，單一 JSON state key：`personal-os-state-v1` |
-| 雲端同步 | Google Apps Script + Google Sheets（tasks / reviews / moods / notes / expenses，載入時 pull、儲存時 push） |
+| 雲端同步 | Google Apps Script + Google Sheets（tasks / reviews / moods / notes / expenses，載入時與回前景時 pull、儲存時 push） |
 | PWA | `manifest.json` + Service Worker（`sw.js`，HTML network-first、其餘資產 cache-first） |
 | 部署 | GitHub Pages |
 
@@ -43,6 +43,10 @@ Google Sheets 各分頁欄位：
 
 `priority` 存 `H`/`M`/`L`，預設 `M`，無值的既有任務會在前端首次載入時自動補 `M`。`expenses.type` 為 `expense`/`income`，首頁圓餅圖只計 `expense`。Apps Script 的 `Code.gs` 為通用 `doGet`/`doPost`，新增分頁與欄位皆不需修改。
 
+同步時序：App 啟動與**回到前景**時都會 pull 補齊（只加不刪）。`save()` 的整包 `replaceAll` 會等待進行中的 pull 完成才送出——否則本機尚未補齊的 state 會覆寫掉雲端的新資料（例如從 LINE 快速輸入新增的任務）。回前景的 pull 有 5 秒節流。
+
+LINE 快速輸入（`任務/內容[/H|M|L]` 寫入 tasks 分頁）的 Apps Script 端程式碼鏡像在 `apps-script/`，安裝與除錯見該目錄的 README。
+
 ## 檔案結構
 
 ```
@@ -51,6 +55,7 @@ manifest.json   PWA manifest
 sw.js           Service Worker（離線快取）
 icon-192.png    App icon 192x192
 icon-512.png    App icon 512x512
+apps-script/    Apps Script 端程式碼鏡像（LINE 路由；非部署來源）
 ```
 
 ## 開發須知

@@ -29,8 +29,8 @@ var LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
 /**
  * 允許使用的 LINE userId 白名單。
  * 留空陣列 = 不限制（方便第一次跑通）。
- * 你的 userId 會寫進「執行記錄」，第一次傳訊息後去 Apps Script 左側「執行項目」找
- * 「LINE userId: Uxxxxxxxx」，填進來即可鎖定只有你能寫入。
+ * 取得自己的 userId 最快的方式：在 LINE 傳一句 whoami，bot 會直接回你。
+ * （也會寫進執行記錄，但 webhook 觸發的執行只看得到 console.log，看不到 Logger.log）
  *
  * ⚠️ Apps Script 的 doPost 讀不到 HTTP Header，驗不了 LINE 官方簽章，
  *    所以 exec 網址一旦外流，任何人都能往你的 Sheet 寫東西。白名單是唯一的防線。
@@ -89,7 +89,7 @@ function handleLineWebhook_(body) {
       handleLineEvent_(events[i]);
     }
   } catch (err) {
-    Logger.log('LINE webhook 例外：' + err);
+    console.log('LINE webhook 例外：' + err);
   }
   return ContentService
     .createTextOutput(JSON.stringify({ ok: true }))
@@ -101,14 +101,24 @@ function handleLineEvent_(event) {
   if (!event.message || event.message.type !== 'text') return;
 
   var userId = (event.source && event.source.userId) || '';
-  Logger.log('LINE userId: ' + userId);
+  console.log('LINE userId: ' + userId);
+
+  var text = String(event.message.text || '').trim();
+
+  // whoami 刻意排在白名單檢查之前：它就是用來取得要填進 ALLOWED_USER_IDS 的值，
+  // 也是萬一填錯、把自己擋在門外時唯一的救援途徑。只回傳發話者自己的 ID，
+  // 問不到別人的，所以放在白名單前面不會擴大攻擊面。
+  if (text.toLowerCase() === 'whoami') {
+    lineReply_(event.replyToken, '你的 userId：\n' + (userId || '(取不到，訊息可能來自群組)'));
+    return;
+  }
 
   if (ALLOWED_USER_IDS.length > 0 && ALLOWED_USER_IDS.indexOf(userId) === -1) {
     lineReply_(event.replyToken, '這個帳號沒有權限寫入喔。');
     return;
   }
 
-  var reply = routeLineMessage_(event.message.text || '');
+  var reply = routeLineMessage_(text);
   lineReply_(event.replyToken, reply);
 }
 
@@ -145,7 +155,7 @@ function routeLineMessage_(rawText) {
     appendToSheet_(route.sheetName, record);
     return formatSuccess_(prefix, parsed);
   } catch (err) {
-    Logger.log('寫入失敗：' + err);
+    console.log('寫入失敗：' + err);
     return '寫入失敗了：' + err.message;
   }
 }
@@ -228,6 +238,7 @@ function supportedPrefixesMessage_() {
       lines.push('・' + ROUTE_TABLE[prefix].usage);
     }
   }
+  lines.push('（輸入 whoami 可查自己的 userId）');
   return lines.join('\n');
 }
 
@@ -239,20 +250,27 @@ function formatSuccess_(prefix, parsed) {
 
 /**
  * 回覆使用者。權杖放指令碼屬性，不寫進原始碼。
+ *
  * 回覆失敗只記錄不拋出——寫入已經成功了，不該因為回覆失敗讓 LINE 重送。
+ * 但一定要把 LINE 的回應碼記進 Log：沒有它，「權杖沒設」「權杖錯了」
+ * 「權杖是別的 Channel 的」從外面看起來全都是同一種安靜的失敗。
  */
 function lineReply_(replyToken, text) {
   if (!replyToken) return;
 
-  var token = PropertiesService.getScriptProperties()
+  var raw = PropertiesService.getScriptProperties()
     .getProperty('LINE_CHANNEL_ACCESS_TOKEN');
+  // 從網頁複製權杖常會帶到換行或空白，前後修掉，否則 LINE 會回 401
+  var token = raw ? String(raw).trim() : '';
+
   if (!token) {
-    Logger.log('缺少指令碼屬性 LINE_CHANNEL_ACCESS_TOKEN，略過回覆');
+    console.log('回覆略過：指令碼屬性 LINE_CHANNEL_ACCESS_TOKEN 不存在或是空字串');
     return;
   }
+  console.log('權杖長度 ' + token.length + ' 字元');
 
   try {
-    UrlFetchApp.fetch(LINE_REPLY_ENDPOINT, {
+    var res = UrlFetchApp.fetch(LINE_REPLY_ENDPOINT, {
       method: 'post',
       contentType: 'application/json',
       headers: { Authorization: 'Bearer ' + token },
@@ -262,7 +280,67 @@ function lineReply_(replyToken, text) {
       }),
       muteHttpExceptions: true
     });
+
+    var code = res.getResponseCode();
+    if (code === 200) {
+      console.log('LINE 回覆成功');
+    } else {
+      console.log('LINE 回覆失敗 HTTP ' + code + '：' + res.getContentText());
+    }
   } catch (err) {
-    Logger.log('LINE 回覆失敗：' + err);
+    console.log('LINE 回覆連線失敗：' + err);
+  }
+}
+
+/* ========================================================================== */
+/* 診斷工具                                                                    */
+/* ========================================================================== */
+
+/**
+ * 權杖健檢——直接在編輯器裡選這個函式按「執行」，不需要重新部署。
+ *
+ * 編輯器執行的是「目前存檔的程式碼」，而網頁應用程式服務的是「已部署的版本」，
+ * 兩者是分開的。所以這支可以在不動部署的情況下，直接問 LINE：這把權杖有效嗎？
+ *
+ * 結果看「執行記錄」：
+ *   HTTP 200 → 權杖有效，問題不在權杖（多半是官方帳號的回應模式設定）
+ *   HTTP 401 → 權杖無效：可能誤貼了 Channel secret、複製不完整，或已被重新發行
+ *   找不到屬性 → 指令碼屬性沒設成功，或名稱拼錯
+ */
+function diagnoseLineToken() {
+  var raw = PropertiesService.getScriptProperties()
+    .getProperty('LINE_CHANNEL_ACCESS_TOKEN');
+
+  if (raw === null) {
+    console.log('❌ 找不到指令碼屬性 LINE_CHANNEL_ACCESS_TOKEN（注意大小寫與前後空白）');
+    return;
+  }
+
+  var token = String(raw).trim();
+  console.log('原始長度 ' + String(raw).length + '，去除前後空白後 ' + token.length);
+  if (String(raw).length !== token.length) {
+    console.log('⚠️ 權杖前後有多餘空白或換行，已在程式裡自動修掉，但建議回頭重存一次');
+  }
+  if (!token) {
+    console.log('❌ 權杖是空字串');
+    return;
+  }
+
+  var res = UrlFetchApp.fetch('https://api.line.me/v2/bot/info', {
+    method: 'get',
+    headers: { Authorization: 'Bearer ' + token },
+    muteHttpExceptions: true
+  });
+
+  var code = res.getResponseCode();
+  console.log('LINE /v2/bot/info 回應 HTTP ' + code);
+  console.log(res.getContentText());
+
+  if (code === 200) {
+    console.log('✅ 權杖有效。若 LINE 仍不回訊息，請檢查官方帳號的「回應設定」：');
+    console.log('   回應模式要是「聊天機器人」，且「自動回應訊息」關閉、「Webhook」開啟。');
+  } else if (code === 401) {
+    console.log('❌ 權杖無效。確認貼的是 Messaging API 分頁最下方的');
+    console.log('   Channel access token (long-lived)，不是 Channel secret。');
   }
 }
