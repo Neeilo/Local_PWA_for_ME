@@ -34,6 +34,39 @@ var LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
 /** 交易記錄分頁。表頭：id | ts | source | status | input | result | detail | target_row | user_id */
 var LOG_SHEET_NAME = 'logs';
 
+/* ========================================================================== */
+/* 查詢 MVP 設定（ADR-006 §B）                                                 */
+/* ========================================================================== */
+
+/**
+ * 「查」前綴刻意不進 ROUTE_TABLE。
+ * 路由表處理的是「解析成固定欄位 → 寫入一列」，查詢是「讀取 → 外部 AI → 回覆」，
+ * 兩者的性質不同，混在一起只會讓路由邏輯變得誰都看不懂。
+ */
+var QUERY_PREFIX = '查';
+var QUERY_USAGE = '查/你想問的問題';
+/**
+ * logs 的 source 欄寫「查詢」，不是前綴「查」。
+ * 任務／記帳／收入 的前綴剛好等於來源名，只有這個不是——
+ * 寫成「查」的話，前端 LOG 頁那顆「查詢」篩選鈕永遠篩不到東西（ADR-006 §D 的欄位定義）。
+ */
+var QUERY_LOG_SOURCE = '查詢';
+
+/** 資料窗口與逐筆上限，皆為可調參數（ADR-006 §B） */
+var QUERY_WINDOW_DAYS = 30;
+var QUERY_MAX_TOTAL_RECORDS = 30;
+
+/**
+ * Gemini 模型與端點。
+ *
+ * 模型 ID 會隨 Google 改版而變動，所以可用指令碼屬性 GEMINI_MODEL 覆寫，
+ * 不必回頭改這支程式。不確定目前有哪些可用時，跑 diagnoseGemini —— 
+ * 它會直接問 Google「這把 key 能用哪些模型」，比猜可靠。
+ */
+var GEMINI_MODEL_DEFAULT = 'gemini-3.5-flash';
+var GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+var GEMINI_TIMEOUT_REPLY = 'AI 暫時無法回應，請稍後再試';
+
 /**
  * 允許使用的 LINE userId 白名單。
  * 留空陣列 = 不限制（方便第一次跑通）。
@@ -182,6 +215,16 @@ function routeLineMessage_(rawText, userId) {
 
   var slash = text.indexOf('/');
   var prefix = (slash === -1 ? text : text.slice(0, slash)).trim();
+
+  // 查詢在查表之前攔下：它不寫任何欄位，走不了下面「解析→build→appendRow」那條路
+  if (prefix === QUERY_PREFIX) {
+    if (slash === -1) {
+      logTransaction_(QUERY_LOG_SOURCE, '失敗', text, '缺少問題內容', '', '', userId);
+      return '「' + QUERY_PREFIX + '」後面要接問題喔。\n格式：' + QUERY_USAGE;
+    }
+    return handleQuery_(text.slice(slash + 1).trim(), text, userId);
+  }
+
   var route = ROUTE_TABLE[prefix];
 
   if (!route) {
@@ -379,6 +422,358 @@ function firstLine_(text) {
 }
 
 /* ========================================================================== */
+/* 查詢 MVP（ADR-006 §B）                                                      */
+/* ========================================================================== */
+
+/**
+ * 「查/問題」的完整流程：組上下文 → 呼叫 Gemini → 回覆 → 寫 log。
+ * 全程不寫任何資料列，所以 logs 的 target_row 一律留空。
+ */
+function handleQuery_(question, rawText, userId) {
+  if (!question) {
+    logTransaction_(QUERY_LOG_SOURCE, '失敗', rawText, '缺少問題內容', '', '', userId);
+    return '要問什麼呢？\n格式：' + QUERY_USAGE;
+  }
+
+  var key = geminiKey_();
+  if (!key) {
+    // 這不是「AI 暫時無法回應」——是根本還沒設定，講清楚才知道要去哪裡修
+    console.log('查詢略過：指令碼屬性 GEMINI_API_KEY 不存在或是空字串');
+    logTransaction_(QUERY_LOG_SOURCE, '失敗', rawText, 'GEMINI_API_KEY 未設定', '', '', userId);
+    return 'AI 查詢還沒設定完成（缺 GEMINI_API_KEY）。';
+  }
+
+  var context;
+  try {
+    context = buildQueryContext_();
+  } catch (err) {
+    console.log('查詢組資料失敗：' + err);
+    logTransaction_(QUERY_LOG_SOURCE, '失敗', rawText, '讀取資料失敗',
+      String(err && err.stack || err), '', userId);
+    return '讀不到資料，請稍後再試。';
+  }
+
+  var res = callGemini_(key, buildQueryPrompt_(context, question));
+  if (!res.ok) {
+    // 對外統一口徑，對內留完整證據——安靜的失敗是最貴的那種
+    logTransaction_(QUERY_LOG_SOURCE, '失敗', rawText, res.reason, res.detail, '', userId);
+    return GEMINI_TIMEOUT_REPLY;
+  }
+
+  logTransaction_(QUERY_LOG_SOURCE, '成功', rawText, '已回覆：' + truncate_(question, 40), '', '', userId);
+  return res.text;
+}
+
+function geminiKey_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  // 從網頁複製常會帶到換行或空白，前後修掉（比照 LINE 權杖的處理）
+  return raw ? String(raw).trim() : '';
+}
+
+function geminiModel_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('GEMINI_MODEL');
+  var model = raw ? String(raw).trim() : '';
+  return model || GEMINI_MODEL_DEFAULT;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 資料組裝                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 把一張分頁讀成物件陣列，欄位名取自實際表頭列。
+ * 找不到分頁或只有表頭時回空陣列——查詢少一類資料仍該能回答，不該整個炸掉。
+ */
+function readSheet_(sheetName) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) return [];
+
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol === 0) return [];
+
+  var values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+  var headers = values[0].map(function (h) { return String(h).trim(); });
+
+  return values.slice(1).map(function (row) {
+    var obj = {};
+    for (var i = 0; i < headers.length; i++) obj[headers[i]] = row[i];
+    return obj;
+  });
+}
+
+/** Sheet 的日期欄可能回 Date 物件也可能回字串，兩種都要吃得下 */
+function toDateKey_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  return String(v || '').slice(0, 10);
+}
+
+function windowStartKey_() {
+  var d = new Date();
+  d.setDate(d.getDate() - QUERY_WINDOW_DAYS);
+  return dateKey_(d);
+}
+
+/**
+ * 組出要送給 AI 的上下文。
+ *
+ * 記帳走「彙總」而非逐筆，這是刻意的：逐筆一旦被筆數上限截斷，AI 會拿到半個月的
+ * 資料卻不知道自己拿的是半個月，然後自信地回答「這個月花了 X 元」——那個數字是錯的。
+ * 答錯比答不出來更糟。彙總在 Apps Script 端算完再送，總額永遠精確，也只佔十來行。
+ * 代價是問不了「上週四那筆 120 是什麼」這種單筆細節，這是已知且接受的取捨。
+ */
+function buildQueryContext_() {
+  var since = windowStartKey_();
+  var today = dateKey_(new Date());
+
+  return {
+    since: since,
+    today: today,
+    expenses: summarizeExpenses_(readSheet_('expenses'), since),
+    tasks: collectTasks_(readSheet_('tasks'), since),
+    reviews: collectReviews_(readSheet_('reviews'), since),
+    moods: summarizeMoods_(readSheet_('moods'), since)
+  };
+}
+
+/** expenses → 分類小計 + 總計 + 筆數（完整不截斷） */
+function summarizeExpenses_(rows, since) {
+  var acc = {
+    expense: { total: 0, count: 0, byCat: {} },
+    income: { total: 0, count: 0, byCat: {} }
+  };
+  var seen = 0;
+
+  rows.forEach(function (r) {
+    var date = toDateKey_(r.expense_date);
+    if (!date || date < since) return;
+    var type = String(r.type || '').trim() === 'income' ? 'income' : 'expense';
+    var amount = Number(r.amount) || 0;
+    var cat = String(r.category || '其他').trim() || '其他';
+
+    acc[type].total += amount;
+    acc[type].count += 1;
+    acc[type].byCat[cat] = (acc[type].byCat[cat] || { sum: 0, n: 0 });
+    acc[type].byCat[cat].sum += amount;
+    acc[type].byCat[cat].n += 1;
+    seen += 1;
+  });
+
+  acc.seen = seen;
+  return acc;
+}
+
+/**
+ * tasks → 逐筆。
+ *
+ * 未完成的任務刻意不受 30 天窗口限制：ADR 特別標了「含未完成」，而未完成是一種
+ * 持續狀態，不是時點事件——三個月前沒做完的事，今天問「還有什麼沒做完」時仍然算數。
+ * 窗口只套用在已完成的任務上，那些才是「最近做了什麼」的素材。
+ */
+function collectTasks_(rows, since) {
+  var open = [], done = [];
+
+  rows.forEach(function (r) {
+    var text = String(r.text || '').trim();
+    if (!text) return;
+    var isDone = r.is_completed === true || String(r.is_completed).toLowerCase() === 'true';
+    var priority = String(r.priority || 'M').trim().toUpperCase();
+    var created = toDateKey_(r.created_at);
+    var item = { text: text, priority: PRIORITIES.indexOf(priority) === -1 ? 'M' : priority, created: created };
+
+    if (isDone) {
+      if (created && created >= since) done.push(item);
+    } else {
+      open.push(item);
+    }
+  });
+
+  // 未完成依優先度排序，額度不夠時先被砍的是低優先度的
+  var rank = { H: 0, M: 1, L: 2 };
+  open.sort(function (a, b) { return rank[a.priority] - rank[b.priority]; });
+  done.sort(function (a, b) { return String(b.created).localeCompare(String(a.created)); });
+
+  return { open: open, done: done };
+}
+
+function collectReviews_(rows, since) {
+  return rows.filter(function (r) {
+    var date = toDateKey_(r.review_date);
+    return date && date >= since;
+  }).sort(function (a, b) {
+    return toDateKey_(b.review_date).localeCompare(toDateKey_(a.review_date));
+  });
+}
+
+/** moods → 平均與筆數。逐筆送沒有意義，趨勢才有 */
+function summarizeMoods_(rows, since) {
+  var sum = 0, n = 0;
+  rows.forEach(function (r) {
+    var date = toDateKey_(r.mood_date);
+    if (!date || date < since) return;
+    var level = Number(r.level);
+    if (!isFinite(level)) return;
+    sum += level; n += 1;
+  });
+  return { count: n, avg: n ? Math.round((sum / n) * 10) / 10 : 0 };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Prompt                                                                      */
+/* -------------------------------------------------------------------------- */
+
+function buildQueryPrompt_(ctx, question) {
+  var lines = [];
+
+  lines.push('你是 Neil 個人系統的查詢助理。以下是他的資料，請用繁體中文回答最後的問題。');
+  lines.push('');
+  lines.push('規則：');
+  lines.push('- 只根據以下資料回答。資料裡沒有的就直說沒有，絕對不要編造或推估。');
+  lines.push('- 回答控制在 5 行以內，這則訊息會顯示在 LINE 上。');
+  lines.push('- 金額用阿拉伯數字加千分位，不要加貨幣符號以外的修飾。');
+  lines.push('- 不要重複問題本身，直接給答案。');
+  lines.push('');
+  lines.push('資料期間：' + ctx.since + ' ~ ' + ctx.today + '（近 ' + QUERY_WINDOW_DAYS + ' 天）');
+  lines.push('');
+
+  lines.push('【記帳彙總】此為期間內的完整統計，未經截斷，可直接引用');
+  lines.push(expenseBlock_(ctx.expenses.expense, '支出'));
+  lines.push(expenseBlock_(ctx.expenses.income, '收入'));
+  lines.push('');
+
+  // 逐筆的部分共用同一個上限：任務吃不完的額度才輪到複盤
+  var budget = QUERY_MAX_TOTAL_RECORDS;
+  var openTasks = ctx.tasks.open.slice(0, budget);
+  budget -= openTasks.length;
+  var doneTasks = ctx.tasks.done.slice(0, Math.max(0, Math.min(budget, 5)));
+  budget -= doneTasks.length;
+  var reviews = ctx.reviews.slice(0, Math.max(0, budget));
+
+  lines.push('【未完成任務】共 ' + ctx.tasks.open.length + ' 筆' +
+    (ctx.tasks.open.length > openTasks.length ? '，以下列出優先度最高的 ' + openTasks.length + ' 筆' : ''));
+  lines.push(openTasks.length
+    ? openTasks.map(function (t) { return '・[' + t.priority + '] ' + t.text; }).join('\n')
+    : '（沒有未完成的任務）');
+  lines.push('');
+
+  if (doneTasks.length) {
+    lines.push('【期間內已完成的任務】');
+    lines.push(doneTasks.map(function (t) { return '・' + t.created + ' ' + t.text; }).join('\n'));
+    lines.push('');
+  }
+
+  lines.push('【近期複盤】共 ' + ctx.reviews.length + ' 則' +
+    (ctx.reviews.length > reviews.length ? '，以下列出最近 ' + reviews.length + ' 則' : ''));
+  lines.push(reviews.length
+    ? reviews.map(function (r) {
+        return '・' + toDateKey_(r.review_date) +
+          '｜做得好：' + truncate_(String(r.good || '—'), 60) +
+          '｜卡住：' + truncate_(String(r.stuck || '—'), 60) +
+          '｜最重要：' + truncate_(String(r.most_important || '—'), 60);
+      }).join('\n')
+    : '（期間內沒有複盤記錄）');
+  lines.push('');
+
+  if (ctx.moods.count) {
+    lines.push('【心情】期間內記錄 ' + ctx.moods.count + ' 次，平均 ' + ctx.moods.avg + ' 分（1 最低、5 最高）');
+    lines.push('');
+  }
+
+  lines.push('問題：' + question);
+  return lines.join('\n');
+}
+
+function expenseBlock_(side, label) {
+  if (!side.count) return label + '合計 0 元（期間內沒有記錄）';
+
+  var cats = Object.keys(side.byCat).sort(function (a, b) {
+    return side.byCat[b].sum - side.byCat[a].sum;
+  });
+  var lines = [label + '合計 ' + formatAmount_(Math.round(side.total)) + ' 元（' + side.count + ' 筆）'];
+  cats.forEach(function (c) {
+    lines.push('・' + c + ' ' + formatAmount_(Math.round(side.byCat[c].sum)) + ' 元（' + side.byCat[c].n + ' 筆）');
+  });
+  return lines.join('\n');
+}
+
+function truncate_(text, max) {
+  var s = String(text || '');
+  return s.length > max ? s.slice(0, max) + '…' : s;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Gemini 呼叫                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 回 { ok:true, text } 或 { ok:false, reason, detail }。
+ *
+ * 每一種失敗都留 console.log，不靜默吞掉（ADR-006 §B）——
+ * 「額度用完」「模型名稱過期」「key 是別的專案的」從外面看全都是同一種安靜的失敗。
+ */
+function callGemini_(key, prompt) {
+  var model = geminiModel_();
+  var url = GEMINI_API_BASE + '/' + encodeURIComponent(model) + ':generateContent';
+
+  var res;
+  try {
+    res = UrlFetchApp.fetch(url, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'x-goog-api-key': key },
+      payload: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 800 }
+      }),
+      muteHttpExceptions: true
+    });
+  } catch (err) {
+    console.log('Gemini 連線失敗（model=' + model + '）：' + err);
+    return { ok: false, reason: '連線失敗', detail: String(err && err.stack || err) };
+  }
+
+  var code = res.getResponseCode();
+  var body = res.getContentText();
+
+  if (code !== 200) {
+    console.log('Gemini HTTP ' + code + '（model=' + model + '）：' + body);
+    // 404 幾乎都是模型名稱過期，指路比只回一句「失敗」有用
+    var hint = code === 404 ? '（模型「' + model + '」可能不存在，跑 diagnoseGemini 看可用清單）' : '';
+    return { ok: false, reason: 'HTTP ' + code + hint, detail: truncate_(body, 800) };
+  }
+
+  var parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch (err) {
+    console.log('Gemini 回應不是 JSON：' + truncate_(body, 500));
+    return { ok: false, reason: '回應格式錯誤', detail: truncate_(body, 800) };
+  }
+
+  var text = extractGeminiText_(parsed);
+  if (!text) {
+    // 內容被安全機制擋掉、或 maxOutputTokens 太小被切光，都會落在這裡
+    console.log('Gemini 回應沒有可用文字：' + truncate_(body, 800));
+    return { ok: false, reason: '回應沒有內容', detail: truncate_(body, 800) };
+  }
+  return { ok: true, text: text };
+}
+
+function extractGeminiText_(parsed) {
+  var candidates = (parsed && parsed.candidates) || [];
+  for (var i = 0; i < candidates.length; i++) {
+    var parts = (candidates[i].content && candidates[i].content.parts) || [];
+    var chunks = [];
+    for (var j = 0; j < parts.length; j++) {
+      if (parts[j] && typeof parts[j].text === 'string') chunks.push(parts[j].text);
+    }
+    var joined = chunks.join('').trim();
+    if (joined) return joined;
+  }
+  return '';
+}
+
+/* ========================================================================== */
 /* 回覆                                                                        */
 /* ========================================================================== */
 
@@ -389,6 +784,7 @@ function supportedPrefixesMessage_() {
       lines.push('・' + ROUTE_TABLE[prefix].usage);
     }
   }
+  lines.push('・' + QUERY_USAGE);
   lines.push('（輸入 whoami 可查自己的 userId）');
   return lines.join('\n');
 }
@@ -556,4 +952,85 @@ function diagnoseLogSheet() {
     console.log('✅ 欄位齊全（欄序不影響寫入，依表頭對位）');
   }
   console.log('目前資料列數（不含表頭）：' + (sheet.getLastRow() - 1));
+}
+
+/**
+ * Gemini 健檢——編輯器裡直接選這支執行，不需要重新部署。
+ *
+ * 存在的理由：模型 ID 會隨 Google 改版而變動，而查詢失敗時使用者只會看到
+ * 「AI 暫時無法回應」這一句統一口徑。這支直接問 Google 兩件事：
+ *   1. 這把 key 有效嗎
+ *   2. 這把 key 現在能用哪些模型（別猜，看清單）
+ *
+ * 記錄裡若出現 ✅ 但 LINE 仍回「AI 暫時無法回應」，看「執行項目」的
+ * Gemini HTTP 行，那裡有 Google 回傳的完整原文。
+ */
+function diagnoseGemini() {
+  var raw = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+
+  if (raw === null) {
+    console.log('❌ 找不到指令碼屬性 GEMINI_API_KEY（注意大小寫與前後空白）');
+    console.log('   到 專案設定 → 指令碼屬性 新增，值取自 Google AI Studio。');
+    return;
+  }
+
+  var key = String(raw).trim();
+  console.log('原始長度 ' + String(raw).length + '，去除前後空白後 ' + key.length);
+  if (String(raw).length !== key.length) {
+    console.log('⚠️ 權杖前後有多餘空白或換行，已在程式裡自動修掉，但建議回頭重存一次');
+  }
+  if (!key) {
+    console.log('❌ GEMINI_API_KEY 是空字串');
+    return;
+  }
+
+  var model = geminiModel_();
+  console.log('目前設定的模型：' + model +
+    (model === GEMINI_MODEL_DEFAULT ? '（程式預設值）' : '（來自指令碼屬性 GEMINI_MODEL）'));
+
+  var res = UrlFetchApp.fetch(GEMINI_API_BASE, {
+    method: 'get',
+    headers: { 'x-goog-api-key': key },
+    muteHttpExceptions: true
+  });
+
+  var code = res.getResponseCode();
+  console.log('ListModels 回應 HTTP ' + code);
+
+  if (code !== 200) {
+    console.log(res.getContentText());
+    if (code === 400 || code === 403) {
+      console.log('❌ key 無效或未啟用 Generative Language API。');
+      console.log('   確認貼的是 Google AI Studio 的 API key，且該專案已啟用此 API。');
+    }
+    return;
+  }
+
+  var models = [];
+  try {
+    var parsed = JSON.parse(res.getContentText());
+    models = (parsed.models || []).filter(function (m) {
+      // 只列真的能拿來生成內容的，避免 embedding 之類的混進來誤導
+      return (m.supportedGenerationMethods || []).indexOf('generateContent') !== -1;
+    }).map(function (m) {
+      return String(m.name || '').replace(/^models\//, '');
+    });
+  } catch (err) {
+    console.log('⚠️ 回應解析失敗：' + err);
+    return;
+  }
+
+  console.log('✅ key 有效。可用於 generateContent 的模型共 ' + models.length + ' 個：');
+  models.forEach(function (m) { console.log('   ・' + m); });
+
+  if (models.indexOf(model) === -1) {
+    console.log('');
+    console.log('❌ 目前設定的「' + model + '」不在上面的清單裡，查詢一定會失敗。');
+    console.log('   從清單挑一個（建議選 flash 類，免費額度較寬），');
+    console.log('   到 專案設定 → 指令碼屬性 新增 GEMINI_MODEL = 該模型 ID。');
+    console.log('   不需要改程式碼，也不需要重新部署後才生效。');
+  } else {
+    console.log('');
+    console.log('✅ 目前設定的模型在可用清單內，查詢應該可以正常運作。');
+  }
 }
