@@ -11,20 +11,28 @@
  *  4. 重新部署（部署 → 管理部署作業 → 編輯 → 版本選「新版本」→ 部署）
  *     ※ 網址不會變，PWA 端不需要改任何東西
  *
- * 【訊息格式】前綴/內容[/優先度]
- *    任務/買牛奶            → 優先度預設 M
- *    任務/報表開發/H        → 優先度 H
- *    任務/寫 A/B 測試報告   → 內容含「/」也不會被切壞（見 parseMessage_）
+ * 【訊息格式】
+ *    任務/買牛奶                  → 優先度預設 M
+ *    任務/報表開發/H              → 優先度 H
+ *    任務/寫 A/B 測試報告         → 內容含「/」也不會被切壞（見 parseMessage_）
+ *    記帳/120/餐飲                → 支出 120，分類餐飲
+ *    記帳/120/餐飲/星巴克         → 加備註
+ *    收入/50000/其他/九月薪水     → 同格式，只是 type 記成 income
  *
  * 【設計約束】
- *  - 純規則式字串切分，不接 AI 判讀（ADR：AI 判讀為獨立後續決策）
+ *  - 純規則式字串切分，不接 AI 判讀（ADR-006：查詢型 AI 為獨立分支，不走 ROUTE_TABLE）
  *  - 與 PWA 同步共用同一部署網址、同一 SECRET，只多一個判斷分支
  *  - id 用 Date.now()，與 index.html 全站慣例一致（不可用 UUID，
- *    否則 taskFromCloud 的 Number(r.id)||Date.now() 會讓每次啟動都重複塞一筆）
+ *    否則 taskFromCloud / expenseFromCloud 的 Number(r.id)||Date.now()
+ *    會讓 UUID 轉成 NaN，每次啟動都重複塞一筆）
  *  - 欄位順序以 Sheet 實際表頭列為準，不寫死欄序，日後調欄位不用改這裡
+ *  - 四種前綴（任務／記帳／收入／查詢）每次交易無論成敗都寫一列 logs（ADR-006 §D）
  */
 
 var LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
+
+/** 交易記錄分頁。表頭：id | ts | source | status | input | result | detail | target_row | user_id */
+var LOG_SHEET_NAME = 'logs';
 
 /**
  * 允許使用的 LINE userId 白名單。
@@ -38,16 +46,51 @@ var LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
 var ALLOWED_USER_IDS = [];
 
 /**
+ * 記帳分類固定清單，與 index.html 的 EXPENSE_CATEGORIES 一字不差。
+ *
+ * 不在清單內時一律打回並提示可用清單，不自動 fallback 成「其他」（ADR-006 §A）——
+ * 打錯字被靜靜歸進「其他」，比當場被退回難發現得多，而且事後對不出來。
+ */
+var EXPENSE_CATEGORIES = ['餐飲', '交通', '日常用品', '家庭', '醫療', '娛樂', '其他'];
+
+/**
  * 路由表。要新增分頁時只加一筆，不需動其他邏輯。
- *  sheetName : 目標分頁名稱
- *  build     : 把解析結果轉成 { 欄位名: 值 } 物件
- *  usage     : 前綴用錯時回覆的提示文字
+ *  sheetName   : 目標分頁名稱
+ *  usage       : 前綴用錯時回覆的提示文字
+ *  parse       : 把「前綴/」之後的字串拆成欄位物件；不合法時回 { error: '給使用者看的訊息' }
+ *  build       : 把解析結果轉成 { 欄位名: 值 }
+ *  format      : 成功時回給 LINE 的訊息
+ *  summary     : 成功時寫進 logs 的 result 摘要（一句話）
+ *  expenseType : 僅記帳/收入使用，決定 expenses.type 欄的值
+ *
+ * 記帳與收入共用 buildExpenseRow_ / parseExpense_，差別只在 expenseType。
  */
 var ROUTE_TABLE = {
   '任務': {
     sheetName: 'tasks',
     usage: '任務/內容[/H或M或L]',
-    build: buildTaskRow_
+    parse: parseMessage_,
+    build: buildTaskRow_,
+    format: formatTaskSuccess_,
+    summary: summarizeTask_
+  },
+  '記帳': {
+    sheetName: 'expenses',
+    usage: '記帳/金額/分類[/備註]',
+    expenseType: 'expense',
+    parse: parseExpense_,
+    build: buildExpenseRow_,
+    format: formatExpenseSuccess_,
+    summary: summarizeExpense_
+  },
+  '收入': {
+    sheetName: 'expenses',
+    usage: '收入/金額/分類[/備註]',
+    expenseType: 'income',
+    parse: parseExpense_,
+    build: buildExpenseRow_,
+    format: formatExpenseSuccess_,
+    summary: summarizeExpense_
   }
 };
 
@@ -118,7 +161,7 @@ function handleLineEvent_(event) {
     return;
   }
 
-  var reply = routeLineMessage_(text);
+  var reply = routeLineMessage_(text, userId);
   lineReply_(event.replyToken, reply);
 }
 
@@ -127,10 +170,13 @@ function handleLineEvent_(event) {
 /* ========================================================================== */
 
 /**
- * 規則式路由：查表 → 解析 → 寫入 → 回傳給使用者的訊息字串。
+ * 規則式路由：查表 → 解析 → 寫入 → 寫 log → 回傳給使用者的訊息字串。
  * 找不到前綴時回覆支援清單，絕不靜默失敗。
+ *
+ * 認得的前綴無論成敗都會留下一列 logs；認不得的前綴（打錯字、閒聊、貼到的網址）
+ * 刻意不寫——logs 是拿來回頭查「我那筆記到哪去了」的，灌進雜訊等於自廢武功。
  */
-function routeLineMessage_(rawText) {
+function routeLineMessage_(rawText, userId) {
   var text = String(rawText || '').trim();
   if (!text) return supportedPrefixesMessage_();
 
@@ -142,20 +188,25 @@ function routeLineMessage_(rawText) {
     return '沒有這個前綴喔。\n' + supportedPrefixesMessage_();
   }
   if (slash === -1) {
-    return '「' + prefix + '」後面要接內容喔。\n格式：' + route.usage;
+    var missing = '「' + prefix + '」後面要接內容喔。\n格式：' + route.usage;
+    logTransaction_(prefix, '失敗', text, '缺少內容', '', '', userId);
+    return missing;
   }
 
-  var parsed = parseMessage_(text.slice(slash + 1));
-  if (!parsed.content) {
-    return '內容是空的喔。\n格式：' + route.usage;
+  var parsed = route.parse(text.slice(slash + 1), route);
+  if (parsed.error) {
+    logTransaction_(prefix, '失敗', text, firstLine_(parsed.error), '', '', userId);
+    return parsed.error;
   }
 
   try {
-    var record = route.build(parsed);
-    appendToSheet_(route.sheetName, record);
-    return formatSuccess_(prefix, parsed);
+    var record = route.build(parsed, route);
+    var rowNumber = appendToSheet_(route.sheetName, record);
+    logTransaction_(prefix, '成功', text, route.summary(parsed, route), '', rowNumber, userId);
+    return route.format(parsed, route);
   } catch (err) {
     console.log('寫入失敗：' + err);
+    logTransaction_(prefix, '失敗', text, '寫入失敗', String(err && err.stack || err), '', userId);
     return '寫入失敗了：' + err.message;
   }
 }
@@ -167,7 +218,7 @@ function routeLineMessage_(rawText) {
  * 所以「寫 A/B 測試報告」不會被切壞，「報表開發/H」則正確取到 H。
  * 沒指定優先度時回 null，由 build 函式套用預設值。
  */
-function parseMessage_(rest) {
+function parseMessage_(rest, route) {
   var parts = String(rest).split('/');
   var priority = null;
 
@@ -178,9 +229,47 @@ function parseMessage_(rest) {
       parts.pop();
     }
   }
+
+  var content = parts.join('/').trim();
+  if (!content) {
+    return { error: '內容是空的喔。\n格式：' + route.usage };
+  }
+  return { content: content, priority: priority };
+}
+
+/**
+ * 把「金額/分類[/備註]」拆成 { amount, category, note }。
+ *
+ * 備註吃掉第三段之後的全部內容（含斜線），比照任務內容的處理精神——
+ * 「記帳/120/餐飲/買 A/B 兩份」的備註是「買 A/B 兩份」，不會被切壞。
+ *
+ * 這裡不套用 parseMessage_ 的優先度規則：記帳沒有優先度，
+ * 「記帳/120/餐飲/H」的備註就是字面上的「H」。
+ */
+function parseExpense_(rest, route) {
+  var parts = String(rest).split('/');
+
+  var rawAmount = String(parts[0] || '').trim();
+  var amount = Number(rawAmount);
+  if (!rawAmount || !isFinite(amount) || amount <= 0) {
+    return {
+      error: '金額要是大於 0 的數字喔' + (rawAmount ? '（你打的是「' + rawAmount + '」）' : '') +
+        '。\n格式：' + route.usage
+    };
+  }
+
+  var category = String(parts[1] || '').trim();
+  if (!category) {
+    return { error: '要指定分類喔。\n' + categoryListMessage_() + '\n格式：' + route.usage };
+  }
+  if (EXPENSE_CATEGORIES.indexOf(category) === -1) {
+    return { error: '沒有「' + category + '」這個分類喔。\n' + categoryListMessage_() };
+  }
+
   return {
-    content: parts.join('/').trim(),
-    priority: priority
+    amount: amount,
+    category: category,
+    note: parts.slice(2).join('/').trim()
   };
 }
 
@@ -199,12 +288,36 @@ function buildTaskRow_(parsed) {
   };
 }
 
+/** expenses：id | expense_date | type | category | amount | note | created_at */
+function buildExpenseRow_(parsed, route) {
+  var now = new Date();
+  return {
+    id: Date.now(),
+    expense_date: dateKey_(now),
+    type: route.expenseType,
+    category: parsed.category,
+    amount: parsed.amount,
+    note: parsed.note || '',
+    created_at: now.toISOString()
+  };
+}
+
+/**
+ * YYYY-MM-DD，用指令碼時區而非 UTC。
+ *
+ * 前端的 todayKey() 走的是裝置本地時區，這裡若用 toISOString().slice(0,10)，
+ * 台灣時間半夜 0 點到 8 點記的帳會被算成前一天，月結時對不起來。
+ */
+function dateKey_(d) {
+  return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
 /* ========================================================================== */
 /* Sheet 寫入                                                                  */
 /* ========================================================================== */
 
 /**
- * 依分頁「實際的表頭列」對位寫入一列。
+ * 依分頁「實際的表頭列」對位寫入一列，回傳寫入後的列號。
  * 欄序不寫死，日後在 Sheet 調整欄位順序也不必回頭改這支程式。
  */
 function appendToSheet_(sheetName, record) {
@@ -225,6 +338,44 @@ function appendToSheet_(sheetName, record) {
   });
 
   sheet.appendRow(row);
+  return sheet.getLastRow();
+}
+
+/* ========================================================================== */
+/* 交易記錄（logs 分頁）                                                        */
+/* ========================================================================== */
+
+/**
+ * 寫一列到 logs 分頁：id | ts | source | status | input | result | detail | target_row | user_id
+ *
+ * 整支包在 try/catch 裡，失敗只記 console 不拋出（ADR-006 §D）。
+ * log 是「事後回頭查」的東西，不是交易本身——logs 分頁沒建、表頭被改壞、
+ * 寫入超時，任何一種都不該讓一筆已經成功的記帳變成失敗，也不該害使用者收不到回覆。
+ *
+ * target_row 取 sheet.getLastRow()，理論上多筆並發寫同一張表會有競態；
+ * 以目前單人使用、LINE webhook 序列處理的情況不會發生，暫不加鎖（ADR-006 已記錄此假設邊界）。
+ */
+function logTransaction_(source, status, input, result, detail, targetRow, userId) {
+  try {
+    appendToSheet_(LOG_SHEET_NAME, {
+      id: Date.now(),
+      ts: new Date(),
+      source: source || '',
+      status: status || '',
+      input: input || '',
+      result: result || '',
+      detail: detail || '',
+      target_row: (targetRow || targetRow === 0) ? targetRow : '',
+      user_id: userId || ''
+    });
+  } catch (err) {
+    console.log('寫 logs 失敗（主流程不受影響）：' + err);
+  }
+}
+
+/** 取第一行——錯誤訊息常帶格式提示的第二行，logs 的 result 只要一句話。 */
+function firstLine_(text) {
+  return String(text || '').split('\n')[0];
 }
 
 /* ========================================================================== */
@@ -242,10 +393,36 @@ function supportedPrefixesMessage_() {
   return lines.join('\n');
 }
 
-function formatSuccess_(prefix, parsed) {
+function categoryListMessage_() {
+  return '目前可用分類：' + EXPENSE_CATEGORIES.join('、');
+}
+
+function formatTaskSuccess_(parsed) {
   var priority = parsed.priority || DEFAULT_PRIORITY;
   var lamp = { H: '🔴', M: '🟡', L: '🟢' }[priority] || '🟡';
-  return '✅ 已新增' + prefix + '\n' + lamp + ' ' + parsed.content;
+  return '✅ 已新增任務\n' + lamp + ' ' + parsed.content;
+}
+
+function formatExpenseSuccess_(parsed, route) {
+  var isIncome = route.expenseType === 'income';
+  var head = '✅ 已記錄' + (isIncome ? '收入' : '支出');
+  var line = (isIncome ? '+' : '-') + '$' + formatAmount_(parsed.amount) + '　' + parsed.category;
+  return parsed.note ? head + '\n' + line + '\n📝 ' + parsed.note : head + '\n' + line;
+}
+
+/** 千分位。小數點後不分節（邊界在「.」是 \b 而非 \B，不會被誤插）。 */
+function formatAmount_(n) {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function summarizeTask_(parsed) {
+  return '任務「' + parsed.content + '」／優先度 ' + (parsed.priority || DEFAULT_PRIORITY);
+}
+
+function summarizeExpense_(parsed, route) {
+  var label = route.expenseType === 'income' ? '收入' : '支出';
+  return label + ' ' + parsed.category + ' ' + parsed.amount +
+    (parsed.note ? '（' + parsed.note + '）' : '');
 }
 
 /**
@@ -343,4 +520,40 @@ function diagnoseLineToken() {
     console.log('❌ 權杖無效。確認貼的是 Messaging API 分頁最下方的');
     console.log('   Channel access token (long-lived)，不是 Channel secret。');
   }
+}
+
+/**
+ * logs 分頁健檢——同樣在編輯器裡直接執行，不需重新部署。
+ *
+ * 寫 log 的失敗是刻意被吞掉的（不能拖累主流程），所以「log 沒出現」在外面看起來
+ * 什麼事都沒發生。這支就是把那個安靜的失敗叫出來講話。
+ */
+function diagnoseLogSheet() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LOG_SHEET_NAME);
+  if (!sheet) {
+    console.log('❌ 找不到分頁「' + LOG_SHEET_NAME + '」，請先建立並貼上表頭列');
+    return;
+  }
+
+  var lastCol = sheet.getLastColumn();
+  if (sheet.getLastRow() === 0 || lastCol === 0) {
+    console.log('❌ 分頁「' + LOG_SHEET_NAME + '」是空的，缺表頭列');
+    return;
+  }
+
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) {
+    return String(h).trim();
+  });
+  console.log('目前表頭：' + headers.join(' | '));
+
+  var expected = ['id', 'ts', 'source', 'status', 'input', 'result', 'detail', 'target_row', 'user_id'];
+  var missing = expected.filter(function (k) { return headers.indexOf(k) === -1; });
+
+  if (missing.length) {
+    // 欄序不影響寫入（依表頭對位），但欄位缺了就是真的漏記，值得挑明
+    console.log('❌ 缺少欄位：' + missing.join('、'));
+  } else {
+    console.log('✅ 欄位齊全（欄序不影響寫入，依表頭對位）');
+  }
+  console.log('目前資料列數（不含表頭）：' + (sheet.getLastRow() - 1));
 }

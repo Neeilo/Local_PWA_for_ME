@@ -6,18 +6,22 @@
 
 ## 功能
 
-底部導覽（左→右）：**記帳、雜記 ｜ ⭕首頁 ｜ 任務、日誌**
+底部導覽（左→右）：**記帳、雜記 ｜ ⭕首頁 ｜ 任務、第 5 格**
+
+前四格固定，**第 5 格由使用者在首頁的「導覽版位」開關自選**（日誌／LOG／心情／成長 四選一，點了即時反映，不需儲存）。刻意不提供「不顯示」——導覽是左 2 ｜ ⭕首頁 ｜ 右 2 的對稱版型，少一格會讓圓心歪掉。
 
 1. 🧭 **首頁 Dashboard** — 本月支出總額 + 各類支出圓餅圖、未完成任務前 3 筆（依優先度）、今日指南針（可直接作答）
 2. 💰 **記帳** — 支出／收入、7 類分類、當月清單（可切換月份、可修改刪除）+ 當月小計
 3. ☑️ **任務紀錄** — 新增 / 勾選完成 / 刪除，含優先度紅🔴黃🟡綠🟢（點燈號循環切換）
 4. 🌙 **日誌** — 每日指南針（今日的刻意選擇）+ 複盤（做得好的 / 卡住的 / 明天最重要的一件事）
 5. 📎 **雜記** — 靈感與雜項，含 JSON 備份匯出
+6. 📋 **LOG** — LINE 快速輸入的交易記錄，成敗一眼可分、可依來源篩選、可「只看失敗」
+7. 💚 **心情紀錄** — 五級 + 備註，頂部近 14 天心情脈搏色條
+8. 🌱 **成長** — 週回顧（決策動機、驅動力來源、逃避偵測器）+ 輸出追蹤
 
-以下兩個模組以 feature flag 隱藏入口（`SHOW_MOOD` / `SHOW_GROWTH` = `false`），**程式碼、localStorage 與雲端分頁全數保留**，改一行即可重啟：
+4～8 共用第 5 格，同時只顯示一個。
 
-- 💚 **心情紀錄** — 五級 + 備註，頂部近 14 天心情脈搏色條
-- 🌱 **成長** — 週回顧（決策動機、驅動力來源、逃避偵測器）+ 輸出追蹤
+`SHOW_MOOD` / `SHOW_GROWTH` 兩個 feature flag 仍在，但自 [ADR-006] 起角色降級：從「這一頁存不存在」變成「這一頁要不要出現在開關的候選清單裡」。要不要現在佔用第 5 格，改由使用者自己決定，不必再改程式碼。
 
 ## 技術架構
 
@@ -25,7 +29,7 @@
 |---|---|
 | 前端 | 純 HTML / CSS / JS，單檔（`index.html`） |
 | 本地儲存 | `localStorage`，單一 JSON state key：`personal-os-state-v1` |
-| 雲端同步 | Google Apps Script + Google Sheets（tasks / reviews / moods / notes / expenses，載入時與回前景時 pull、儲存時 push） |
+| 雲端同步 | Google Apps Script + Google Sheets（tasks / reviews / moods / notes / expenses，載入時與回前景時 pull、儲存時 push；`logs` 唯讀不回推） |
 | PWA | `manifest.json` + Service Worker（`sw.js`，HTML network-first、其餘資產 cache-first） |
 | 部署 | GitHub Pages |
 
@@ -40,12 +44,27 @@ Google Sheets 各分頁欄位：
 | `moods` | `id \| mood_date \| level \| note` |
 | `notes` | `id \| text \| created_at` |
 | `expenses` | `id \| expense_date \| type \| category \| amount \| note \| created_at` |
+| `logs` | `id \| ts \| source \| status \| input \| result \| detail \| target_row \| user_id` |
+
+導覽版位開關存在獨立的 `localStorage` key `personal-os-nav-slot`，**刻意不放進 `state`**——`state` 會被 `pushAllToCloud` 整包推上雲端，而這是介面偏好，不需跨裝置一致（[ADR-006] §C）。
 
 `priority` 存 `H`/`M`/`L`，預設 `M`，無值的既有任務會在前端首次載入時自動補 `M`。`expenses.type` 為 `expense`/`income`，首頁圓餅圖只計 `expense`。Apps Script 的 `Code.gs` 為通用 `doGet`/`doPost`，新增分頁與欄位皆不需修改。
 
 同步時序：App 啟動與**回到前景**時都會 pull 補齊（只加不刪）。`save()` 的整包 `replaceAll` 會等待進行中的 pull 完成才送出——否則本機尚未補齊的 state 會覆寫掉雲端的新資料（例如從 LINE 快速輸入新增的任務）。回前景的 pull 有 5 秒節流。
 
-LINE 快速輸入（`任務/內容[/H|M|L]` 寫入 tasks 分頁）的 Apps Script 端程式碼鏡像在 `apps-script/`，安裝與除錯見該目錄的 README。
+LINE 快速輸入的 Apps Script 端程式碼鏡像在 `apps-script/`，安裝與除錯見該目錄的 README。支援前綴：
+
+| 前綴 | 格式 | 寫入 |
+|---|---|---|
+| `任務` | `任務/內容[/H\|M\|L]` | `tasks` |
+| `記帳` | `記帳/金額/分類[/備註]` | `expenses`（`type=expense`） |
+| `收入` | `收入/金額/分類[/備註]` | `expenses`（`type=income`） |
+
+分類必須是記帳模組固定 7 類其中之一，打錯字一律打回並附可用清單，**不會自動歸進「其他」**。
+
+四種前綴（含未來的 `查`）每次交易無論成敗都寫一列 `logs`，供除錯與狀態回查。寫 log 包 try/catch，失敗只記 `console.log`、不拖累主流程——代價是「log 沒出現」看起來什麼事都沒發生，所以另備 `diagnoseLogSheet` 健檢函式。
+
+`logs` 是 Apps Script 單向寫入的唯讀記錄，**不進前端 `state`、不進 `pushAllToCloud`**：前端存檔是整包 `replaceAll`，一旦回推就會把 Apps Script 寫的記錄整包洗掉。
 
 ## 檔案結構
 
@@ -83,3 +102,9 @@ apps-script/    Apps Script 端程式碼鏡像（LINE 路由；非部署來源�
   - ✅ 心情與成長分頁 feature flag 隱藏（資料三層全保留）
   - ✅ 記帳模組 v1（極簡版：新增 + 當月清單 + 當月小計）
   - ⏳ 未來票（低優先）：Scriptable iOS 主畫面 widget（PWA 原生 widget 已查證不可行）
+- **v4 改版**（依 [ADR-006]，2026-09-10）：🚧 進行中
+  - ✅ A：LINE 記帳／收入前綴（`記帳`、`收入` 寫入 expenses 分頁）
+  - ✅ D：`logs` 分頁交易記錄（四種前綴、成敗都寫、失敗不拖累主流程）
+  - ✅ C：導覽版位開關（第 5 格四選一，即時反映、只存本機）+ LOG 頁面
+  - ⏸ B：查詢 MVP（`查` 前綴 + Gemini API）— 待 Gemini API Key 到位
+  - ⏳ 未來票：`logs` 列數上限與自動修剪（構想：超過 500 列自動修剪）
