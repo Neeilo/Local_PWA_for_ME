@@ -305,20 +305,26 @@
   /* ---------- 首頁：導覽版位開關（ADR-006 §C） ---------- */
   .slot-card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px;}
   .slot-card h2{margin:0 0 10px; font-size:15px; font-weight:600; color:var(--muted);}
-  .slot-fixed{font-size:13px; color:var(--muted); padding-bottom:10px; border-bottom:1px solid var(--line); margin-bottom:10px;}
+  .slot-fixed{font-size:12px; color:var(--muted); padding-bottom:10px; border-bottom:1px solid var(--line); margin-bottom:10px;}
   .slot-fixed b{color:var(--ink); font-weight:600;}
   .slot-hint{font-size:12px; color:var(--muted); margin:8px 0 0;}
-  .slot-opts{display:flex; flex-wrap:wrap; gap:8px;}
-  .slot-opt{
-    display:flex; align-items:center; gap:6px; cursor:pointer;
-    border:1px solid var(--line); border-radius:10px; padding:8px 12px;
-    font-size:14px; background:var(--bg); user-select:none;
+  .place-head{display:flex; align-items:baseline; justify-content:space-between; gap:8px;}
+  .place-head h2{margin:0 0 10px;}
+  .place-count{font-size:12px; color:var(--muted); white-space:nowrap;}
+  .place-row{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:7px 0; border-bottom:1px solid var(--line);
   }
-  .slot-opt input{position:absolute; opacity:0; width:0; height:0;}
-  /* 選取態靠 :has()——不支援的瀏覽器會 fallback 成沒有highlight，
-     但 radio 本身仍在，導覽照樣切換，功能不會壞 */
-  .slot-opt:has(input:checked){border-color:var(--accent); background:var(--accent-soft); color:var(--accent); font-weight:600;}
-  .slot-opt:has(input:focus-visible){outline:2px solid var(--accent); outline-offset:2px;}
+  .place-row:last-child{border-bottom:none;}
+  .place-name{font-size:14px; white-space:nowrap;}
+  .place-btns{display:flex; gap:4px; flex:none;}
+  .place-btns button{
+    min-width:44px; padding:6px 8px; font-size:13px; font-weight:600;
+    background:var(--bg); border:1px solid var(--line); border-radius:8px; color:var(--muted);
+  }
+  .place-btns button.sel{border-color:var(--accent); background:var(--accent-soft); color:var(--accent);}
+  /* 已滿的那一側：仍可點（點了會給提示），但先讓人看出來為什麼選不動 */
+  .place-btns button.full{opacity:.4;}
 
   /* ---------- LOG 頁（ADR-006 §C） ---------- */
   .log-summary{
@@ -392,12 +398,15 @@
       <div id="dashCompass"></div>
     </div>
 
-    <!-- ④ 導覽版位開關（ADR-006 §C）：勾選即時反映，不需儲存 -->
+    <!-- ④ 導覽配置：點了即時反映，不需儲存 -->
     <div class="slot-card">
-      <h2>⚙️ 導覽版位</h2>
-      <div class="slot-fixed">固定　<b>💰 記帳</b>　<b>📎 雜記</b>　<b>🧭 首頁</b>　<b>☑️ 任務</b></div>
-      <div class="slot-opts" id="slotOpts"></div>
-      <p class="slot-hint">第 5 格顯示哪一個。點了就換，不用儲存；只存這支手機，不同步雲端。</p>
+      <div class="place-head">
+        <h2>⚙️ 導覽配置</h2>
+        <span class="place-count" id="placeCount"></span>
+      </div>
+      <div class="slot-fixed">🧭 首頁固定在圓心，其餘自由排左右</div>
+      <div id="placeRows"></div>
+      <p class="slot-hint">每側最多 3 個。點了就換，不用儲存；只存這支手機，不同步雲端。</p>
     </div>
   </section>
 
@@ -503,6 +512,8 @@
   <section class="view" id="view-notes">
     <div class="card">
       <textarea id="noteInput" placeholder="任何想法、待辦靈感、雜項…"></textarea>
+      <!-- 類別選填：選了就在內容前面加上 [類別]，不選就是純雜記 -->
+      <div class="output-type-row" id="noteTagRow"></div>
       <div style="margin-top:10px"><button class="btn" onclick="addNote()">存下來</button></div>
     </div>
     <div class="card">
@@ -514,69 +525,6 @@
       <p style="font-size:14px;color:var(--muted);margin:0 0 10px">資料存在這支手機的瀏覽器裡，建議定期匯出備份。</p>
       <button class="btn" onclick="exportData()">匯出 JSON 備份</button>
     </div>
-  </section>
-
-  <!-- 成長：週回顧 + 輸出追蹤 -->
-  <section class="view" id="view-growth">
-
-    <!-- 週回顧 -->
-    <div class="section-title">📊 週回顧</div>
-    <div class="card">
-      <h2 id="weeklyTitle">本週決策回顧<span class="saved-tag" id="weeklySaved"></span></h2>
-
-      <div class="field-label">這週做了哪些重要決定？</div>
-      <textarea id="wkDecisions" placeholder="列出 1～3 個這週有意識做的選擇…"></textarea>
-
-      <div class="field-label">我為什麼這樣選？</div>
-      <textarea id="wkWhy" placeholder="動機是什麼？有沒有哪個選擇是靠直覺、哪個是靠分析？"></textarea>
-
-      <div class="field-label">驅動力來源</div>
-      <div class="toggle-row" id="driveToggle">
-        <button class="toggle-btn" data-val="fear" onclick="pickDrive('fear',this)">😰 恐懼驅動</button>
-        <button class="toggle-btn" data-val="value" onclick="pickDrive('value',this)">🌱 價值觀驅動</button>
-        <button class="toggle-btn" data-val="mix" onclick="pickDrive('mix',this)">🔀 兩者都有</button>
-      </div>
-
-      <!-- 逃避偵測器 -->
-      <div class="detector-box">
-        <div class="detector-label">🔍 逃避偵測器</div>
-        <p style="font-size:13px;color:#6A5000;margin:0 0 8px">這週的分析，是在服務選擇，還是在延後選擇？</p>
-        <div class="detector-toggle" id="detectToggle">
-          <button class="d-btn" data-val="serve" onclick="pickDetect('serve',this)">✅ 服務選擇</button>
-          <button class="d-btn" data-val="delay" onclick="pickDetect('delay',this)">⏸️ 延後選擇</button>
-        </div>
-      </div>
-
-      <div class="field-label" style="margin-top:12px;">下週最值得投入的一件事</div>
-      <textarea id="wkNext" placeholder="只選一件，讓它成為下週的北極星…"></textarea>
-
-      <div style="margin-top:12px"><button class="btn" onclick="saveWeekly()">儲存本週回顧</button></div>
-    </div>
-
-    <div class="card">
-      <h2>過去的週回顧</h2>
-      <div id="weeklyList"></div>
-    </div>
-
-    <!-- 輸出追蹤 -->
-    <div class="section-title" style="margin-top:8px;">🌱 輸出追蹤</div>
-    <div class="card">
-      <h2>記錄一個創造</h2>
-      <div class="output-type-row" id="outputTypeBtns">
-        <button class="type-btn" data-val="文章" onclick="pickOutputType('文章',this)">文章</button>
-        <button class="type-btn" data-val="作品" onclick="pickOutputType('作品',this)">作品</button>
-        <button class="type-btn" data-val="系統" onclick="pickOutputType('系統',this)">系統</button>
-        <button class="type-btn" data-val="分享" onclick="pickOutputType('分享',this)">分享</button>
-        <button class="type-btn" data-val="其他" onclick="pickOutputType('其他',this)">其他</button>
-      </div>
-      <input type="text" id="outputInput" placeholder="這個輸出叫什麼、做了什麼？" style="margin-bottom:8px;">
-      <button class="btn" onclick="addOutput()">記下這個創造</button>
-    </div>
-    <div class="card">
-      <h2>我創造了什麼</h2>
-      <div id="outputList"></div>
-    </div>
-
   </section>
 
   <!-- LOG：LINE 快速輸入的交易記錄（ADR-006 §C／§D）
@@ -600,13 +548,11 @@
   <button data-view="notes" onclick="switchView('notes',this)"><span class="ico">📎</span>雜記</button>
   <button data-view="home" class="home-btn active" onclick="switchView('home',this)"><span class="ico">🧭</span>首頁</button>
   <button data-view="tasks" onclick="switchView('tasks',this)"><span class="ico">☑️</span>任務</button>
-  <!-- 第 5 格：以下四個永遠只有一個可見，由首頁的「導覽版位」開關決定（ADR-006 §C）。
-       DOM 順序即顯示順序，四者都排在「任務」之後，所以不論選誰都落在最右格，
-       維持「左 2 ｜ ⭕首頁 ｜ 右 2」的對稱版型。 -->
+  <!-- 圓心固定在中央；其餘按鈕的左右歸屬與顯示與否由首頁的「導覽配置」決定，
+       DOM 位置在 applyNavPlacement() 裡重排（這裡的順序只影響 JS 執行前的第一幀）。 -->
   <button data-view="review" hidden onclick="switchView('review',this)"><span class="ico">🌙</span>日誌</button>
   <button data-view="logs" hidden onclick="switchView('logs',this)"><span class="ico">📋</span>LOG</button>
   <button data-view="mood" hidden onclick="switchView('mood',this)"><span class="ico">💚</span>心情</button>
-  <button data-view="growth" hidden onclick="switchView('growth',this)"><span class="ico">🌱</span>成長</button>
 </nav>
 
 <div class="toast" id="toast"></div>
@@ -616,32 +562,40 @@ const STORAGE_KEY = 'personal-os-state-v1'; // 保持相同 key，向下相容
 const CLOUD_URL = '__CLOUD_URL__';
 const CLOUD_SECRET = '__CLOUD_SECRET__';
 const MOOD_EMOJI = ['😞','😕','😐','🙂','😄'];
-const OUTPUT_TYPES = ['文章','作品','系統','分享','其他'];
 
-/* ---------- Feature flags（ADR-004：只藏入口，程式碼與資料全保留） ----------
-   ADR-006 §C 起，這兩個 flag 的角色從「這一頁存不存在」降級為
-   「這一頁要不要出現在導覽版位開關的候選清單裡」。
-   要不要現在佔用第 5 格，改由使用者在首頁自己決定，不必再改程式碼。 */
-const SHOW_MOOD   = true;
-const SHOW_GROWTH = true;
+/* ---------- 導覽配置（左／右／不顯示） ----------
+   圓心「首頁」固定在中央，不參與配置。其餘功能各自選擇靠左、靠右或不顯示，
+   每側最多 3 個——上限來自版面：左 3 ｜ ⭕ ｜ 右 3 是 320px 螢幕仍讀得清楚的極限。
 
-/* ---------- 導覽版位開關（ADR-006 §C） ----------
-   固定四格：記帳、雜記、⭕首頁、任務。第 5 格由使用者從下列候選中單選其一。
-   刻意不提供「不顯示」：導覽是「左 2 ｜ ⭕首頁 ｜ 右 2」的對稱版型，
-   少一格會讓圓心歪掉，而圓心正是 v3 導覽重構的視覺核心。
+   同一側的排列順序依 NAV_ITEMS 的定義順序，不另外提供拖曳排序：手機上的拖曳
+   很難做得好用，而這裡要解決的是「慣用手拿不拿得到」，左右歸屬就足夠了。
 
-   開關狀態存獨立的 localStorage key，刻意不放進 state——
-   state 會被 pushAllToCloud 整包推上雲端，而這是介面偏好，不需跨裝置一致（ADR-006 §C）。 */
-const NAV_SLOT_KEY = 'personal-os-nav-slot';
-const NAV_SLOT_CANDIDATES = [
-  { view:'review', icon:'🌙', label:'日誌', enabled:true },
-  { view:'logs',   icon:'📋', label:'LOG',  enabled:true },
-  { view:'mood',   icon:'💚', label:'心情', enabled:SHOW_MOOD },
-  { view:'growth', icon:'🌱', label:'成長', enabled:SHOW_GROWTH }
-].filter(o=>o.enabled);
-// 預設維持日誌，與 ADR-006 之前的版面一致——升級不該偷偷換掉使用者原本的導覽
-const DEFAULT_NAV_SLOT = 'review';
-let navSlot = DEFAULT_NAV_SLOT;
+   狀態存獨立的 localStorage key，刻意不放進 state——state 會被 pushAllToCloud
+   整包推上雲端，而這是介面偏好，不需跨裝置一致。 */
+const NAV_PLACEMENT_KEY = 'personal-os-nav-placement';
+const NAV_SLOT_KEY_LEGACY = 'personal-os-nav-slot';   // 舊的單選版位，僅供一次性遷移
+const NAV_SIDE_LIMIT = 3;
+const NAV_SIDE_LABEL = { left:'左', right:'右', off:'隱藏' };
+const NAV_ITEMS = [
+  { view:'expenses', icon:'💰', label:'記帳' },
+  { view:'notes',    icon:'📎', label:'雜記' },
+  { view:'tasks',    icon:'☑️', label:'任務' },
+  { view:'review',   icon:'🌙', label:'日誌' },
+  { view:'logs',     icon:'📋', label:'LOG'  },
+  { view:'mood',     icon:'💚', label:'心情' }
+];
+// 預設就是改版前的版面（左 2 ｜ ⭕ ｜ 右 2）：升級不該偷偷換掉使用者習慣的導覽
+const DEFAULT_PLACEMENT = {
+  expenses:'left', notes:'left', tasks:'right', review:'right', logs:'off', mood:'off'
+};
+let navPlacement = Object.assign({}, DEFAULT_PLACEMENT);
+
+/* ---------- 雜記類別（原成長頁的「創造」類型） ----------
+   選填。選了就在內容前面加上 [類別] 存進 notes 既有的 text 欄位，
+   分頁與欄位一個字都不用改。代價是類別從「資料」降級成「約定」，
+   要統計就得靠字串解析——對這個規模的系統划算。 */
+const NOTE_TAGS = ['文章','作品','系統','分享','其他'];
+let selectedNoteTag = null;
 
 /* ---------- LOG 頁（ADR-006 §C／§D） ---------- */
 const LOG_SOURCES = ['任務','記帳','收入','查詢'];
@@ -670,12 +624,9 @@ const CATEGORY_COLOR = {
 };
 const MAX_DONUT_SEGMENTS = 6; // 超過的尾端併入「其他」，維持一眼可讀
 
-const EMPTY_STATE = () => ({ tasks:[], reviews:{}, moods:[], notes:[], weeklyReviews:[], outputs:[], expenses:[] });
+const EMPTY_STATE = () => ({ tasks:[], reviews:{}, moods:[], notes:[], expenses:[] });
 let state = EMPTY_STATE();
 let selectedMood = null;
-let selectedDrive = null;
-let selectedDetect = null;
-let selectedOutputType = null;
 let newTaskPriority = DEFAULT_PRIORITY;
 let expType = 'expense';
 let expCategory = null;
@@ -849,7 +800,7 @@ function exportData(){
 }
 
 /* ---------- 導覽 ---------- */
-const TITLES={home:'首頁',expenses:'記帳',tasks:'任務',review:'日誌',mood:'心情',notes:'雜記',growth:'成長',logs:'LOG'};
+const TITLES={home:'首頁',expenses:'記帳',tasks:'任務',review:'日誌',mood:'心情',notes:'雜記',logs:'LOG'};
 function switchView(name,btn){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.getElementById('view-'+name).classList.add('active');
@@ -857,13 +808,12 @@ function switchView(name,btn){
   if(btn) btn.classList.add('active');
   document.getElementById('viewTitle').textContent=TITLES[name];
   // 心情脈搏隸屬心情模組：心情沒被調進導覽時，它的視覺元件也不該自己跑出來
-  const showPulse = navSlot==='mood' && (name==='tasks'||name==='mood');
+  const showPulse = navPlacement.mood!=='off' && (name==='tasks'||name==='mood');
   document.getElementById('pulse').style.display=showPulse?'flex':'none';
   document.getElementById('pulseLabel').style.display=showPulse?'block':'none';
   if(name==='home') renderDashboard();
   if(name==='expenses') renderExpenseView();
   if(name==='review') loadTodayReview();
-  if(name==='growth') loadThisWeekly();
   if(name==='logs') openLogsView();
   window.scrollTo(0,0);
 }
@@ -873,45 +823,7 @@ function goView(name){
 }
 
 /* ---------- 導覽版位開關（ADR-006 §C） ---------- */
-function loadNavSlot(){
-  let saved=null;
-  // 私密瀏覽或封鎖網站資料時，讀 localStorage 會直接 throw
-  try{ saved=localStorage.getItem(NAV_SLOT_KEY); }catch(e){}
-  const valid=NAV_SLOT_CANDIDATES.some(o=>o.view===saved);
-  // 存的值失效（候選被 flag 關掉、或手動改壞）就回到預設，不要留下一個切不掉的空導覽
-  navSlot = valid ? saved : DEFAULT_NAV_SLOT;
-}
-function setNavSlot(view){
-  if(!NAV_SLOT_CANDIDATES.some(o=>o.view===view)) return;
-  navSlot=view;
-  try{ localStorage.setItem(NAV_SLOT_KEY,view); }catch(e){}
-  applyNavSlot();
-  // 不必處理「正在看的那頁被切出導覽」：開關只長在首頁上，動它的時候人必然在首頁，
-  // 被切走的絕不會是當前頁。哪天把開關搬到別處，這裡就要補上退回首頁。
-}
 /* 把開關狀態實際套到導覽列：候選之中只有選中的那個可見 */
-function applyNavSlot(){
-  NAV_SLOT_CANDIDATES.forEach(o=>{
-    const btn=document.querySelector(`nav button[data-view="${o.view}"]`);
-    if(btn) btn.hidden = o.view!==navSlot;
-  });
-  if(navSlot!=='mood'){
-    document.getElementById('pulse').style.display='none';
-    document.getElementById('pulseLabel').style.display='none';
-  }
-  renderSlotOpts();
-}
-function renderSlotOpts(){
-  const box=document.getElementById('slotOpts');
-  if(!box) return;
-  box.innerHTML=NAV_SLOT_CANDIDATES.map(o=>
-    `<label class="slot-opt">
-       <input type="radio" name="navSlot" value="${o.view}" ${o.view===navSlot?'checked':''}
-              onchange="setNavSlot('${o.view}')">
-       <span>${o.icon} ${esc(o.label)}</span>
-     </label>`
-  ).join('');
-}
 
 /* ---------- 任務 ---------- */
 function pickNewPrio(p){
@@ -1051,13 +963,29 @@ function renderPulse(){
 }
 
 /* ---------- 雜記 ---------- */
+/* 類別按鈕可再點一次取消——它是選填的，沒有「取消」就等於強迫二選一 */
+function pickNoteTag(val){
+  selectedNoteTag = (selectedNoteTag===val) ? null : val;
+  renderNoteTagRow();
+}
+function renderNoteTagRow(){
+  const el=document.getElementById('noteTagRow');
+  if(!el) return;
+  el.innerHTML=NOTE_TAGS.map(function(t){
+    return '<button class="type-btn'+(selectedNoteTag===t?' sel':'')+'" onclick="pickNoteTag(\''+t+'\')">'+esc(t)+'</button>';
+  }).join('');
+}
 function addNote(){
   const inp=document.getElementById('noteInput');
   const txt=inp.value.trim();
   if(!txt) return;
-  state.notes.unshift({id:Date.now(),txt,ts:Date.now()});
+  // 類別存成內容前綴，notes 分頁的欄位一個字都不用改
+  const tag=selectedNoteTag;
+  state.notes.unshift({id:Date.now(), txt: tag ? '['+tag+'] '+txt : txt, ts:Date.now()});
   inp.value='';
-  save(); renderNotes(); toast('已存入雜記');
+  selectedNoteTag=null;
+  renderNoteTagRow();
+  save(); renderNotes(); toast(tag ? '已記下這個'+tag : '已存入雜記');
 }
 function delNote(id){
   state.notes=state.notes.filter(n=>n.id!==id);
@@ -1077,106 +1005,10 @@ function renderNotes(){
 }
 
 /* ---------- 週回顧 ---------- */
-function pickDrive(val,btn){
-  selectedDrive=val;
-  document.querySelectorAll('#driveToggle .toggle-btn').forEach(b=>{
-    b.className='toggle-btn';
-    if(b.dataset.val===val) b.className=`toggle-btn sel-${val}`;
-  });
-}
-function pickDetect(val,btn){
-  selectedDetect=val;
-  document.querySelectorAll('#detectToggle .d-btn').forEach(b=>{
-    b.className='d-btn';
-    if(b.dataset.val===val) b.className='d-btn sel';
-  });
-}
-function loadThisWeekly(){
-  const wk=state.weeklyReviews.find(w=>w.weekKey===thisWeekKey());
-  document.getElementById('wkDecisions').value=wk?wk.decisions||'':'';
-  document.getElementById('wkWhy').value=wk?wk.why||'':'';
-  document.getElementById('wkNext').value=wk?wk.next||'':'';
-  document.getElementById('weeklySaved').textContent=wk?'已儲存 ✓':'';
-  selectedDrive=wk?wk.drive||null:null;
-  selectedDetect=wk?wk.detect||null:null;
-  // reset buttons
-  document.querySelectorAll('#driveToggle .toggle-btn').forEach(b=>{
-    b.className='toggle-btn';
-    if(selectedDrive&&b.dataset.val===selectedDrive) b.className=`toggle-btn sel-${selectedDrive}`;
-  });
-  document.querySelectorAll('#detectToggle .d-btn').forEach(b=>{
-    b.className='d-btn';
-    if(selectedDetect&&b.dataset.val===selectedDetect) b.className='d-btn sel';
-  });
-}
-function saveWeekly(){
-  const decisions=document.getElementById('wkDecisions').value.trim();
-  const why=document.getElementById('wkWhy').value.trim();
-  const next=document.getElementById('wkNext').value.trim();
-  if(!decisions&&!why&&!next){toast('先寫點什麼吧 ✍️'); return;}
-  const wk=thisWeekKey();
-  const idx=state.weeklyReviews.findIndex(w=>w.weekKey===wk);
-  const entry={weekKey:wk,decisions,why,drive:selectedDrive,detect:selectedDetect,next,ts:Date.now()};
-  if(idx>=0) state.weeklyReviews[idx]=entry;
-  else state.weeklyReviews.unshift(entry);
-  save(); renderWeeklyList(); loadThisWeekly(); toast('本週回顧已儲存');
-}
 const DRIVE_LABELS={fear:'😰 恐懼驅動',value:'🌱 價值觀驅動',mix:'🔀 兩者都有'};
 const DETECT_LABELS={serve:'✅ 服務選擇',delay:'⏸️ 延後選擇'};
-function renderWeeklyList(){
-  const past=state.weeklyReviews.filter(w=>w.weekKey!==thisWeekKey()).sort((a,b)=>b.weekKey.localeCompare(a.weekKey));
-  const el=document.getElementById('weeklyList');
-  if(!past.length){el.innerHTML='<div class="empty-hint">週回顧會在這裡累積</div>'; return;}
-  el.innerHTML=past.slice(0,12).map(w=>{
-    const parts=[];
-    if(w.decisions) parts.push('🗳️ '+esc(w.decisions));
-    if(w.why)       parts.push('💭 '+esc(w.why));
-    if(w.next)      parts.push('🎯 '+esc(w.next));
-    const driveTag=w.drive?`<span class="weekly-tag tag-${w.drive}">${DRIVE_LABELS[w.drive]}</span>`:'';
-    const detectTag=w.detect?`<span class="weekly-tag ${w.detect==='serve'?'tag-serve':'tag-delay'}">${DETECT_LABELS[w.detect]}</span>`:'';
-    return `<div class="weekly-item">
-      <div class="weekly-date">週次：${w.weekKey} 起</div>
-      <div class="weekly-body">${parts.join('\n')}</div>
-      <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">${driveTag}${detectTag}</div>
-    </div>`;
-  }).join('');
-}
 
 /* ---------- 輸出追蹤 ---------- */
-function pickOutputType(val,btn){
-  selectedOutputType=val;
-  document.querySelectorAll('.type-btn').forEach(b=>{
-    b.className='type-btn';
-    if(b.dataset.val===val) b.className='type-btn sel';
-  });
-}
-function addOutput(){
-  const txt=document.getElementById('outputInput').value.trim();
-  if(!txt){toast('寫下這個輸出的名稱'); return;}
-  if(!selectedOutputType){toast('先選一個類型'); return;}
-  state.outputs.unshift({id:Date.now(),type:selectedOutputType,txt,ts:Date.now()});
-  document.getElementById('outputInput').value='';
-  selectedOutputType=null;
-  document.querySelectorAll('.type-btn').forEach(b=>b.className='type-btn');
-  save(); renderOutputs(); toast('🌱 創造已記錄！');
-}
-function delOutput(id){
-  state.outputs=state.outputs.filter(o=>o.id!==id);
-  save(); renderOutputs();
-}
-function renderOutputs(){
-  const el=document.getElementById('outputList');
-  if(!state.outputs.length){el.innerHTML='<div class="empty-hint">每一個輸出都是你留給世界的痕跡</div>'; return;}
-  el.innerHTML=state.outputs.map(o=>`
-    <div class="output-item">
-      <div class="output-type-badge">${esc(o.type)}</div>
-      <div style="flex:1">
-        <div class="output-txt">${esc(o.txt)}</div>
-        <div class="output-meta">${fmtTime(o.ts)}</div>
-      </div>
-      <button class="del" onclick="delOutput(${o.id})" aria-label="刪除">✕</button>
-    </div>`).join('');
-}
 
 /* ---------- 記帳 ---------- */
 function sortExpenses(){
@@ -1378,6 +1210,94 @@ function renderDashboard(){
 }
 
 /* ---------- 初始化 ---------- */
+/* ---------- 導覽配置（ADR-006 §C 的單選版位，於此擴充為左右三態） ---------- */
+function loadNavPlacement(){
+  var saved=null;
+  // 私密瀏覽或封鎖網站資料時，讀 localStorage 會直接 throw
+  try{ saved=JSON.parse(localStorage.getItem(NAV_PLACEMENT_KEY)||'null'); }catch(e){}
+
+  navPlacement=Object.assign({}, DEFAULT_PLACEMENT);
+  if(saved && typeof saved==='object'){
+    NAV_ITEMS.forEach(function(it){
+      // 只收合法值：存壞或殘留舊功能名時退回預設，不要留下切不掉的導覽
+      if(NAV_SIDE_LABEL[saved[it.view]]) navPlacement[it.view]=saved[it.view];
+    });
+  }else{
+    migrateLegacyNavSlot();
+  }
+  enforceSideLimits();
+}
+/* 從舊的「第 5 格單選」遷移：原本選中的那一頁放到右側，其餘沿用預設。
+   預設右側是任務＋日誌兩格，補上第三個剛好滿額，不會撞到上限。 */
+function migrateLegacyNavSlot(){
+  var old=null;
+  try{ old=localStorage.getItem(NAV_SLOT_KEY_LEGACY); }catch(e){}
+  if(old && navPlacement.hasOwnProperty(old) && navPlacement[old]==='off') navPlacement[old]='right';
+}
+/* 存壞的設定可能讓某側超額，把溢出的推成隱藏，確保畫面永遠合法 */
+function enforceSideLimits(){
+  ['left','right'].forEach(function(side){
+    var n=0;
+    NAV_ITEMS.forEach(function(it){
+      if(navPlacement[it.view]!==side) return;
+      n++;
+      if(n>NAV_SIDE_LIMIT) navPlacement[it.view]='off';
+    });
+  });
+}
+function sideCount(side){
+  return NAV_ITEMS.filter(function(it){ return navPlacement[it.view]===side; }).length;
+}
+function setNavPlacement(view, side){
+  if(!navPlacement.hasOwnProperty(view) || !NAV_SIDE_LABEL[side]) return;
+  if(navPlacement[view]===side) return;
+  // 已滿時明確擋下並說明，不自作主張把別人擠掉——那種「魔法」事後最難理解
+  if(side!=='off' && sideCount(side)>=NAV_SIDE_LIMIT){
+    toast(NAV_SIDE_LABEL[side]+'側已經 '+NAV_SIDE_LIMIT+' 個了');
+    return;
+  }
+  navPlacement[view]=side;
+  try{ localStorage.setItem(NAV_PLACEMENT_KEY,JSON.stringify(navPlacement)); }catch(e){}
+  applyNavPlacement();
+}
+/* 把配置套到導覽列：依 NAV_ITEMS 順序重排 DOM，左側插在圓心前、右側接在其後 */
+function applyNavPlacement(){
+  const nav=document.getElementById('nav');
+  const home=nav.querySelector('.home-btn');
+  NAV_ITEMS.forEach(function(it){
+    const btn=nav.querySelector('button[data-view="'+it.view+'"]');
+    if(!btn) return;
+    const side=navPlacement[it.view];
+    btn.hidden = side==='off';
+    if(side==='left') nav.insertBefore(btn, home);
+    else if(side==='right') nav.appendChild(btn);
+  });
+  // 心情脈搏隸屬心情模組：心情沒在導覽上時，它的視覺元件也不該自己跑出來
+  if(navPlacement.mood==='off'){
+    document.getElementById('pulse').style.display='none';
+    document.getElementById('pulseLabel').style.display='none';
+  }
+  renderPlacementCard();
+}
+function renderPlacementCard(){
+  const box=document.getElementById('placeRows');
+  if(!box) return;
+  const counts=document.getElementById('placeCount');
+  if(counts) counts.textContent='左 '+sideCount('left')+'/'+NAV_SIDE_LIMIT+'\u3000右 '+sideCount('right')+'/'+NAV_SIDE_LIMIT;
+
+  box.innerHTML=NAV_ITEMS.map(function(it){
+    const cur=navPlacement[it.view];
+    const btns=['left','right','off'].map(function(side){
+      // 已滿的那側標成 full：仍可點（會給提示），但先讓人看出來為什麼選不動
+      const full = side!=='off' && cur!==side && sideCount(side)>=NAV_SIDE_LIMIT;
+      return '<button class="'+(cur===side?'sel':'')+(full?' full':'')+'"'
+        +' onclick="setNavPlacement(\''+it.view+'\',\''+side+'\')">'+NAV_SIDE_LABEL[side]+'</button>';
+    }).join('');
+    return '<div class="place-row"><span class="place-name">'+it.icon+' '+esc(it.label)+'</span>'
+      +'<div class="place-btns">'+btns+'</div></div>';
+  }).join('');
+}
+
 /* ---------- LOG 頁（ADR-006 §C／§D） ----------
    logs 是 Apps Script 單向寫入的唯讀記錄，這裡只讀不寫：
    進頁即時抓 → 只放進 logsCache（記憶體）→ 不進 state、不寫 localStorage。
@@ -1514,7 +1434,7 @@ function renderLogsView(){
 function renderAll(){
   renderTasks(); renderReviews(); loadTodayReview();
   renderMoodBtns(); renderMoods(); renderPulse();
-  renderNotes(); renderWeeklyList(); renderOutputs();
+  renderNotes(); renderNoteTagRow();
   renderExpenseView(); renderDashboard();
 }
 (function init(){
@@ -1526,8 +1446,8 @@ function renderAll(){
   expMonth=monthKey();
   document.getElementById('expDate').value=todayKey();
   renderCatRow();
-  loadNavSlot();
-  applyNavSlot();
+  loadNavPlacement();
+  applyNavPlacement();
   load();
   syncFromCloud();
 
