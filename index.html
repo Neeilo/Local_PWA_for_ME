@@ -302,6 +302,61 @@
     white-space:nowrap;
   }
   .toast.show{opacity:1;}
+  /* ---------- 首頁：導覽版位開關（ADR-006 §C） ---------- */
+  .slot-card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px;}
+  .slot-card h2{margin:0 0 10px; font-size:15px; font-weight:600; color:var(--muted);}
+  .slot-fixed{font-size:13px; color:var(--muted); padding-bottom:10px; border-bottom:1px solid var(--line); margin-bottom:10px;}
+  .slot-fixed b{color:var(--ink); font-weight:600;}
+  .slot-hint{font-size:12px; color:var(--muted); margin:8px 0 0;}
+  .slot-opts{display:flex; flex-wrap:wrap; gap:8px;}
+  .slot-opt{
+    display:flex; align-items:center; gap:6px; cursor:pointer;
+    border:1px solid var(--line); border-radius:10px; padding:8px 12px;
+    font-size:14px; background:var(--bg); user-select:none;
+  }
+  .slot-opt input{position:absolute; opacity:0; width:0; height:0;}
+  /* 選取態靠 :has()——不支援的瀏覽器會 fallback 成沒有highlight，
+     但 radio 本身仍在，導覽照樣切換，功能不會壞 */
+  .slot-opt:has(input:checked){border-color:var(--accent); background:var(--accent-soft); color:var(--accent); font-weight:600;}
+  .slot-opt:has(input:focus-visible){outline:2px solid var(--accent); outline-offset:2px;}
+
+  /* ---------- LOG 頁（ADR-006 §C） ---------- */
+  .log-summary{
+    display:flex; gap:18px; align-items:baseline; flex-wrap:wrap;
+    background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:12px 14px; margin-bottom:12px;
+  }
+  .log-summary .range{font-size:13px; color:var(--muted);}
+  .log-summary .stat{font-size:15px; font-weight:600;}
+  .log-summary .stat.fail{color:var(--danger);}
+  .log-filters{display:flex; flex-direction:column; gap:6px; margin-bottom:12px;}
+  .log-filters .seg{margin-bottom:0; flex-wrap:wrap;}
+  .log-refine{display:flex; gap:10px;}
+  .log-refine .seg{flex:1;}
+  .log-item{
+    background:var(--card); border:1px solid var(--line); border-left:3px solid var(--line);
+    border-radius:10px; padding:10px 12px; margin-bottom:8px;
+  }
+  .log-item.ok{border-left-color:var(--accent);}
+  .log-item.fail{border-left-color:var(--danger);}
+  .log-head{display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; font-size:13px;}
+  .log-head .src{font-weight:600; font-size:14px;}
+  .log-head .row-ref{color:var(--muted); font-size:12px;}
+  .log-head .when{margin-left:auto; color:var(--muted); font-size:12px; white-space:nowrap;}
+  .log-input{
+    font-size:13px; color:var(--muted); margin-top:6px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all;
+  }
+  .log-result{font-size:14px; margin-top:4px;}
+  .log-item.fail .log-result{color:var(--danger);}
+  .log-detail{margin-top:6px;}
+  .log-detail summary{font-size:12px; color:var(--muted); cursor:pointer;}
+  .log-detail pre{
+    margin:6px 0 0; padding:8px; background:var(--bg); border-radius:8px;
+    font-size:11px; white-space:pre-wrap; word-break:break-all; color:var(--muted);
+  }
+  .log-note{font-size:12px; color:var(--muted); text-align:center; padding:8px 0 0;}
+
   @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important;} }
 </style>
 </head>
@@ -335,6 +390,14 @@
     <div class="compass-card">
       <div class="compass-label">🧭 今日指南針<span id="dashCompassSaved" style="font-weight:400;font-size:12px;margin-left:6px;"></span></div>
       <div id="dashCompass"></div>
+    </div>
+
+    <!-- ④ 導覽版位開關（ADR-006 §C）：勾選即時反映，不需儲存 -->
+    <div class="slot-card">
+      <h2>⚙️ 導覽版位</h2>
+      <div class="slot-fixed">固定　<b>💰 記帳</b>　<b>📎 雜記</b>　<b>🧭 首頁</b>　<b>☑️ 任務</b></div>
+      <div class="slot-opts" id="slotOpts"></div>
+      <p class="slot-hint">第 5 格顯示哪一個。點了就換，不用儲存；只存這支手機，不同步雲端。</p>
     </div>
   </section>
 
@@ -515,6 +578,21 @@
     </div>
 
   </section>
+
+  <!-- LOG：LINE 快速輸入的交易記錄（ADR-006 §C／§D）
+       資料唯讀、進頁即時抓，刻意不進 state、不進 localStorage、不進 pushAllToCloud——
+       前端存檔是整包 replaceAll，一旦回推就會把 Apps Script 寫的記錄整包洗掉。 -->
+  <section class="view" id="view-logs">
+    <div id="logSummary"></div>
+    <div class="log-filters">
+      <div class="seg" id="logSourceSeg"></div>
+      <div class="log-refine">
+        <div class="seg" id="logStatusSeg"></div>
+        <div class="seg" id="logRangeSeg"></div>
+      </div>
+    </div>
+    <div id="logList"></div>
+  </section>
 </main>
 
 <nav id="nav">
@@ -522,8 +600,11 @@
   <button data-view="notes" onclick="switchView('notes',this)"><span class="ico">📎</span>雜記</button>
   <button data-view="home" class="home-btn active" onclick="switchView('home',this)"><span class="ico">🧭</span>首頁</button>
   <button data-view="tasks" onclick="switchView('tasks',this)"><span class="ico">☑️</span>任務</button>
-  <button data-view="review" onclick="switchView('review',this)"><span class="ico">🌙</span>日誌</button>
-  <!-- 以下兩頁由 feature flag 控制（SHOW_MOOD / SHOW_GROWTH），預設隱藏，程式與資料全保留 -->
+  <!-- 第 5 格：以下四個永遠只有一個可見，由首頁的「導覽版位」開關決定（ADR-006 §C）。
+       DOM 順序即顯示順序，四者都排在「任務」之後，所以不論選誰都落在最右格，
+       維持「左 2 ｜ ⭕首頁 ｜ 右 2」的對稱版型。 -->
+  <button data-view="review" hidden onclick="switchView('review',this)"><span class="ico">🌙</span>日誌</button>
+  <button data-view="logs" hidden onclick="switchView('logs',this)"><span class="ico">📋</span>LOG</button>
   <button data-view="mood" hidden onclick="switchView('mood',this)"><span class="ico">💚</span>心情</button>
   <button data-view="growth" hidden onclick="switchView('growth',this)"><span class="ico">🌱</span>成長</button>
 </nav>
@@ -537,9 +618,41 @@ const CLOUD_SECRET = '__CLOUD_SECRET__';
 const MOOD_EMOJI = ['😞','😕','😐','🙂','😄'];
 const OUTPUT_TYPES = ['文章','作品','系統','分享','其他'];
 
-/* ---------- Feature flags（ADR-004：只藏入口，程式碼與資料全保留） ---------- */
-const SHOW_MOOD   = false;
-const SHOW_GROWTH = false;
+/* ---------- Feature flags（ADR-004：只藏入口，程式碼與資料全保留） ----------
+   ADR-006 §C 起，這兩個 flag 的角色從「這一頁存不存在」降級為
+   「這一頁要不要出現在導覽版位開關的候選清單裡」。
+   要不要現在佔用第 5 格，改由使用者在首頁自己決定，不必再改程式碼。 */
+const SHOW_MOOD   = true;
+const SHOW_GROWTH = true;
+
+/* ---------- 導覽版位開關（ADR-006 §C） ----------
+   固定四格：記帳、雜記、⭕首頁、任務。第 5 格由使用者從下列候選中單選其一。
+   刻意不提供「不顯示」：導覽是「左 2 ｜ ⭕首頁 ｜ 右 2」的對稱版型，
+   少一格會讓圓心歪掉，而圓心正是 v3 導覽重構的視覺核心。
+
+   開關狀態存獨立的 localStorage key，刻意不放進 state——
+   state 會被 pushAllToCloud 整包推上雲端，而這是介面偏好，不需跨裝置一致（ADR-006 §C）。 */
+const NAV_SLOT_KEY = 'personal-os-nav-slot';
+const NAV_SLOT_CANDIDATES = [
+  { view:'review', icon:'🌙', label:'日誌', enabled:true },
+  { view:'logs',   icon:'📋', label:'LOG',  enabled:true },
+  { view:'mood',   icon:'💚', label:'心情', enabled:SHOW_MOOD },
+  { view:'growth', icon:'🌱', label:'成長', enabled:SHOW_GROWTH }
+].filter(o=>o.enabled);
+// 預設維持日誌，與 ADR-006 之前的版面一致——升級不該偷偷換掉使用者原本的導覽
+const DEFAULT_NAV_SLOT = 'review';
+let navSlot = DEFAULT_NAV_SLOT;
+
+/* ---------- LOG 頁（ADR-006 §C／§D） ---------- */
+const LOG_SOURCES = ['任務','記帳','收入','查詢'];
+const LOG_WINDOW_DAYS = 7;
+// 抓回來的記錄只活在記憶體裡：不進 state、不寫 localStorage、不進 pushAllToCloud
+let logsCache = null;
+let logsLoading = false;
+let logsFailed = false;
+let logFilterSource = 'all';
+let logFilterStatus = 'all';
+let logFilterRange = 'recent';
 
 /* ---------- 任務優先度 ---------- */
 const PRIORITIES = ['H','M','L'];
@@ -667,6 +780,8 @@ function noteToCloud(n){ return {id:String(n.id), text:n.txt, created_at:new Dat
 function noteFromCloud(r){ return {id:Number(r.id)||Date.now(), txt:r.text||'', ts:r.created_at?new Date(r.created_at).getTime():Date.now()}; }
 
 function pushAllToCloud(){
+  // 這裡永遠不該出現 'logs'：那是 Apps Script 單向寫入的記錄，
+  // 一旦被整包 replaceAll 推回去，LINE 那邊寫的東西會全部被洗掉（ADR-006 §C）。
   // tasks 欄序固定為 id | text | is_completed | created_at | priority（priority 一律最後一欄）
   const p1=cloudReplaceAll('tasks',['id','text','is_completed','created_at','priority'], state.tasks.map(taskToCloud));
   const p2=cloudReplaceAll('reviews',['review_date','good','stuck','most_important'],
@@ -734,36 +849,68 @@ function exportData(){
 }
 
 /* ---------- 導覽 ---------- */
-const TITLES={home:'首頁',expenses:'記帳',tasks:'任務',review:'日誌',mood:'心情',notes:'雜記',growth:'成長'};
+const TITLES={home:'首頁',expenses:'記帳',tasks:'任務',review:'日誌',mood:'心情',notes:'雜記',growth:'成長',logs:'LOG'};
 function switchView(name,btn){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.getElementById('view-'+name).classList.add('active');
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
   if(btn) btn.classList.add('active');
   document.getElementById('viewTitle').textContent=TITLES[name];
-  // 心情脈搏隸屬心情模組，跟著 SHOW_MOOD 一起隱藏
-  const showPulse = SHOW_MOOD && (name==='tasks'||name==='mood');
+  // 心情脈搏隸屬心情模組：心情沒被調進導覽時，它的視覺元件也不該自己跑出來
+  const showPulse = navSlot==='mood' && (name==='tasks'||name==='mood');
   document.getElementById('pulse').style.display=showPulse?'flex':'none';
   document.getElementById('pulseLabel').style.display=showPulse?'block':'none';
   if(name==='home') renderDashboard();
   if(name==='expenses') renderExpenseView();
   if(name==='review') loadTodayReview();
   if(name==='growth') loadThisWeekly();
+  if(name==='logs') openLogsView();
   window.scrollTo(0,0);
 }
 /* 首頁卡片上的捷徑：切分頁並同步底部導覽的選取狀態 */
 function goView(name){
   switchView(name, document.querySelector(`nav button[data-view="${name}"]`));
 }
-function applyFeatureFlags(){
-  const moodBtn=document.querySelector('nav button[data-view="mood"]');
-  const growthBtn=document.querySelector('nav button[data-view="growth"]');
-  if(moodBtn) moodBtn.hidden=!SHOW_MOOD;
-  if(growthBtn) growthBtn.hidden=!SHOW_GROWTH;
-  if(!SHOW_MOOD){
+
+/* ---------- 導覽版位開關（ADR-006 §C） ---------- */
+function loadNavSlot(){
+  let saved=null;
+  // 私密瀏覽或封鎖網站資料時，讀 localStorage 會直接 throw
+  try{ saved=localStorage.getItem(NAV_SLOT_KEY); }catch(e){}
+  const valid=NAV_SLOT_CANDIDATES.some(o=>o.view===saved);
+  // 存的值失效（候選被 flag 關掉、或手動改壞）就回到預設，不要留下一個切不掉的空導覽
+  navSlot = valid ? saved : DEFAULT_NAV_SLOT;
+}
+function setNavSlot(view){
+  if(!NAV_SLOT_CANDIDATES.some(o=>o.view===view)) return;
+  navSlot=view;
+  try{ localStorage.setItem(NAV_SLOT_KEY,view); }catch(e){}
+  applyNavSlot();
+  // 不必處理「正在看的那頁被切出導覽」：開關只長在首頁上，動它的時候人必然在首頁，
+  // 被切走的絕不會是當前頁。哪天把開關搬到別處，這裡就要補上退回首頁。
+}
+/* 把開關狀態實際套到導覽列：候選之中只有選中的那個可見 */
+function applyNavSlot(){
+  NAV_SLOT_CANDIDATES.forEach(o=>{
+    const btn=document.querySelector(`nav button[data-view="${o.view}"]`);
+    if(btn) btn.hidden = o.view!==navSlot;
+  });
+  if(navSlot!=='mood'){
     document.getElementById('pulse').style.display='none';
     document.getElementById('pulseLabel').style.display='none';
   }
+  renderSlotOpts();
+}
+function renderSlotOpts(){
+  const box=document.getElementById('slotOpts');
+  if(!box) return;
+  box.innerHTML=NAV_SLOT_CANDIDATES.map(o=>
+    `<label class="slot-opt">
+       <input type="radio" name="navSlot" value="${o.view}" ${o.view===navSlot?'checked':''}
+              onchange="setNavSlot('${o.view}')">
+       <span>${o.icon} ${esc(o.label)}</span>
+     </label>`
+  ).join('');
 }
 
 /* ---------- 任務 ---------- */
@@ -1231,6 +1378,139 @@ function renderDashboard(){
 }
 
 /* ---------- 初始化 ---------- */
+/* ---------- LOG 頁（ADR-006 §C／§D） ----------
+   logs 是 Apps Script 單向寫入的唯讀記錄，這裡只讀不寫：
+   進頁即時抓 → 只放進 logsCache（記憶體）→ 不進 state、不寫 localStorage。
+
+   為什麼一定要這樣：前端存檔是整包 replaceAll。logs 只要進了 state，
+   下一次 save() 就會把本機那份推回雲端，Apps Script 寫的記錄全部被洗掉。
+   同理，pushAllToCloud 永遠不該出現 'logs'。 */
+function logFromCloud(r){
+  return {
+    ts: r.ts ? new Date(r.ts).getTime() : 0,
+    source: String(r.source||''),
+    status: String(r.status||''),
+    input: String(r.input||''),
+    result: String(r.result||''),
+    detail: String(r.detail||''),
+    targetRow: (r.target_row===0||r.target_row) ? String(r.target_row) : ''
+  };
+}
+/* 這裡不用 cloudGet()：它把錯誤吞成空陣列，會讓「連線失敗」跟「真的沒記錄」
+   在畫面上長得一模一樣——而這兩件事該給使用者完全不同的訊息。 */
+function fetchLogs(){
+  logsLoading=true; logsFailed=false;
+  renderLogsView();
+  return fetch(`${CLOUD_URL}?sheet=logs`)
+    .then(r=>r.json())
+    .then(j=>{ logsCache=(j.data||[]).map(logFromCloud).sort((a,b)=>b.ts-a.ts); })
+    .catch(()=>{ logsFailed=true; })
+    .finally(()=>{ logsLoading=false; renderLogsView(); });
+}
+function openLogsView(){
+  if(logsLoading) return;   // 連點導覽時不重複發請求
+  fetchLogs();
+}
+function setLogFilter(kind,val){
+  if(kind==='source') logFilterSource=val;
+  if(kind==='status') logFilterStatus=val;
+  if(kind==='range')  logFilterRange=val;
+  // 篩選刻意不記憶：這是當下的動作，不是偏好，每次進頁都該從全景開始看
+  renderLogsView();
+}
+function logsInRange(rows){
+  if(logFilterRange==='all') return rows;
+  const cutoff=Date.now()-LOG_WINDOW_DAYS*86400000;
+  return rows.filter(r=>r.ts>=cutoff);
+}
+function segHtml(kind,current,opts){
+  return opts.map(([val,label])=>
+    `<button class="${current===val?'sel':''}" onclick="setLogFilter('${kind}','${val}')">${esc(label)}</button>`
+  ).join('');
+}
+function renderLogFilters(){
+  document.getElementById('logSourceSeg').innerHTML=
+    segHtml('source', logFilterSource, [['all','全部']].concat(LOG_SOURCES.map(x=>[x,x])));
+  // 狀態是「開／關」而非二選一，所以用單顆按鈕：
+  // 同一排出現兩個「全部」（一個指狀態、一個指時間範圍）會讓人分不清在篩什麼
+  const failOnly = logFilterStatus==='失敗';
+  document.getElementById('logStatusSeg').innerHTML=
+    `<button class="${failOnly?'sel':''}" onclick="setLogFilter('status','${failOnly?'all':'失敗'}')">❌ 只看失敗</button>`;
+  document.getElementById('logRangeSeg').innerHTML=
+    segHtml('range', logFilterRange, [['recent',`近 ${LOG_WINDOW_DAYS} 天`],['all','全部']]);
+}
+function logItemHtml(r){
+  const failed=r.status==='失敗';
+  const rowRef=r.targetRow?`<span class="row-ref">→ 列 ${esc(r.targetRow)}</span>`:'';
+  // detail 多半是錯誤堆疊，平常是雜訊，預設收起來
+  const detail=r.detail?`<details class="log-detail"><summary>詳細</summary><pre>${esc(r.detail)}</pre></details>`:'';
+  return `<div class="log-item ${failed?'fail':'ok'}">
+      <div class="log-head">
+        <span class="src">${failed?'❌':'✅'} ${esc(r.source)}</span>
+        ${rowRef}
+        <span class="when">${r.ts?fmtTime(r.ts):''}</span>
+      </div>
+      <div class="log-input">${esc(r.input)}</div>
+      <div class="log-result">${esc(r.result)}</div>
+      ${detail}
+    </div>`;
+}
+function renderLogsView(){
+  const sum=document.getElementById('logSummary');
+  const list=document.getElementById('logList');
+  if(!sum||!list) return;
+  renderLogFilters();
+
+  // 首次載入還沒有任何資料可顯示
+  if(logsLoading && !logsCache){
+    sum.innerHTML='';
+    list.innerHTML='<div class="empty-hint">載入中…</div>';
+    return;
+  }
+  // 抓失敗且手上沒有舊資料：講清楚是連線問題，不要給一片空白讓人以為壞了
+  if(logsFailed && !logsCache){
+    sum.innerHTML='';
+    list.innerHTML='<div class="empty-hint">LOG 需要連線才看得到——這一頁的資料不存本機。'
+      +'<br><button class="btn" style="width:auto;margin-top:10px" onclick="fetchLogs()">重試</button></div>';
+    return;
+  }
+
+  const rows=logsCache||[];
+  const inRange=logsInRange(rows);
+  const rangeLabel=logFilterRange==='all'?'全部':`近 ${LOG_WINDOW_DAYS} 天`;
+  const ok=inRange.filter(r=>r.status==='成功').length;
+  const fail=inRange.filter(r=>r.status==='失敗').length;
+
+  // 摘要只隨時間範圍走，不受來源／狀態篩選影響——
+  // 否則按下「只看失敗」會看到成功數變成 0，那不是事實
+  sum.innerHTML=`<div class="log-summary">
+      <span class="range">${rangeLabel}</span>
+      <span class="stat">✅ ${ok}</span>
+      <span class="stat fail">❌ ${fail}</span>
+      ${logsFailed?'<span class="range">・更新失敗，以下是上次抓到的</span>':''}
+    </div>`;
+
+  let shown=inRange;
+  if(logFilterSource!=='all') shown=shown.filter(r=>r.source===logFilterSource);
+  if(logFilterStatus!=='all') shown=shown.filter(r=>r.status===logFilterStatus);
+
+  if(!shown.length){
+    // 三種「沒東西」是三件不同的事，訊息也該不一樣
+    let msg;
+    if(!rows.length){
+      msg='還沒有任何 LINE 記錄。<br>用 LINE 傳一句「記帳/120/餐飲」試試看。';
+    }else if(!inRange.length){
+      msg=`近 ${LOG_WINDOW_DAYS} 天沒有記錄。<br>切上面的「全部」可以看更早的。`;
+    }else{
+      msg='這個篩選條件下沒有記錄。';
+    }
+    list.innerHTML=`<div class="empty-hint">${msg}</div>`;
+    return;
+  }
+  list.innerHTML=shown.map(logItemHtml).join('')
+    +`<div class="log-note">共 ${shown.length} 筆</div>`;
+}
+
 function renderAll(){
   renderTasks(); renderReviews(); loadTodayReview();
   renderMoodBtns(); renderMoods(); renderPulse();
@@ -1246,7 +1526,8 @@ function renderAll(){
   expMonth=monthKey();
   document.getElementById('expDate').value=todayKey();
   renderCatRow();
-  applyFeatureFlags();
+  loadNavSlot();
+  applyNavSlot();
   load();
   syncFromCloud();
 
