@@ -68,6 +68,15 @@ var GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 var GEMINI_TIMEOUT_REPLY = 'AI 暫時無法回應，請稍後再試';
 
 /**
+ * 輸出上限刻意給得寬。
+ *
+ * Gemini 2.5／3 系列的「thinking tokens」也計入 maxOutputTokens，而思考往往吃掉數百個 ——
+ * 上限抓太緊時，模型會在還沒寫完答案就撞到天花板，使用者收到半截話。
+ * 我們只要 5 行回覆，2048 綽綽有餘，多出來的額度是留給思考的，不是留給廢話的。
+ */
+var GEMINI_MAX_OUTPUT_TOKENS = 2048;
+
+/**
  * 允許使用的 LINE userId 白名單。
  * 留空陣列 = 不限制（方便第一次跑通）。
  * 取得自己的 userId 最快的方式：在 LINE 傳一句 whoami，bot 會直接回你。
@@ -460,7 +469,10 @@ function handleQuery_(question, rawText, userId) {
     return GEMINI_TIMEOUT_REPLY;
   }
 
-  logTransaction_(QUERY_LOG_SOURCE, '成功', rawText, '已回覆：' + truncate_(question, 40), '', '', userId);
+  logTransaction_(QUERY_LOG_SOURCE, '成功', rawText,
+    (res.truncated ? '已回覆（被截斷）：' : '已回覆：') + truncate_(question, 40),
+    res.truncated ? 'finishReason=MAX_TOKENS，maxOutputTokens=' + GEMINI_MAX_OUTPUT_TOKENS : '',
+    '', userId);
   return res.text;
 }
 
@@ -525,19 +537,32 @@ function windowStartKey_() {
 function buildQueryContext_() {
   var since = windowStartKey_();
   var today = dateKey_(new Date());
+  var expenseRows = readSheet_('expenses');
 
   return {
     since: since,
     today: today,
-    expenses: summarizeExpenses_(readSheet_('expenses'), since),
+    monthStart: monthStartKey_(),
+    // 兩組期間都給：使用者最自然的問法是「這個月」，但 ADR 的窗口是「近 30 天」。
+    // 只給後者的話，AI 會拿近 30 天的合計去回答「這個月」——數字包含上個月下旬，
+    // 而且跟 App 首頁的「本月支出」對不起來。多算一組的成本只有幾行。
+    expenses: {
+      month: sumExpensesSince_(expenseRows, monthStartKey_()),
+      window: sumExpensesSince_(expenseRows, since)
+    },
     tasks: collectTasks_(readSheet_('tasks'), since),
     reviews: collectReviews_(readSheet_('reviews'), since),
     moods: summarizeMoods_(readSheet_('moods'), since)
   };
 }
 
+/** 月初 YYYY-MM-01，與前端 monthKey() 的「本月」定義一致 */
+function monthStartKey_() {
+  return dateKey_(new Date()).slice(0, 7) + '-01';
+}
+
 /** expenses → 分類小計 + 總計 + 筆數（完整不截斷） */
-function summarizeExpenses_(rows, since) {
+function sumExpensesSince_(rows, since) {
   var acc = {
     expense: { total: 0, count: 0, byCat: {} },
     income: { total: 0, count: 0, byCat: {} }
@@ -632,13 +657,23 @@ function buildQueryPrompt_(ctx, question) {
   lines.push('- 回答控制在 5 行以內，這則訊息會顯示在 LINE 上。');
   lines.push('- 金額用阿拉伯數字加千分位，不要加貨幣符號以外的修飾。');
   lines.push('- 不要重複問題本身，直接給答案。');
+  lines.push('- 記帳有「本月」與「近 30 天」兩組統計，期間不同，絕對不可混用或相加：');
+  lines.push('  問「這個月」「本月」「九月」→ 用【本月】那組。');
+  lines.push('  問「最近」「這 30 天」「這陣子」→ 用【近 30 天】那組。');
+  lines.push('  問法沒有指明期間時，用【本月】那組，並在回答中說明是本月。');
   lines.push('');
-  lines.push('資料期間：' + ctx.since + ' ~ ' + ctx.today + '（近 ' + QUERY_WINDOW_DAYS + ' 天）');
+  lines.push('今天是 ' + ctx.today + '。');
   lines.push('');
 
-  lines.push('【記帳彙總】此為期間內的完整統計，未經截斷，可直接引用');
-  lines.push(expenseBlock_(ctx.expenses.expense, '支出'));
-  lines.push(expenseBlock_(ctx.expenses.income, '收入'));
+  lines.push('【記帳彙總】以下兩組都是完整統計，未經截斷，可直接引用');
+  lines.push('');
+  lines.push('▍本月（' + ctx.monthStart + ' ~ ' + ctx.today + '）');
+  lines.push(expenseBlock_(ctx.expenses.month.expense, '支出'));
+  lines.push(expenseBlock_(ctx.expenses.month.income, '收入'));
+  lines.push('');
+  lines.push('▍近 ' + QUERY_WINDOW_DAYS + ' 天（' + ctx.since + ' ~ ' + ctx.today + '）');
+  lines.push(expenseBlock_(ctx.expenses.window.expense, '支出'));
+  lines.push(expenseBlock_(ctx.expenses.window.income, '收入'));
   lines.push('');
 
   // 逐筆的部分共用同一個上限：任務吃不完的額度才輪到複盤
@@ -657,12 +692,12 @@ function buildQueryPrompt_(ctx, question) {
   lines.push('');
 
   if (doneTasks.length) {
-    lines.push('【期間內已完成的任務】');
+    lines.push('【近 ' + QUERY_WINDOW_DAYS + ' 天內已完成的任務】');
     lines.push(doneTasks.map(function (t) { return '・' + t.created + ' ' + t.text; }).join('\n'));
     lines.push('');
   }
 
-  lines.push('【近期複盤】共 ' + ctx.reviews.length + ' 則' +
+  lines.push('【近 ' + QUERY_WINDOW_DAYS + ' 天的複盤】共 ' + ctx.reviews.length + ' 則' +
     (ctx.reviews.length > reviews.length ? '，以下列出最近 ' + reviews.length + ' 則' : ''));
   lines.push(reviews.length
     ? reviews.map(function (r) {
@@ -675,7 +710,7 @@ function buildQueryPrompt_(ctx, question) {
   lines.push('');
 
   if (ctx.moods.count) {
-    lines.push('【心情】期間內記錄 ' + ctx.moods.count + ' 次，平均 ' + ctx.moods.avg + ' 分（1 最低、5 最高）');
+    lines.push('【心情】近 ' + QUERY_WINDOW_DAYS + ' 天記錄 ' + ctx.moods.count + ' 次，平均 ' + ctx.moods.avg + ' 分（1 最低、5 最高）');
     lines.push('');
   }
 
@@ -723,7 +758,7 @@ function callGemini_(key, prompt) {
       headers: { 'x-goog-api-key': key },
       payload: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.2, maxOutputTokens: 800 }
+        generationConfig: { temperature: 0.2, maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS }
       }),
       muteHttpExceptions: true
     });
@@ -750,15 +785,36 @@ function callGemini_(key, prompt) {
     return { ok: false, reason: '回應格式錯誤', detail: truncate_(body, 800) };
   }
 
-  var text = extractGeminiText_(parsed);
-  if (!text) {
-    // 內容被安全機制擋掉、或 maxOutputTokens 太小被切光，都會落在這裡
-    console.log('Gemini 回應沒有可用文字：' + truncate_(body, 800));
-    return { ok: false, reason: '回應沒有內容', detail: truncate_(body, 800) };
+  var got = extractGeminiText_(parsed);
+  var hitCap = got.finishReason === 'MAX_TOKENS';
+
+  if (!got.text) {
+    // 三種情況會落在這裡：被安全機制擋掉、思考吃光了額度、回應結構不如預期。
+    // 分辨得出來才修得掉，所以 finishReason 要一起記。
+    console.log('Gemini 回應沒有可用文字（finishReason=' + (got.finishReason || '未提供') +
+      (hitCap ? '，thinking tokens 可能吃光了 maxOutputTokens' : '') + '）：' + truncate_(body, 800));
+    return {
+      ok: false,
+      reason: hitCap ? '回應被 token 上限截斷且無內容' : '回應沒有內容',
+      detail: truncate_(body, 800)
+    };
   }
-  return { ok: true, text: text };
+
+  if (hitCap) {
+    // 有話但沒說完。半截答案仍比沒答案有用，但使用者必須知道它不完整 ——
+    // 悄悄把截斷的內容當成完整答案送出去，是這裡最不該犯的錯。
+    console.log('Gemini 回應被 token 上限截斷（maxOutputTokens=' + GEMINI_MAX_OUTPUT_TOKENS +
+      '，thinking tokens 也計入）：' + truncate_(body, 500));
+    return {
+      ok: true,
+      text: got.text + '\n\n⚠️ 回應太長被截斷了，問得更具體一點會比較完整。',
+      truncated: true
+    };
+  }
+  return { ok: true, text: got.text };
 }
 
+/** 回 { text, finishReason }——finishReason 是判斷「有沒有說完」的唯一依據 */
 function extractGeminiText_(parsed) {
   var candidates = (parsed && parsed.candidates) || [];
   for (var i = 0; i < candidates.length; i++) {
@@ -768,9 +824,10 @@ function extractGeminiText_(parsed) {
       if (parts[j] && typeof parts[j].text === 'string') chunks.push(parts[j].text);
     }
     var joined = chunks.join('').trim();
-    if (joined) return joined;
+    if (joined) return { text: joined, finishReason: candidates[i].finishReason || '' };
   }
-  return '';
+  var first = candidates[0] || {};
+  return { text: '', finishReason: first.finishReason || '' };
 }
 
 /* ========================================================================== */
