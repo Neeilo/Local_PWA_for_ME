@@ -1,8 +1,13 @@
 # Apps Script 端程式碼（鏡像）
 
-這裡的檔案**不是**部署來源——真正在跑的是 Google Apps Script 專案裡的副本。
-放在 repo 是為了版控與跨環境交接，避免「哪一版才是對的」變成猜謎。
-修改後請記得同步貼回 Apps Script 並重新部署。
+這裡的檔案是 Google Apps Script 專案的鏡像。放在 repo 是為了版控與跨環境交接，
+避免「哪一版才是對的」變成猜謎。
+
+同步方式有兩種，**現在正處於從 (A) 過渡到 (B) 的階段**：
+
+- **(A) 手動貼回**（原本的做法）——改完貼進 Apps Script 編輯器再重新部署。
+- **(B) clasp 同步**（新做法，見下節）——`npm run pull` / `npm run push`。
+  要先完成一次 `npm run pull` 把線上專案完整抓下來，(B) 才算真正生效。
 
 | 檔案 | 用途 |
 |---|---|
@@ -10,6 +15,74 @@
 
 > ⚠️ 這個 repo 會整包發布到 GitHub Pages，此資料夾也會公開。
 > **任何權杖、SECRET 一律放 Apps Script 的「指令碼屬性」，不要寫進這裡的檔案。**
+
+## clasp 同步
+
+### ⚠️ 動手前必讀：push 是整包覆蓋
+
+`clasp push` **不是增量合併**——它會把線上專案的檔案集合換成 `apps-script/` 的內容。
+`apps-script/` 裡沒有的檔案，線上就會被刪掉。
+
+這件事在本專案特別致命，因為 `line-router.gs:157` 會呼叫 `handlePwaSync_()`，
+而該函式定義在**只存在於線上、尚未鏡像進 repo 的 `Code.gs`** 裡。
+一旦在鏡像不完整時 push：
+
+```
+Code.gs 被刪 → handlePwaSync_ undefined → PWA 同步與 LINE 路由同時失效
+```
+
+所以規則只有一條：**永遠 pull-first**。`npm run push` 前面掛了
+`scripts/clasp-preflight.mjs` 當閘門，偵測到 `apps-script/appsscript.json`
+不存在（＝還沒 pull 過完整專案）就直接擋下，不讓你有機會手滑。
+
+### 首次設定
+
+```bash
+# 0. 先到 https://script.google.com/home/usersettings 開啟「Google Apps Script API」
+#    （沒開的話後面每一步都會 403，這是最常見的卡點）
+
+npm install                       # 裝 clasp
+npx clasp login                   # 瀏覽器授權，憑證寫進 ~/.clasprc.json
+
+cp .clasp.json.example .clasp.json
+# 填入 scriptId：Apps Script 編輯器 → 專案設定 → 「指令碼 ID」
+
+npm run pull                      # 把線上專案完整抓下來
+git status                        # 應該看到 Code.gs 與 appsscript.json 新增
+```
+
+確認 `Code.gs` 與 `appsscript.json` 都下來了、內容合理，再 commit。
+到這一步鏡像才算完整，`npm run push` 的閘門也才會放行。
+
+### 日常指令
+
+| 指令 | 作用 |
+|---|---|
+| `npm run pull` | 從線上抓下最新版（動手改之前先跑，避免蓋掉線上的直接編輯） |
+| `npm run status` | 列出這次 push 會送出哪些檔案（乾跑，不會改動任何東西） |
+| `npm run preflight` | 只跑安全檢查，不 push |
+| `npm run push` | preflight 通過後推上線上專案 |
+| `npm run deployments` | 列出既有部署與其 deploymentId |
+| `npm run redeploy -- <deploymentId>` | 把既有部署更新到新版本 |
+| `npm run open` | 用瀏覽器開啟 Apps Script 編輯器 |
+
+### ⚠️ 重新部署請務必沿用既有 deploymentId
+
+PWA 端的 `CLOUD_URL` 是寫死在 GitHub Secrets、建置時注入 `index.html` 的。
+`clasp deploy`（建立**新**部署）會產生**新的 exec 網址**，PWA 就連不上了。
+
+要更新線上版本，只能是下列兩者之一：
+
+- `npm run deployments` 查出既有 deploymentId → `npm run redeploy -- <該 id>`
+- 或沿用原本的 UI 流程：部署 → 管理部署作業 → 編輯 → 版本選「新版本」→ 部署
+
+兩者都會**保持網址不變**。
+
+### 認證檔安全
+
+`clasp login` 的憑證（OAuth refresh token）會寫進家目錄的 `~/.clasprc.json`。
+本 repo 的 `.gitignore` 已擋掉 `.clasprc.json` 與 `.clasp.json`——**不要移除這兩條**。
+這個 repo 會整包發布到 GitHub Pages，任何進版控的檔案都等同公開。
 
 ## line-router.gs 安裝
 
