@@ -66,6 +66,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 這一步刻意不受下面的休眠閘門保護：密鑰有沒有被 clasp pull 帶回 repo，
+      # 跟管道啟不啟用無關，每次 push 到 main 都該掃。純本地掃描，不需要任何
+      # Secret，也不需要 npm install。
+      - name: Fail if a secret got hardcoded back into the sources
+        run: node scripts/scan-inline-secrets.mjs
+
       # clasp push 是整包覆蓋，不是增量合併：rootDir 裡沒有的檔案線上就會被刪。
       # 基準對齊完成前，apps-script/ 還不是線上專案的完整鏡像（少了 Code.gs），
       # 這時候 push 會把線上刪到只剩半套。所以管道先休眠，不紅燈也不硬幹——

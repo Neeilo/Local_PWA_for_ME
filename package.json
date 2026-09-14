@@ -5,12 +5,13 @@
   "description": "Neil OS — 本地優先 PWA；Apps Script 後端由 GitHub Actions 單向部署，本機 clasp 只讀不寫",
   "type": "module",
   "scripts": {
-    "pull": "clasp pull",
+    "pull": "clasp pull && npm run scan",
     "preflight": "node scripts/clasp-preflight.mjs",
     "status": "clasp status",
     "whoami": "clasp show-authorized-user",
     "open": "clasp open-script",
-    "deployments": "clasp list-deployments"
+    "deployments": "clasp list-deployments",
+    "scan": "node scripts/scan-inline-secrets.mjs"
   },
   "devDependencies": {
     "@google/clasp": "^3.4.1"
