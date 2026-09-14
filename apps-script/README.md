@@ -1,30 +1,32 @@
-# Apps Script 端程式碼（鏡像）
+# Apps Script 端程式碼（部署來源）
 
-這裡的檔案是 Google Apps Script 專案的鏡像。放在 repo 是為了版控與跨環境交接，
-避免「哪一版才是對的」變成猜謎。
+> 🚦 **這裡是真相，不是鏡像。** push 到 `main` 之後，CI 會把這個資料夾的內容
+> `clasp push` 上線並 `clasp deploy -i` 成新版本。`main` 裡有什麼，線上就是什麼。
+>
+> **編輯器只讀不寫。** Apps Script 編輯器裡直接改的東西，會在下一次 CI 部署時
+> 被**靜默覆蓋**——不會有警告，不會有衝突提示，就是無聲消失。
+>
+> **緊急通道仍然保留**（LINE 掛了、人在外面時，編輯器是唯一能三分鐘內止血的
+> 路徑），但代價要記住：**改完必須 `npm run pull` 回 repo 補 commit**，否則
+> 下一次 merge 會把它抹掉。
 
-同步方式正處於從 (A) 過渡到 (B) 的階段，**目前仍是 (A)**：
+（2026-09-14 起生效。此前的做法是手動貼回編輯器再按部署，已停用。）
 
-- **(A) 手動貼回**（原本的做法）——改完貼進 Apps Script 編輯器再重新部署。
-- **(B) GitHub Actions 單向部署**（ADR-007 Part B，管道已建好但**尚未啟用**）——
-  push 到 `main` → CI 自動 `clasp push` + `clasp deploy -i`。
+## 為什麼不從本機 push
 
-(B) 的最後一塊拼圖是**基準對齊**：把線上專案完整拉下來放進這個資料夾。
-在那之前 CI 的 Apps Script job 會**自動跳過**（不是紅燈，也不會亂動線上），
-偵測依據是 `apps-script/appsscript.json` 在不在。做法見下節。
-
-> 🔒 **(B) 上線後本機就不再 push。** 本機 push 是從工作目錄送出的，而工作目錄
-> 可能有沒 commit 的東西——結果就是「線上跑的程式不在 repo 裡」，正是這套管道
-> 要消滅的問題本身。所以 `package.json` 裡**刻意沒有 push 指令**，本機只留 `pull`。
+本機 push 是從**工作目錄**送出的，而工作目錄可能有沒 commit 的東西——結果就是
+「線上跑的程式不在 repo 裡」，正是這套管道要消滅的問題本身。走 Actions 才能
+成立那條硬保證。所以 `package.json` 裡**刻意沒有 push 指令**，本機只留 `pull`。
 
 | 檔案 | 用途 |
 |---|---|
 | `Code.gs` | PWA ↔ Sheets 同步（`doGet` 讀取、`handlePwaSync_` 寫入） |
 | `line-router.gs` | LINE 快速輸入 → Sheets 路由，並持有統一入口 `doPost` |
 
-⚠️ **這兩份是依線上版鏡像，但把兩個密鑰改讀指令碼屬性**（見下），其餘一字未改。
-線上版原本把 `CLOUD_SECRET` 與 LINE userId 白名單寫死在原始碼裡——這個 repo 是
-公開的，寫死等於公開，而且 git history 洗不掉。
+⚠️ **兩個密鑰一律讀指令碼屬性，不可寫回原始碼**（見下）。線上版原本把
+`CLOUD_SECRET` 與 LINE userId 白名單寫死在裡面——這個 repo 是公開的，寫死等於
+公開，而且 git history 洗不掉。`npm run pull` 後面掛了掃描閘門，CI 也會掃，
+就是為了防止哪次 pull 把它們帶回來。
 
 ### 指令碼屬性一覽
 
@@ -58,9 +60,9 @@ Code.gs 被刪 → handlePwaSync_ undefined → PWA 同步與 LINE 路由同時�
 本機與 CI 共用——偵測到 `apps-script/appsscript.json` 不存在就直接擋下，
 不讓任何人有機會手滑。
 
-### 啟用 (B)：四步手動前置（只有 Neil 能做）
+### 首次設定（已完成，2026-09-14；重建或換帳號時才需要重跑）
 
-授權必須本人在瀏覽器點同意，這一步代不了。四步跑完，管道就會自己醒過來。
+授權必須本人在瀏覽器點同意，這一步代不了。
 
 ```bash
 # ① 啟用 API（沒開的話後面每一步都會 403，這是最常見的卡點）
@@ -101,6 +103,7 @@ npx @google/clasp list-deployments
 檔名就是 clasp 的對應鍵，改名不會報錯，而是在線上生出孤兒檔。
 
 這一筆進 `main` 的瞬間，CI 的 Apps Script job 就不再跳過了。
+（實際首次部署：2026-09-14，`Deployed @13`，exec 網址未變。）
 
 ### CI 做了什麼（`.github/workflows/deploy.yml`）
 
@@ -140,9 +143,12 @@ LINE 的 Webhook URL 也指著同一條 exec 網址。
 ### 緊急通道仍然保留
 
 真的出事時（LINE 掛了、人在外面），Apps Script 編輯器是唯一能三分鐘內止血的
-路徑，所以**不做技術性封鎖**。代價要記住：
+路徑，所以**不做技術性封鎖**——紀律靠文件，不靠鎖門。代價要記住：
 
 > **緊急改完若沒有 `npm run pull` 回來補 commit，下次 CI 部署會靜默抹掉它。**
+
+回收的步驟：`npm run pull` → `git diff` 確認就是你改的那些 → commit → 推上
+`main`。掃描閘門會順便確認你沒有把密鑰一起帶回來。
 
 ### 認證檔安全
 

@@ -100,10 +100,15 @@ apps-script/    Apps Script 端程式碼（Code.gs 同步 + line-router.gs LINE 
 也就是這個專案踩過三次的那個坑。**本機不 push**（工作目錄可能有沒 commit 的東西），
 `package.json` 裡刻意只留 `pull`。
 
-目前管道**已建好但尚未啟用**：`apps-script/` 還不是線上專案的完整鏡像（缺 `Code.gs`
-與 `appsscript.json`），CI 偵測到就整個 job 跳過——不是紅燈，也不會去動線上。基準對齊
-一進 `main`，它自己就會醒過來。四步手動前置與三個 Secret（`CLASPRC_JSON` /
-`SCRIPT_ID` / `CLASP_DEPLOYMENT_ID`）見 [`apps-script/README.md`](apps-script/README.md)。
+**管道自 2026-09-14 起運作中**（首次部署 `Deployed @13`，exec 網址未變）。
+`apps-script/` 是**部署來源，不是鏡像**——編輯器裡直接改的東西會在下次部署時被
+靜默覆蓋，緊急改動後必須 `npm run pull` 回來補 commit。三個 Secret（`CLASPRC_JSON` /
+`SCRIPT_ID` / `CLASP_DEPLOYMENT_ID`）與維運說明見
+[`apps-script/README.md`](apps-script/README.md)。
+
+安全閘門：`apps-script/appsscript.json` 不存在時整個 job 跳過（`clasp push` 是整包
+覆蓋，鏡像不完整時推送會刪掉線上檔案）；三個 Secret 任一為空即紅燈；`clasp` 未登入時
+`show-authorized-user` 仍會 exit 0，所以改比對輸出字串。
 
 Apps Script 與 Pages 分成兩個 job：認證與 scriptId 完全不會進到 Pages 的 artifact，
 一邊掛了也不會連坐另一邊。Pages job 上傳前會 `rm -rf apps-script`（刪 runner 上的暫存
@@ -134,10 +139,10 @@ Apps Script 與 Pages 分成兩個 job：認證與 scriptId 完全不會進到 P
   - ✅ 「創造」以類別選填的形式併入雜記，存成 `[類別] 內容`
   - ✅ B：查詢 MVP（`查` 前綴 + Gemini API，記帳送彙總確保總額精確）
   - ⏳ 未來票：`logs` 列數上限與自動修剪（構想：超過 500 列自動修剪）
-- **ADR-007**（依 [ADR-007]，2026-09-14）：🚧 進行中
+- **ADR-007**（依 [ADR-007]，2026-09-14）：✅ 已完成
   - ✅ 票 B：前端 `state` 讀取層以 `id` 去重（同 id 留後者），SW v9→v10
-  - ⏳ 票 A：後端 `doPost` upsert 閘門（共用 `upsertRow_`，多筆同 id 覆蓋第一筆、刪除其餘並寫 `logs`）——**卡在 `Code.gs` 尚未進 repo**，需先完成基準對齊
-  - ✅ clasp ②：CI 部署管道建置（`clasp push` + `clasp deploy -i`、三段防呆、`.claspignore`、Pages 排除 `apps-script/`）——**已建好但休眠中**，基準對齊後自動啟用
-  - ⏳ clasp ①：基準對齊（以線上版為準）——需 Neil 先完成 `clasp login` 與 `clone`
-  - ⏳ clasp ③④：空跡部署驗證 → 改寫單向紀律警語
-  - ⏳ 未來票：本機為何先生出兩筆同 id（ADR-007 未解成因）
+  - ✅ 票 A：後端去重閘門。**位置依實讀程式碼後的查證結果修正**——原規格掛在 `append`，但前端從未使用 `append`（只送 `replaceAll`），照做會是死碼；改為 `replaceAll` 寫入前以 `id` 去重，`append` 一併補上 `upsertRow_`，清理動作都寫 `logs`
+  - ✅ clasp ①②③④：基準對齊 → CI 管道建置 → 空跡部署驗證（`Deployed @13`）→ 單向紀律警語改寫
+  - ⏳ 未來票：本機為何先生出兩筆同 id（唯一未解的成因，票 A 與票 B 都只是攔截症狀）
+  - ⏳ 未來票：輪替 `CLOUD_SECRET`（搬進指令碼屬性只解決「不進 git history」，它仍公開在部署出去的 `index.html` 裡）
+  - ⏳ 未來票：`doGet` 沒有任何驗證 + web app 是 `ANYONE_ANONYMOUS`，任何人拿到 exec 網址就能讀取全部分頁
