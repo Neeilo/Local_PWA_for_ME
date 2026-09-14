@@ -1,0 +1,12 @@
+# clasp 認證（OAuth refresh token）——絕對不可進版控
+# 本 repo 會整包發布到 GitHub Pages，任何洩漏都是公開的
+.clasprc.json
+**/.clasprc.json
+
+# clasp 專案設定（含 scriptId，比照 CLOUD_URL 視為不公開資訊）
+# 請由 .clasp.json.example 複製後自行填入
+.clasp.json
+
+# Node
+node_modules/
+npm-debug.log*
