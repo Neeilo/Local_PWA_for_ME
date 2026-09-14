@@ -2,17 +2,15 @@
   "name": "local-pwa-for-me",
   "version": "1.0.0",
   "private": true,
-  "description": "Neil OS — 本地優先 PWA 與其 Apps Script 後端的 clasp 同步工具鏈",
+  "description": "Neil OS — 本地優先 PWA；Apps Script 後端由 GitHub Actions 單向部署，本機 clasp 只讀不寫",
   "type": "module",
   "scripts": {
     "pull": "clasp pull",
     "preflight": "node scripts/clasp-preflight.mjs",
-    "push": "npm run preflight && clasp push",
     "status": "clasp status",
     "whoami": "clasp show-authorized-user",
     "open": "clasp open-script",
-    "deployments": "clasp deployments",
-    "redeploy": "clasp redeploy"
+    "deployments": "clasp list-deployments"
   },
   "devDependencies": {
     "@google/clasp": "^3.4.1"

@@ -3,11 +3,19 @@
 這裡的檔案是 Google Apps Script 專案的鏡像。放在 repo 是為了版控與跨環境交接，
 避免「哪一版才是對的」變成猜謎。
 
-同步方式有兩種，**現在正處於從 (A) 過渡到 (B) 的階段**：
+同步方式正處於從 (A) 過渡到 (B) 的階段，**目前仍是 (A)**：
 
 - **(A) 手動貼回**（原本的做法）——改完貼進 Apps Script 編輯器再重新部署。
-- **(B) clasp 同步**（新做法，見下節）——`npm run pull` / `npm run push`。
-  要先完成一次 `npm run pull` 把線上專案完整抓下來，(B) 才算真正生效。
+- **(B) GitHub Actions 單向部署**（ADR-007 Part B，管道已建好但**尚未啟用**）——
+  push 到 `main` → CI 自動 `clasp push` + `clasp deploy -i`。
+
+(B) 的最後一塊拼圖是**基準對齊**：把線上專案完整拉下來放進這個資料夾。
+在那之前 CI 的 Apps Script job 會**自動跳過**（不是紅燈，也不會亂動線上），
+偵測依據是 `apps-script/appsscript.json` 在不在。做法見下節。
+
+> 🔒 **(B) 上線後本機就不再 push。** 本機 push 是從工作目錄送出的，而工作目錄
+> 可能有沒 commit 的東西——結果就是「線上跑的程式不在 repo 裡」，正是這套管道
+> 要消滅的問題本身。所以 `package.json` 裡**刻意沒有 push 指令**，本機只留 `pull`。
 
 | 檔案 | 用途 |
 |---|---|
@@ -23,7 +31,7 @@
 `clasp push` **不是增量合併**——它會把線上專案的檔案集合換成 `apps-script/` 的內容。
 `apps-script/` 裡沒有的檔案，線上就會被刪掉。
 
-這件事在本專案特別致命，因為 `line-router.gs:157` 會呼叫 `handlePwaSync_()`，
+這件事在本專案特別致命，因為 `line-router.gs` 會呼叫 `handlePwaSync_()`，
 而該函式定義在**只存在於線上、尚未鏡像進 repo 的 `Code.gs`** 裡。
 一旦在鏡像不完整時 push：
 
@@ -31,52 +39,89 @@
 Code.gs 被刪 → handlePwaSync_ undefined → PWA 同步與 LINE 路由同時失效
 ```
 
-所以規則只有一條：**永遠 pull-first**。`npm run push` 前面掛了
-`scripts/clasp-preflight.mjs` 當閘門，偵測到 `apps-script/appsscript.json`
-不存在（＝還沒 pull 過完整專案）就直接擋下，不讓你有機會手滑。
+所以規則只有一條：**永遠 pull-first**。同一道閘門（`scripts/clasp-preflight.mjs`）
+本機與 CI 共用——偵測到 `apps-script/appsscript.json` 不存在就直接擋下，
+不讓任何人有機會手滑。
 
-### 首次設定
+### 啟用 (B)：四步手動前置（只有 Neil 能做）
+
+授權必須本人在瀏覽器點同意，這一步代不了。四步跑完，管道就會自己醒過來。
 
 ```bash
-# 0. 先到 https://script.google.com/home/usersettings 開啟「Google Apps Script API」
-#    （沒開的話後面每一步都會 403，這是最常見的卡點）
+# ① 啟用 API（沒開的話後面每一步都會 403，這是最常見的卡點）
+#    https://script.google.com/home/usersettings
 
-npm install                       # 裝 clasp
-npx clasp login                   # 瀏覽器授權，憑證寫進 ~/.clasprc.json
+# ② 授權（憑證會寫進 ~/.clasprc.json）
+npx @google/clasp login
 
-cp .clasp.json.example .clasp.json
-# 填入 scriptId：Apps Script 編輯器 → 專案設定 → 「指令碼 ID」
+# ③ 把線上專案完整拉到「另一個乾淨資料夾」，切勿覆蓋 repo
+mkdir ~/apps-script-baseline && cd ~/apps-script-baseline
+npx @google/clasp clone <scriptId>
+#    scriptId：Apps Script 編輯器 → 專案設定 → 「指令碼 ID」
 
-npm run pull                      # 把線上專案完整抓下來
-git status                        # 應該看到 Code.gs 與 appsscript.json 新增
+# ④ 查出既有部署的 deploymentId（要沿用它，網址才不會變）
+npx @google/clasp list-deployments
 ```
 
-確認 `Code.gs` 與 `appsscript.json` 都下來了、內容合理，再 commit。
-到這一步鏡像才算完整，`npm run push` 的閘門也才會放行。
+接著設三個 Repository secret
+（Repo → Settings → Secrets and variables → Actions）：
 
-### 日常指令
+| Secret | 內容 | 怎麼取得 |
+|---|---|---|
+| `CLASPRC_JSON` | `~/.clasprc.json` **整份內容** | `cat ~/.clasprc.json` |
+| `CLASP_JSON` | `{"scriptId":"<你的 scriptId>","rootDir":"apps-script"}` | 照抄，填入 scriptId |
+| `CLASP_DEPLOYMENT_ID` | ④ 查到的**正式部署** id | `list-deployments` 的輸出 |
+
+> 🔑 `.clasprc.json` 的 refresh token 等於 Apps Script 專案的鑰匙。
+> **只能貼進 GitHub Secrets，絕不可 commit**——這個 repo 是公開的。
+
+最後把 ③ clone 下來的檔案（兩個 `.gs` + `appsscript.json`）**原樣**覆蓋進
+`apps-script/`，**檔名一個字都不要改**，看過 diff 後 commit。
+檔名就是 clasp 的對應鍵，改名不會報錯，而是在線上生出孤兒檔。
+
+這一筆進 `main` 的瞬間，CI 的 Apps Script job 就不再跳過了。
+
+### CI 做了什麼（`.github/workflows/deploy.yml`）
+
+| 步驟 | 行為 |
+|---|---|
+| 鏡像檢查 | `apps-script/appsscript.json` 不在 → 整個 job 跳過（休眠） |
+| Secret 防呆 | 三個 Secret 任一為空 → **紅燈 exit 1**，絕不靜默略過 |
+| 認證檢查 | clasp 未登入時仍會 exit 0，所以改比對輸出字串，憑證失效就紅燈 |
+| preflight | 與本機同一支腳本，同一個判斷只有一份實作 |
+| `clasp push --force` | `--force` 只是免掉 CI 沒有 TTY 可回答的互動確認 |
+| `clasp deploy -i` | 指定既有 deployment：版本換新、**exec 網址不變** |
+
+認證檔寫在 `$RUNNER_TEMP`、**不在 checkout 目錄裡**——這個 repo 會整包發布到
+Pages，token 只要落進工作目錄就等同公開。Apps Script 與 Pages 也刻意分成兩個
+job：一邊掛了不會連坐另一邊，密鑰也完全不會進到 Pages 的 artifact。
+
+### ⚠️ deploymentId 為什麼一定要指定
+
+PWA 端的 `CLOUD_URL` 是寫死在 GitHub Secrets、建置時注入 `index.html` 的，
+LINE 的 Webhook URL 也指著同一條 exec 網址。
+
+`clasp deploy` **不帶 `-i`** 會建立**新部署**＝**新的 exec 網址**，
+於是兩份程式各寫各的，而且**兩邊都不報錯**。所以 CI 在 `CLASP_DEPLOYMENT_ID`
+為空時寧可紅燈擋下，也不賭那一把。
+
+### 日常指令（本機只讀，不寫）
 
 | 指令 | 作用 |
 |---|---|
-| `npm run pull` | 從線上抓下最新版（動手改之前先跑，避免蓋掉線上的直接編輯） |
-| `npm run status` | 列出這次 push 會送出哪些檔案（乾跑，不會改動任何東西） |
-| `npm run preflight` | 只跑安全檢查，不 push |
-| `npm run push` | preflight 通過後推上線上專案 |
+| `npm run pull` | 從線上抓下最新版（緊急改動後的回收路徑） |
+| `npm run status` | 列出會送出哪些檔案（乾跑） |
+| `npm run preflight` | 只跑安全檢查 |
 | `npm run deployments` | 列出既有部署與其 deploymentId |
-| `npm run redeploy -- <deploymentId>` | 把既有部署更新到新版本 |
+| `npm run whoami` | 確認目前的 clasp 授權身分 |
 | `npm run open` | 用瀏覽器開啟 Apps Script 編輯器 |
 
-### ⚠️ 重新部署請務必沿用既有 deploymentId
+### 緊急通道仍然保留
 
-PWA 端的 `CLOUD_URL` 是寫死在 GitHub Secrets、建置時注入 `index.html` 的。
-`clasp deploy`（建立**新**部署）會產生**新的 exec 網址**，PWA 就連不上了。
+真的出事時（LINE 掛了、人在外面），Apps Script 編輯器是唯一能三分鐘內止血的
+路徑，所以**不做技術性封鎖**。代價要記住：
 
-要更新線上版本，只能是下列兩者之一：
-
-- `npm run deployments` 查出既有 deploymentId → `npm run redeploy -- <該 id>`
-- 或沿用原本的 UI 流程：部署 → 管理部署作業 → 編輯 → 版本選「新版本」→ 部署
-
-兩者都會**保持網址不變**。
+> **緊急改完若沒有 `npm run pull` 回來補 commit，下次 CI 部署會靜默抹掉它。**
 
 ### 認證檔安全
 

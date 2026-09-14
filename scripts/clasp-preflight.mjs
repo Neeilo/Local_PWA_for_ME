@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 /**
- * clasp push 前置檢查 —— 防止「半套 repo 覆蓋掉完整線上專案」。
+ * clasp push 前置閘門 —— 防止「半套 repo 覆蓋掉完整線上專案」。
+ *
+ * 【誰會跑到這裡】
+ * GitHub Actions 的 apps-script job（唯一的部署管道，ADR-007 D1）。
+ * 本機也可以 `npm run preflight` 當乾跑，看這次會送出哪些檔案——但本機
+ * 不 push：工作目錄可能有沒 commit 的東西，從那裡送出等於讓線上跑著
+ * repo 裡沒有的程式，正是這套管道要消滅的問題本身。
  *
  * 【為什麼需要這支】
  * clasp push 是整個專案覆蓋，不是增量合併：rootDir 裡沒有的檔案，
@@ -9,7 +15,7 @@
  * 呼叫的 handlePwaSync_() 變成 undefined，兩套功能一起死。
  *
  * 【防線設計】
- * appsscript.json 只可能由一次成功的 clasp pull 產生，而那次 pull
+ * appsscript.json 只可能由一次成功的 clasp pull／clone 產生，而那次拉取
  * 必然同時把線上所有 .gs 抓下來。所以「appsscript.json 存在」就是
  * 「本地已是線上完整鏡像」的充分證據。用它當閘門，零誤判。
  */
@@ -31,9 +37,9 @@ function die(msg) {
 if (!existsSync('.clasp.json')) {
   die(
     '找不到 .clasp.json。\n\n' +
-      '請先複製範本並填入你的 Script ID：\n' +
-      '  cp .clasp.json.example .clasp.json\n\n' +
-      'Script ID 可在 Apps Script 編輯器 → 專案設定 → 「指令碼 ID」取得。'
+      '本機：cp .clasp.json.example .clasp.json 後填入 Script ID\n' +
+      '      （Apps Script 編輯器 → 專案設定 → 「指令碼 ID」）\n' +
+      'CI  ：由 Secret CLASP_JSON 還原，跑到這裡代表該 Secret 是空的或不是合法 JSON。'
   );
 }
 
@@ -54,9 +60,10 @@ if (!existsSync(manifest)) {
     `${rootDir}/appsscript.json 不存在，代表本地「還不是」線上專案的完整鏡像。\n\n` +
       `${YELLOW}此時 push 會刪掉線上未被鏡像的檔案（例如 Code.gs），\n` +
       `連帶讓 line-router.gs 呼叫的 handlePwaSync_() 變成 undefined。${RESET}\n\n` +
-      '請先把線上專案完整抓下來：\n' +
+      '這代表 ADR-007 的「基準對齊」還沒完成。請先把線上專案完整抓下來：\n' +
       '  npm run pull\n\n' +
-      '確認 Code.gs 與 appsscript.json 都出現、git diff 看起來合理之後，再 push。'
+      '確認 Code.gs 與 appsscript.json 都出現、git diff 看起來合理之後，commit 進 main。\n' +
+      '管道會在那之後自己啟用，不需要再做別的事。'
   );
 }
 

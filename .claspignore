@@ -1,0 +1,11 @@
+# clasp push 時要排除的檔案（路徑相對於 .clasp.json 的 rootDir）
+#
+# clasp 目前本來就只會送 .gs / .js / .ts / .html 與 appsscript.json，
+# README.md 剛好不在其中——但「剛好」不是保證，寫明才是（ADR-007 D4b）。
+README.md
+**/README.md
+
+# 順手把常見的誤放品擋在門外：這些一旦被 push 上去，
+# 會在線上專案變成看不出來歷的孤兒檔
+*.md
+.DS_Store

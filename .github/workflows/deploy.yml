@@ -31,9 +31,133 @@ jobs:
           sed -i "s|__CLOUD_URL__|${CLOUD_URL}|g" index.html
           sed -i "s|__CLOUD_SECRET__|${CLOUD_SECRET}|g" index.html
 
+      # 上傳用的是 path: .（整個 repo），所以 apps-script/ 本來會跟著發布到
+      # Pages 上被公開讀取。這裡刪的是 runner 上的暫存副本，不動 repo。
+      - name: Keep Apps Script sources out of the published site
+        run: rm -rf apps-script
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: .
 
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  # ---------------------------------------------------------------------------
+  # Apps Script 部署（ADR-007 Part B）
+  #
+  # main 裡有什麼，線上就是什麼——這是走 Actions 而非本機 clasp 的唯一理由：
+  # 本機 push 是從工作目錄送出，而工作目錄可能有沒 commit 的東西。
+  #
+  # 刻意與 Pages 分成兩個 job：
+  #   1. 認證與 scriptId 完全不會進到 Pages 上傳的那份 artifact
+  #   2. 一邊掛了不會連坐另一邊
+  # ---------------------------------------------------------------------------
+  apps-script:
+    runs-on: ubuntu-latest
+    # Pages 那組 concurrency 會 cancel-in-progress。clasp 部署被砍在半路，
+    # 就是「存檔 ≠ 部署」的另一種長相，所以這裡獨立分組、且不取消。
+    concurrency:
+      group: apps-script
+      cancel-in-progress: false
+    # 這個 job 不碰 Pages，權限就不該帶著走
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # clasp push 是整包覆蓋，不是增量合併：rootDir 裡沒有的檔案線上就會被刪。
+      # 基準對齊完成前，apps-script/ 還不是線上專案的完整鏡像（少了 Code.gs），
+      # 這時候 push 會把線上刪到只剩半套。所以管道先休眠，不紅燈也不硬幹——
+      # 基準對齊一進 main，它自己就會醒過來。
+      - name: Check the mirror is complete before touching production
+        id: mirror
+        run: |
+          if [ -f apps-script/appsscript.json ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Apps Script 部署已跳過::apps-script/appsscript.json 不存在，代表基準對齊（ADR-007 clasp ①）尚未完成。完成後本管道會自動啟用。"
+          fi
+
+      # 三個 Secret 少一個就紅燈擋下。尤其是 CLASP_DEPLOYMENT_ID：
+      # 沒有 -i 的 clasp deploy 會生出「第二條 exec 網址」，而 CLOUD_URL 與
+      # LINE Webhook 都還指著舊的那條——兩份程式各寫各的，且兩邊都不報錯。
+      # 寧可紅燈，不可靜默分岔（ADR-007 E-2 §1）。
+      - name: Fail loudly if any clasp secret is missing
+        if: steps.mirror.outputs.ready == 'true'
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASP_JSON: ${{ secrets.CLASP_JSON }}
+          CLASP_DEPLOYMENT_ID: ${{ secrets.CLASP_DEPLOYMENT_ID }}
+        run: |
+          missing=0
+          for name in CLASPRC_JSON CLASP_JSON CLASP_DEPLOYMENT_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error title=${name} 未設定::Repo → Settings → Secrets and variables → Actions 補上後重跑。"
+              missing=1
+            fi
+          done
+          [ "$missing" = 0 ] || exit 1
+
+      - uses: actions/setup-node@v4
+        if: steps.mirror.outputs.ready == 'true'
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install clasp
+        if: steps.mirror.outputs.ready == 'true'
+        run: npm ci
+
+      # 認證寫在 workspace 之外。這個 repo 會整包發布到 Pages，
+      # refresh token 只要落進 checkout 目錄，就等同公開。
+      - name: Restore clasp credentials and project config
+        if: steps.mirror.outputs.ready == 'true'
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASP_JSON: ${{ secrets.CLASP_JSON }}
+        run: |
+          printf '%s' "$CLASPRC_JSON" > "$RUNNER_TEMP/.clasprc.json"
+          chmod 600 "$RUNNER_TEMP/.clasprc.json"
+          printf '%s' "$CLASP_JSON" > .clasp.json
+          # 告訴後續每一步去哪裡找認證。走 GITHUB_ENV 而不是 job 層的 env：
+          # runner context 在 job 層的 env 不可用，寫了會直接解析失敗。
+          echo "clasp_config_auth=$RUNNER_TEMP/.clasprc.json" >> "$GITHUB_ENV"
+
+      # clasp 沒登入時 show-authorized-user 照樣 exit 0（實測），
+      # 所以比對輸出字串，讓「憑證壞了」長得像失敗，而不是像成功。
+      - name: Verify the credentials actually authenticate
+        if: steps.mirror.outputs.ready == 'true'
+        run: |
+          out="$(npx clasp show-authorized-user 2>&1)" || true
+          echo "$out"
+          case "$out" in
+            *"Not logged in"*)
+              echo "::error title=clasp 認證失效::CLASPRC_JSON 過期或內容不正確。請在本機重跑 npx clasp login，再把 ~/.clasprc.json 整份貼回 Secret。"
+              exit 1
+              ;;
+          esac
+
+      # 與本機同一道閘門（scripts/clasp-preflight.mjs）：
+      # 同一個判斷只有一份實作，兩邊不會各自漂移。
+      - name: Preflight
+        if: steps.mirror.outputs.ready == 'true'
+        run: node scripts/clasp-preflight.mjs
+
+      # --force 只是免掉 manifest 變更時的互動確認（CI 沒有 TTY 可回答），
+      # 送出的內容仍然完全由 apps-script/ 決定。
+      - name: Push sources to the Apps Script project
+        if: steps.mirror.outputs.ready == 'true'
+        run: npx clasp push --force
+
+      # -i 指定既有 deployment：版本換新、exec 網址不變。
+      # 這一步取代了人工的「管理部署作業 → 編輯 → 版本選新版本」，
+      # 也就是這個專案踩過三次的那個坑。
+      - name: Deploy a new version to the existing deployment
+        if: steps.mirror.outputs.ready == 'true'
+        env:
+          CLASP_DEPLOYMENT_ID: ${{ secrets.CLASP_DEPLOYMENT_ID }}
+        run: |
+          npx clasp deploy -i "$CLASP_DEPLOYMENT_ID" -d "main@${GITHUB_SHA:0:7}"
+          echo "::notice title=Apps Script 已部署::deployment ${CLASP_DEPLOYMENT_ID} → main@${GITHUB_SHA:0:7}（exec 網址不變）"

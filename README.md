@@ -93,6 +93,22 @@ apps-script/    Apps Script 端程式碼鏡像（LINE 路由；非部署來源�
 
 > 注意：即使密鑰不進 git，部署出去的頁面原始碼裡還是看得到（純前端架構無法真正隱藏密鑰），這個設計只解決「密鑰留在 git history 裡」的問題，不是解決「密鑰對外不可見」——真正解法是密鑰一旦外流就要重新產生。
 
+### Apps Script 的部署管道（ADR-007 Part B）
+
+`main` 有什麼，線上就是什麼——`.github/workflows/deploy.yml` 的 `apps-script` job 會
+`clasp push` 後 `clasp deploy -i`，取代人工的「管理部署作業 → 編輯 → 版本選新版本」，
+也就是這個專案踩過三次的那個坑。**本機不 push**（工作目錄可能有沒 commit 的東西），
+`package.json` 裡刻意只留 `pull`。
+
+目前管道**已建好但尚未啟用**：`apps-script/` 還不是線上專案的完整鏡像（缺 `Code.gs`
+與 `appsscript.json`），CI 偵測到就整個 job 跳過——不是紅燈，也不會去動線上。基準對齊
+一進 `main`，它自己就會醒過來。四步手動前置與三個 Secret（`CLASPRC_JSON` /
+`CLASP_JSON` / `CLASP_DEPLOYMENT_ID`）見 [`apps-script/README.md`](apps-script/README.md)。
+
+Apps Script 與 Pages 分成兩個 job：認證與 scriptId 完全不會進到 Pages 的 artifact，
+一邊掛了也不會連坐另一邊。Pages job 上傳前會 `rm -rf apps-script`（刪 runner 上的暫存
+副本，不動 repo），讓後端程式碼不再跟著發布到公開網址。
+
 ## 專案狀態
 
 - **Phase 1** — 原型驗證：✅ 已完成（2026-07-02）
@@ -121,5 +137,7 @@ apps-script/    Apps Script 端程式碼鏡像（LINE 路由；非部署來源�
 - **ADR-007**（依 [ADR-007]，2026-09-14）：🚧 進行中
   - ✅ 票 B：前端 `state` 讀取層以 `id` 去重（同 id 留後者），SW v9→v10
   - ⏳ 票 A：後端 `doPost` upsert 閘門（共用 `upsertRow_`，多筆同 id 覆蓋第一筆、刪除其餘並寫 `logs`）——**卡在 `Code.gs` 尚未進 repo**，需先完成基準對齊
-  - ⏳ Apps Script ↔ GitHub 自動同步：基準對齊（以線上版為準）→ clasp 建置 → 空跡部署驗證 → 改寫單向紀律警語
+  - ✅ clasp ②：CI 部署管道建置（`clasp push` + `clasp deploy -i`、三段防呆、`.claspignore`、Pages 排除 `apps-script/`）——**已建好但休眠中**，基準對齊後自動啟用
+  - ⏳ clasp ①：基準對齊（以線上版為準）——需 Neil 先完成 `clasp login` 與 `clone`
+  - ⏳ clasp ③④：空跡部署驗證 → 改寫單向紀律警語
   - ⏳ 未來票：本機為何先生出兩筆同 id（ADR-007 未解成因）
