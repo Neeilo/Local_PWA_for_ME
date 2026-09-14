@@ -49,6 +49,10 @@ Google Sheets 各分頁欄位：
 
 `priority` 存 `H`/`M`/`L`，預設 `M`，無值的既有任務會在前端首次載入時自動補 `M`。`expenses.type` 為 `expense`/`income`，首頁圓餅圖只計 `expense`。Apps Script 的 `Code.gs` 為通用 `doGet`/`doPost`，新增分頁與欄位皆不需修改。
 
+讀進 `state` 的資料會先過一層**以 `id` 為 key 的去重**（同 id 只留後者，視為較新的編輯），位置在 `load()` 與 `pullFromCloud()` 這兩個共用出口，**不在各 `render` 函式**——一次涵蓋全模組，日後新增分頁不需要記得補。pull 的合併規則是「id 不在本機就收下」，而那份 id 集合是進迴圈前算一次的，所以雲端同一個 `id` 的兩列會兩筆都被收進來；去重是這條路徑的終點閘門（[ADR-007] 票 B）。
+
+> ⚠️ 前端去重是**遮蔽症狀，不是根除成因**。真正的根因在後端 `doPost` 以無條件 `append` 處理更新（[ADR-007] 票 A，尚未施工），以及「本機為何會先生出兩筆同 id」（未解，列為未來票）。看到「資料明明兩筆卻只顯示一筆」時，答案在這裡。
+
 同步時序：App 啟動與**回到前景**時都會 pull 補齊（只加不刪）。`save()` 的整包 `replaceAll` 會等待進行中的 pull 完成才送出——否則本機尚未補齊的 state 會覆寫掉雲端的新資料（例如從 LINE 快速輸入新增的任務）。回前景的 pull 有 5 秒節流。
 
 LINE 快速輸入的 Apps Script 端程式碼鏡像在 `apps-script/`，安裝與除錯見該目錄的 README。支援前綴：
@@ -76,7 +80,7 @@ manifest.json   PWA manifest
 sw.js           Service Worker（離線快取）
 icon-192.png    App icon 192x192
 icon-512.png    App icon 512x512
-apps-script/    Apps Script 端程式碼鏡像（LINE 路由；非部署來源）
+apps-script/    Apps Script 端程式碼（Code.gs 同步 + line-router.gs LINE 路由）
 ```
 
 ## 開發須知
@@ -88,6 +92,22 @@ apps-script/    Apps Script 端程式碼鏡像（LINE 路由；非部署來源�
 設定方式：Repo → Settings → Secrets and variables → Actions，新增 `CLOUD_URL`、`CLOUD_SECRET` 兩個 Repository secret；並把 Settings → Pages → Build and deployment → Source 切成「GitHub Actions」（原本若是「Deploy from a branch」要一併關掉，避免兩邊搶著部署）。
 
 > 注意：即使密鑰不進 git，部署出去的頁面原始碼裡還是看得到（純前端架構無法真正隱藏密鑰），這個設計只解決「密鑰留在 git history 裡」的問題，不是解決「密鑰對外不可見」——真正解法是密鑰一旦外流就要重新產生。
+
+### Apps Script 的部署管道（ADR-007 Part B）
+
+`main` 有什麼，線上就是什麼——`.github/workflows/deploy.yml` 的 `apps-script` job 會
+`clasp push` 後 `clasp deploy -i`，取代人工的「管理部署作業 → 編輯 → 版本選新版本」，
+也就是這個專案踩過三次的那個坑。**本機不 push**（工作目錄可能有沒 commit 的東西），
+`package.json` 裡刻意只留 `pull`。
+
+目前管道**已建好但尚未啟用**：`apps-script/` 還不是線上專案的完整鏡像（缺 `Code.gs`
+與 `appsscript.json`），CI 偵測到就整個 job 跳過——不是紅燈，也不會去動線上。基準對齊
+一進 `main`，它自己就會醒過來。四步手動前置與三個 Secret（`CLASPRC_JSON` /
+`SCRIPT_ID` / `CLASP_DEPLOYMENT_ID`）見 [`apps-script/README.md`](apps-script/README.md)。
+
+Apps Script 與 Pages 分成兩個 job：認證與 scriptId 完全不會進到 Pages 的 artifact，
+一邊掛了也不會連坐另一邊。Pages job 上傳前會 `rm -rf apps-script`（刪 runner 上的暫存
+副本，不動 repo），讓後端程式碼不再跟著發布到公開網址。
 
 ## 專案狀態
 
@@ -114,3 +134,10 @@ apps-script/    Apps Script 端程式碼鏡像（LINE 路由；非部署來源�
   - ✅ 「創造」以類別選填的形式併入雜記，存成 `[類別] 內容`
   - ✅ B：查詢 MVP（`查` 前綴 + Gemini API，記帳送彙總確保總額精確）
   - ⏳ 未來票：`logs` 列數上限與自動修剪（構想：超過 500 列自動修剪）
+- **ADR-007**（依 [ADR-007]，2026-09-14）：🚧 進行中
+  - ✅ 票 B：前端 `state` 讀取層以 `id` 去重（同 id 留後者），SW v9→v10
+  - ⏳ 票 A：後端 `doPost` upsert 閘門（共用 `upsertRow_`，多筆同 id 覆蓋第一筆、刪除其餘並寫 `logs`）——**卡在 `Code.gs` 尚未進 repo**，需先完成基準對齊
+  - ✅ clasp ②：CI 部署管道建置（`clasp push` + `clasp deploy -i`、三段防呆、`.claspignore`、Pages 排除 `apps-script/`）——**已建好但休眠中**，基準對齊後自動啟用
+  - ⏳ clasp ①：基準對齊（以線上版為準）——需 Neil 先完成 `clasp login` 與 `clone`
+  - ⏳ clasp ③④：空跡部署驗證 → 改寫單向紀律警語
+  - ⏳ 未來票：本機為何先生出兩筆同 id（ADR-007 未解成因）
