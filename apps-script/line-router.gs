@@ -77,15 +77,28 @@ var GEMINI_TIMEOUT_REPLY = 'AI 暫時無法回應，請稍後再試';
 var GEMINI_MAX_OUTPUT_TOKENS = 2048;
 
 /**
- * 允許使用的 LINE userId 白名單。
- * 留空陣列 = 不限制（方便第一次跑通）。
+ * 允許使用的 LINE userId 白名單，改讀指令碼屬性 ALLOWED_USER_IDS（逗號分隔）。
+ * 讀不到 = 不限制（維持與改版前相同的語意），但會留一行 console 提醒。
+ *
+ * 不寫在原始碼裡的理由與 CLOUD_SECRET 相同：這份程式碼鏡像進公開的 repo，
+ * 而 exec 網址本來就公開（建置時注入 index.html）——兩者湊齊就能冒名寫入。
  * 取得自己的 userId 最快的方式：在 LINE 傳一句 whoami，bot 會直接回你。
  * （也會寫進執行記錄，但 webhook 觸發的執行只看得到 console.log，看不到 Logger.log）
  *
  * ⚠️ Apps Script 的 doPost 讀不到 HTTP Header，驗不了 LINE 官方簽章，
  *    所以 exec 網址一旦外流，任何人都能往你的 Sheet 寫東西。白名單是唯一的防線。
  */
-var ALLOWED_USER_IDS = [];
+function allowedUserIds_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('ALLOWED_USER_IDS');
+  if (!raw) {
+    // 安靜地變成「不限制」是最糟的組合：以為有防線，其實沒有。至少讓它出聲。
+    console.log('⚠️ 指令碼屬性 ALLOWED_USER_IDS 未設定，目前等於不限制任何人寫入');
+    return [];
+  }
+  return String(raw).split(',').map(function (s) { return s.trim(); })
+    .filter(function (s) { return s; });
+}
+var ALLOWED_USER_IDS = allowedUserIds_();
 
 /**
  * 記帳分類固定清單，與 index.html 的 EXPENSE_CATEGORIES 一字不差。

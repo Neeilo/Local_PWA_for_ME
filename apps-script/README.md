@@ -19,7 +19,22 @@
 
 | 檔案 | 用途 |
 |---|---|
-| `line-router.gs` | LINE 快速輸入 → Sheets 路由（加掛檔，不含既有 PWA 同步邏輯） |
+| `Code.gs` | PWA ↔ Sheets 同步（`doGet` 讀取、`handlePwaSync_` 寫入） |
+| `line-router.gs` | LINE 快速輸入 → Sheets 路由，並持有統一入口 `doPost` |
+
+⚠️ **這兩份是依線上版鏡像，但把兩個密鑰改讀指令碼屬性**（見下），其餘一字未改。
+線上版原本把 `CLOUD_SECRET` 與 LINE userId 白名單寫死在原始碼裡——這個 repo 是
+公開的，寫死等於公開，而且 git history 洗不掉。
+
+### 指令碼屬性一覽
+
+| 屬性 | 用途 | 沒設定會怎樣 |
+|---|---|---|
+| `CLOUD_SECRET` | PWA 同步的寫入密鑰，需與 GitHub Secret 同值 | **所有寫入一律拒絕**（fail-closed），回 `server_misconfigured` |
+| `ALLOWED_USER_IDS` | LINE 白名單，逗號分隔多筆 | 等於不限制任何人寫入，並留一行 console 警告 |
+| `LINE_CHANNEL_ACCESS_TOKEN` | LINE 回覆用長期權杖 | 寫入照常，但 bot 不會回話 |
+| `GEMINI_API_KEY` | 「查」前綴用 | 只有查詢不能用，其他前綴照常 |
+| `GEMINI_MODEL` | 覆寫預設模型 ID（選填） | 用程式內建預設值 |
 
 > ⚠️ 這個 repo 會整包發布到 GitHub Pages，此資料夾也會公開。
 > **任何權杖、SECRET 一律放 Apps Script 的「指令碼屬性」，不要寫進這裡的檔案。**

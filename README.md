@@ -80,7 +80,7 @@ manifest.json   PWA manifest
 sw.js           Service Worker（離線快取）
 icon-192.png    App icon 192x192
 icon-512.png    App icon 512x512
-apps-script/    Apps Script 端程式碼鏡像（LINE 路由；非部署來源）
+apps-script/    Apps Script 端程式碼（Code.gs 同步 + line-router.gs LINE 路由）
 ```
 
 ## 開發須知
