@@ -103,7 +103,7 @@ apps-script/    Apps Script 端程式碼（Code.gs 同步 + line-router.gs LINE 
 目前管道**已建好但尚未啟用**：`apps-script/` 還不是線上專案的完整鏡像（缺 `Code.gs`
 與 `appsscript.json`），CI 偵測到就整個 job 跳過——不是紅燈，也不會去動線上。基準對齊
 一進 `main`，它自己就會醒過來。四步手動前置與三個 Secret（`CLASPRC_JSON` /
-`CLASP_JSON` / `CLASP_DEPLOYMENT_ID`）見 [`apps-script/README.md`](apps-script/README.md)。
+`SCRIPT_ID` / `CLASP_DEPLOYMENT_ID`）見 [`apps-script/README.md`](apps-script/README.md)。
 
 Apps Script 與 Pages 分成兩個 job：認證與 scriptId 完全不會進到 Pages 的 artifact，
 一邊掛了也不會連坐另一邊。Pages job 上傳前會 `rm -rf apps-script`（刪 runner 上的暫存

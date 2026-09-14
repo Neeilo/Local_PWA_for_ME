@@ -90,15 +90,16 @@ jobs:
       # 沒有 -i 的 clasp deploy 會生出「第二條 exec 網址」，而 CLOUD_URL 與
       # LINE Webhook 都還指著舊的那條——兩份程式各寫各的，且兩邊都不報錯。
       # 寧可紅燈，不可靜默分岔（ADR-007 E-2 §1）。
-      - name: Fail loudly if any clasp secret is missing
+      # 沒有這兩個就連 clasp 都跑不起來，先擋在最前面。
+      # CLASP_DEPLOYMENT_ID 留到後面查——那時已經有認證，可以直接把清單印給你挑。
+      - name: Fail loudly if the clasp secrets are missing
         if: steps.mirror.outputs.ready == 'true'
         env:
           CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
-          CLASP_JSON: ${{ secrets.CLASP_JSON }}
-          CLASP_DEPLOYMENT_ID: ${{ secrets.CLASP_DEPLOYMENT_ID }}
+          SCRIPT_ID: ${{ secrets.SCRIPT_ID }}
         run: |
           missing=0
-          for name in CLASPRC_JSON CLASP_JSON CLASP_DEPLOYMENT_ID; do
+          for name in CLASPRC_JSON SCRIPT_ID; do
             if [ -z "${!name}" ]; then
               echo "::error title=${name} 未設定::Repo → Settings → Secrets and variables → Actions 補上後重跑。"
               missing=1
@@ -122,11 +123,13 @@ jobs:
         if: steps.mirror.outputs.ready == 'true'
         env:
           CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
-          CLASP_JSON: ${{ secrets.CLASP_JSON }}
+          SCRIPT_ID: ${{ secrets.SCRIPT_ID }}
         run: |
           printf '%s' "$CLASPRC_JSON" > "$RUNNER_TEMP/.clasprc.json"
           chmod 600 "$RUNNER_TEMP/.clasprc.json"
-          printf '%s' "$CLASP_JSON" > .clasp.json
+          # .clasp.json 只有 scriptId 會變，rootDir 是固定的——整包當 Secret
+          # 等於把一個常數也藏起來，反而多一個會過期的東西要維護。
+          printf '{"scriptId":"%s","rootDir":"apps-script"}' "$SCRIPT_ID" > .clasp.json
           # 告訴後續每一步去哪裡找認證。走 GITHUB_ENV 而不是 job 層的 env：
           # runner context 在 job 層的 env 不可用，寫了會直接解析失敗。
           echo "clasp_config_auth=$RUNNER_TEMP/.clasprc.json" >> "$GITHUB_ENV"
@@ -160,10 +163,20 @@ jobs:
       # -i 指定既有 deployment：版本換新、exec 網址不變。
       # 這一步取代了人工的「管理部署作業 → 編輯 → 版本選新版本」，
       # 也就是這個專案踩過三次的那個坑。
+      #
+      # ID 為空時不自動挑一個——挑錯就是換掉 exec 網址，而 CLOUD_URL 與 LINE
+      # Webhook 都還指著舊的那條，兩份程式各寫各的且兩邊都不報錯（ADR-007 E-2 §1）。
+      # 但紅燈不該只是紅燈：這裡已經有認證，直接把清單印出來讓你複製。
       - name: Deploy a new version to the existing deployment
         if: steps.mirror.outputs.ready == 'true'
         env:
           CLASP_DEPLOYMENT_ID: ${{ secrets.CLASP_DEPLOYMENT_ID }}
         run: |
+          if [ -z "$CLASP_DEPLOYMENT_ID" ]; then
+            echo "::error title=CLASP_DEPLOYMENT_ID 未設定::原始碼已推上去，但沒有部署。下面是這個專案現有的部署清單，挑正式那筆（不是 @HEAD）設成 Secret 後重跑。"
+            echo '--- clasp list-deployments ---'
+            npx clasp list-deployments || true
+            exit 1
+          fi
           npx clasp deploy -i "$CLASP_DEPLOYMENT_ID" -d "main@${GITHUB_SHA:0:7}"
           echo "::notice title=Apps Script 已部署::deployment ${CLASP_DEPLOYMENT_ID} → main@${GITHUB_SHA:0:7}（exec 網址不變）"

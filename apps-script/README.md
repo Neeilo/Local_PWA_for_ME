@@ -84,8 +84,14 @@ npx @google/clasp list-deployments
 | Secret | 內容 | 怎麼取得 |
 |---|---|---|
 | `CLASPRC_JSON` | `~/.clasprc.json` **整份內容** | `cat ~/.clasprc.json` |
-| `CLASP_JSON` | `{"scriptId":"<你的 scriptId>","rootDir":"apps-script"}` | 照抄，填入 scriptId |
-| `CLASP_DEPLOYMENT_ID` | ④ 查到的**正式部署** id | `list-deployments` 的輸出 |
+| `SCRIPT_ID` | 只要 scriptId 本身 | Apps Script 編輯器 → 專案設定 → 「指令碼 ID」 |
+| `CLASP_DEPLOYMENT_ID` | ④ 查到的**正式部署** id（不是 `@HEAD` 那筆） | `list-deployments` 的輸出 |
+
+`.clasp.json` 由 CI 用 `SCRIPT_ID` 現組（`rootDir` 固定是 `apps-script`）。
+整包當 Secret 等於把一個常數也藏起來，反而多一個會過期的東西要維護。
+
+`CLASP_DEPLOYMENT_ID` 沒設時，CI **會推程式碼但不部署**，並把 `list-deployments`
+的輸出印在記錄裡讓你直接複製——紅燈不該只是紅燈。
 
 > 🔑 `.clasprc.json` 的 refresh token 等於 Apps Script 專案的鑰匙。
 > **只能貼進 GitHub Secrets，絕不可 commit**——這個 repo 是公開的。
