@@ -602,6 +602,7 @@
     </div>
     <div class="card">
       <h2>過去的日誌</h2>
+      <div class="scope-bar" id="scopeReview" hidden></div>
       <div id="reviewList"></div>
     </div>
   </section>
@@ -760,6 +761,13 @@ function isPending(u){
   return !truthy(u&&u.is_active) && String((u&&u.is_active)==null?'':u.is_active).trim()==='';
 }
 function pendingUsers(){ return roster.filter(isPending); }
+/* 查不到就回 line_id 本身：顯示一串 ID 很醜，但比顯示空白讓人以為沒有作者好 */
+function nameOfLineId(id){
+  const key=String(id||'').trim();
+  if(!key) return '';
+  const u=roster.find(x=>rosterId(x)===key);
+  return u ? rosterName(u) : key;
+}
 function isAdmin(){ return truthy((myUser()||{}).is_admin); }
 
 /* 這一列有沒有任何 feat_ 欄？沒有就代表矩陣還沒佈到 Sheet 上，一律視為開放。
@@ -938,10 +946,17 @@ function orphanCount(){
   ['tasks','moods','notes','expenses'].forEach(k=>{
     (state[k]||[]).forEach(r=>{ if(!String(r.line_id||'').trim()) n++; });
   });
-  Object.keys(state.reviews||{}).forEach(k=>{
-    if(!String((state.reviews[k]||{}).line_id||'').trim()) n++;
+  return n+claimableReviewKeys().length;
+}
+/* 可以認領的日誌：沒有歸屬，而且換鍵之後不會撞到自己已經寫過的同一天。
+   撞到就跳過——日誌的鍵含 line_id，認領等於換鍵，硬換會直接覆蓋掉自己那天的
+   複盤，那是真正的資料遺失。數量也照這個規則算，才不會按下去發現少認了幾筆。 */
+function claimableReviewKeys(){
+  if(!myLineId) return [];
+  return Object.keys(state.reviews||{}).filter(k=>{
+    if(String((state.reviews[k]||{}).line_id||'').trim()) return false;
+    return !state.reviews[reviewKey(reviewDateOf(k), myLineId)];
   });
-  return n;
 }
 function claimOrphans(){
   if(!myLineId) return;
@@ -951,8 +966,12 @@ function claimOrphans(){
   ['tasks','moods','notes','expenses'].forEach(k=>{
     (state[k]||[]).forEach(r=>{ if(!String(r.line_id||'').trim()) r.line_id=myLineId; });
   });
-  Object.keys(state.reviews||{}).forEach(k=>{
-    if(!String((state.reviews[k]||{}).line_id||'').trim()) state.reviews[k].line_id=myLineId;
+  // 日誌要連鍵一起搬，不能只改欄位
+  claimableReviewKeys().forEach(k=>{
+    const r=state.reviews[k];
+    r.line_id=myLineId;
+    delete state.reviews[k];
+    state.reviews[reviewKey(reviewDateOf(k), myLineId)]=r;
   });
   save(); applyIdentity(); toast(`已認領 ${n} 筆`);
 }
@@ -972,7 +991,7 @@ function setScope(mine){
 function renderScopeBars(){
   // 名單上只有一個人時，「只看我的」跟「全部」永遠是同一件事——不擺沒有作用的開關
   const show = !!myLineId && activeUsers().length>1;
-  ['scopeHome','scopeExpenses','scopeTasks'].forEach(function(id){
+  ['scopeHome','scopeExpenses','scopeTasks','scopeReview'].forEach(function(id){
     const el=document.getElementById(id);
     if(!el) return;
     el.hidden=!show;
@@ -1192,14 +1211,55 @@ function dedupeState(){
     state[k]=dedupeById(state[k]);
     removed+=before-(Array.isArray(state[k])?state[k].length:0);
   });
-  // reviews 以日期為 key，天生不會有兩筆同鍵，不需處理
+  // reviews 的鍵含 line_id，天生不會有兩筆同鍵，不需處理（見 reviewKey）
   // 靜默的修復跟靜默的失敗一樣難查：留一行 console 讓「還在重複」與「已被去掉」分得出來
   if(removed) console.log(`[ADR-007 票 B] state 去重：移除 ${removed} 筆重複 id`);
   return removed;
 }
+/* ---------- 日誌的鍵：日期 ＋ 寫的人 ----------
+   改版前 state.reviews 的鍵只有日期，這在單人時代沒問題，多人之後會出事：
+   你和家人同一天各寫一篇複盤，在資料模型裡是同一筆——pull 的合併規則是
+   「這個日期本機沒有才收下」，所以你不會收到他的，然後你的整包 replaceAll
+   會把他那筆從雲端抹掉。line_id 欄位擋不住這件事，因為根因在鍵不在欄位。
+
+   其他四個模組都以 id 為鍵（每筆天生獨立），只有 reviews 是以日期為鍵，
+   所以只有它需要補。分隔符用 '|'：日期是 YYYY-MM-DD、line_id 是英數，
+   兩邊都不可能出現它，拆回來不會拆錯。
+
+   ⚠️ 雲端 reviews 分頁的 review_date 欄仍然只存日期——組合鍵是「本機這份
+   state 的鍵」，不是存進去的值。推上去之前一定要用 reviewDateOf() 拆回來，
+   否則日期欄會變成 '2026-09-15|U_xxxx'。 */
+const REVIEW_KEY_SEP='|';
+function reviewKey(date, lineId){ return String(date)+REVIEW_KEY_SEP+String(lineId||''); }
+function myReviewKey(date){ return reviewKey(date||todayKey(), myLineId||''); }
+function reviewDateOf(key){
+  const i=String(key).indexOf(REVIEW_KEY_SEP);
+  return i===-1 ? String(key) : String(key).slice(0,i);   // -1 = 還沒遷移的舊鍵
+}
+function reviewOwnerOf(key){
+  const i=String(key).indexOf(REVIEW_KEY_SEP);
+  return i===-1 ? '' : String(key).slice(i+1);
+}
+/* 舊的純日期鍵 → 組合鍵。**不自動認領成自己的**：沒有 line_id 的舊資料鍵尾留空，
+   跟其他模組「不自動蓋章」的處理一致（要認是「認領舊資料」那顆按鈕的事）。
+   舊鍵各自唯一，換算後也各自唯一，不會互相覆蓋。 */
+function migrateReviewKeys(){
+  const src=state.reviews||{};
+  const keys=Object.keys(src);
+  if(!keys.some(k=>String(k).indexOf(REVIEW_KEY_SEP)===-1)) return false;
+
+  const next={};
+  keys.forEach(k=>{
+    const r=src[k]||{};
+    next[String(k).indexOf(REVIEW_KEY_SEP)===-1 ? reviewKey(k, r.line_id||'') : k]=r;
+  });
+  state.reviews=next;
+  console.log('[ADR-008] 日誌的鍵已改為「日期＋寫的人」，換算 '+keys.length+' 筆');
+  return true;
+}
 /* 既有任務首次載入補上預設優先度 M（ADR-004 §3） */
 function migrate(){
-  let changed=false;
+  let changed=migrateReviewKeys();
   state.tasks.forEach(t=>{
     if(!PRIORITIES.includes(t.priority)){ t.priority=DEFAULT_PRIORITY; changed=true; }
   });
@@ -1272,7 +1332,12 @@ function pushAllToCloud(){
   // 欄序即表頭：replaceAll 會用這份 headers 重寫表頭列，所以 line_id 一律補在最後一欄。
   const p1=cloudReplaceAll('tasks',['id','text','is_completed','created_at','priority','line_id'], state.tasks.map(taskToCloud));
   const p2=cloudReplaceAll('reviews',['review_date','good','stuck','most_important','line_id'],
-    Object.keys(state.reviews).map(k=>({review_date:k, good:state.reviews[k].good||'', stuck:state.reviews[k].stuck||'', most_important:state.reviews[k].next||'', line_id:state.reviews[k].line_id||''})));
+    Object.keys(state.reviews).map(k=>({
+      review_date:reviewDateOf(k),                 // 分頁存的是純日期，組合鍵只活在本機
+      good:state.reviews[k].good||'', stuck:state.reviews[k].stuck||'',
+      most_important:state.reviews[k].next||'',
+      line_id:state.reviews[k].line_id||reviewOwnerOf(k)
+    })));
   const p3=cloudReplaceAll('moods',['id','mood_date','level','note','line_id'], state.moods.map(moodToCloud));
   const p4=cloudReplaceAll('notes',['id','text','created_at','line_id'], state.notes.map(noteToCloud));
   const p5=cloudReplaceAll('expenses',['id','expense_date','type','category','amount','note','created_at','line_id'],
@@ -1299,9 +1364,12 @@ async function pullFromCloud(){
 
     cReviews.forEach(row=>{
       if(!row.review_date) return;
-      if(!state.reviews[row.review_date]){
-        state.reviews[row.review_date]={compass:'', good:row.good||'', stuck:row.stuck||'', next:row.most_important||'',
-                                        line_id:String(row.line_id||'').trim(), ts:Date.now()};
+      // 同一天不同人是兩筆，各自有鍵——這正是舊模型會互相蓋掉的地方
+      const owner=String(row.line_id||'').trim();
+      const key=reviewKey(row.review_date, owner);
+      if(!state.reviews[key]){
+        state.reviews[key]={compass:'', good:row.good||'', stuck:row.stuck||'', next:row.most_important||'',
+                            line_id:owner, ts:Date.now()};
       }
     });
 
@@ -1424,7 +1492,7 @@ function renderTasks(){
 
 /* ---------- 日誌（升級版複盤） ---------- */
 function loadTodayReview(){
-  const r=state.reviews[todayKey()];
+  const r=state.reviews[myReviewKey()];
   document.getElementById('rvCompass').value = r?r.compass||'':'';
   document.getElementById('rvGood').value   = r?r.good||'':'';
   document.getElementById('rvStuck').value  = r?r.stuck||'':'';
@@ -1438,21 +1506,30 @@ function saveReview(){
   const stuck  = document.getElementById('rvStuck').value.trim();
   const next   = document.getElementById('rvNext').value.trim();
   if(!compass&&!good&&!stuck&&!next){toast('先寫點什麼吧 ✍️'); return;}
-  state.reviews[todayKey()]={compass,good,stuck,next,line_id:(state.reviews[todayKey()]||{}).line_id||myLineId||'',ts:Date.now()};
+  const k=myReviewKey();
+  state.reviews[k]={compass,good,stuck,next,line_id:(state.reviews[k]||{}).line_id||myLineId||'',ts:Date.now()};
   save(); renderReviews(); loadTodayReview(); toast('今日日誌已儲存');
 }
 function renderReviews(){
-  const keys=Object.keys(state.reviews).sort().reverse().filter(k=>k!==todayKey());
+  // 只濾掉「自己今天那筆」——它正在上面的表單裡編輯，列出來會像有兩份。
+  // 別人今天的複盤照常出現，那是他寫完的東西，不是我正在編的草稿。
+  // 鍵是「日期|寫的人」，日期在前，所以字串排序仍然等於日期排序。
+  const mine=myReviewKey();
+  const keys=Object.keys(state.reviews).sort().reverse()
+    .filter(k=>k!==mine && inScope(state.reviews[k]));
   const el=document.getElementById('reviewList');
   if(!keys.length){el.innerHTML='<div class="empty-hint">過去的日誌會累積在這裡</div>'; return;}
   el.innerHTML=keys.slice(0,30).map(k=>{
     const r=state.reviews[k];
+    const owner=String(r.line_id||'').trim()||reviewOwnerOf(k);
+    // 自己的不標名字：整個清單都掛上「你」只是雜訊
+    const by=(owner&&owner!==myLineId) ? ' · '+esc(nameOfLineId(owner)) : '';
     const parts=[];
     if(r.compass) parts.push('🧭 '+esc(r.compass));
     if(r.good)    parts.push('✅ '+esc(r.good));
     if(r.stuck)   parts.push('🪨 '+esc(r.stuck));
     if(r.next)    parts.push('🎯 '+esc(r.next));
-    return `<div class="review-item"><div class="review-date">${k}</div><div class="review-body">${parts.join('\n')}</div></div>`;
+    return `<div class="review-item"><div class="review-date">${esc(reviewDateOf(k))}${by}</div><div class="review-body">${parts.join('\n')}</div></div>`;
   }).join('');
 }
 
@@ -1730,7 +1807,7 @@ function toggleTaskFromHome(id){
   renderDashTasks();
 }
 function renderDashCompass(){
-  const r=state.reviews[todayKey()];
+  const r=state.reviews[myReviewKey()];
   const answered=!!(r&&r.compass);
   document.getElementById('dashCompassSaved').textContent=answered?'✓ 今天已作答':'';
   document.getElementById('dashCompass').innerHTML = answered
@@ -1742,7 +1819,7 @@ function renderDashCompass(){
 function saveCompassFromHome(){
   const compass=document.getElementById('dashCompassInput').value.trim();
   if(!compass){toast('先寫點什麼吧 ✍️'); return;}
-  const k=todayKey();
+  const k=myReviewKey();
   const r=state.reviews[k]||{compass:'',good:'',stuck:'',next:''};
   state.reviews[k]={...r, compass, line_id:r.line_id||myLineId||'', ts:Date.now()};
   save(); renderDashCompass(); loadTodayReview(); renderReviews(); toast('今日指南針已記下 🧭');
