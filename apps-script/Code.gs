@@ -1,8 +1,13 @@
 /**
  * Neil OS — PWA ↔ Google Sheets 同步（Apps Script 端）
  * ---------------------------------------------------------------------------
- * doGet  : 讀取一張分頁
+ * doGet  : 讀取一張分頁（刻意不驗證，見 ADR-008 D-2）
  * doPost : 由 line-router.gs 依 payload 形狀分流後呼叫 handlePwaSync_
+ *
+ * 寫入前一律過 line_users 白名單（ADR-008 Part D）。讀取維持現狀——
+ * exec 網址一旦外流，讀取本來就擋不住（Apps Script 的 doGet 讀不到 HTTP Header，
+ * 沒有東西可以拿來驗身份），那是 ADR-007 已記錄在案的既有限制。本次只把「寫入」
+ * 這一層關起來，不重新設計整個安全模型。
  */
 
 /**
@@ -18,6 +23,229 @@
 function cloudSecret_() {
   const raw = PropertiesService.getScriptProperties().getProperty('CLOUD_SECRET');
   return raw ? String(raw).trim() : '';
+}
+
+/* ========================================================================== */
+/* line_users 白名單（ADR-008 Part D）                                         */
+/* ========================================================================== */
+
+var LINE_USERS_SHEET = 'line_users';
+var LINE_USERS_CACHE_KEY = 'adr008_line_users_v1';
+var LINE_USERS_CACHE_TTL = 300;          // 5 分鐘（ADR-008 D-3）
+
+/**
+ * 整包 replaceAll 打不得的分頁。
+ *
+ * logs 是 Apps Script 單向寫入的記錄，line_users 是白名單本身——兩者都不屬於
+ * 前端那份 state，被整包覆蓋等於資料消失（line_users 的話還會順便把所有人
+ * 鎖在門外，包含改壞它的那個人）。管理頁一律走 append + upsert 改單列。
+ */
+var NO_REPLACE_ALL = [LINE_USERS_SHEET, 'logs'];
+
+/**
+ * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
+ * 這裡只在「建表」與「註冊」時用到——閘門不看 feat_*（ADR-008 E-2）。
+ */
+var LINE_USERS_FEATURES = ['feat_expense', 'feat_tasks', 'feat_review',
+                           'feat_notes', 'feat_mood', 'feat_log'];
+
+/** 建表用的完整表頭（ADR-008 D-1 的欄序） */
+var LINE_USERS_HEADERS = ['line_id', 'display_name', 'is_active', 'is_admin']
+  .concat(LINE_USERS_FEATURES).concat(['created_at', 'updated_at']);
+
+/**
+ * 確保 line_users 有表可寫。只有「註冊」這條路徑會呼叫。
+ *
+ * 為什麼讓程式建表：沒有這一步，第一個人得先手動開一張分頁、手打十二個欄名，
+ * 而那正是註冊功能要消滅的摩擦。建的只是表頭，不寫任何一列資料——名單仍然是空的，
+ * 閘門仍然 fail-closed 擋住所有寫入，所以這個動作本身不會放行任何人。
+ *
+ * 分頁已存在但整張空白（連表頭都沒有）時，補上表頭即可，不重建分頁——
+ * 重建會把使用者可能已經手動輸入的東西一起丟掉。
+ */
+function ensureLineUsersSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(LINE_USERS_SHEET);
+
+  if (!sheet) {
+    sheet = ss.insertSheet(LINE_USERS_SHEET);
+    sheet.appendRow(LINE_USERS_HEADERS);
+    console.log('已建立分頁「' + LINE_USERS_SHEET + '」並寫入表頭');
+    return sheet;
+  }
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(LINE_USERS_HEADERS);
+    console.log('分頁「' + LINE_USERS_SHEET + '」原本沒有表頭，已補上');
+  }
+  return sheet;
+}
+
+/**
+ * Sheet 的勾選框回傳布林 true，手打的會是字串 'TRUE'。兩種都要認得。
+ *
+ * 空白＝關閉（ADR-008 E-2b）：新功能加一欄之後，既有使用者在該欄是空的，
+ * 就該是關的——不確定時寧可少顯示，也不要讓實驗性功能自己跑出來見人。
+ * 判斷規則與前端 truthy() 一字不差，兩邊不一致的話同一張表會被讀成兩種結果。
+ */
+function truthy_(v) {
+  if (v === true) return true;
+  var t = String(v == null ? '' : v).trim().toUpperCase();
+  return t === 'TRUE' || t === '1' || t === 'YES' || t === 'Y';
+}
+
+/**
+ * 白名單讀取入口：先問快取，沒有才讀 Sheet。
+ *
+ * 白名單改動頻率極低（家人增減是偶發事件），被讀取的頻率卻高——每次 LINE 訊息、
+ * 每次 PWA 同步都要查一次，而 LINE webhook 有回覆時限（ADR-008 F-2）。
+ *
+ * **只快取成功的讀取**：把失敗也快取起來，等於一次暫時性的 Sheet 故障要讓所有人
+ * 被鎖在門外整整五分鐘。
+ */
+function lineUsersRoster_() {
+  var cache = null;
+  try { cache = CacheService.getScriptCache(); } catch (err) { cache = null; }
+
+  if (cache) {
+    var hit = null;
+    try { hit = cache.get(LINE_USERS_CACHE_KEY); } catch (err) { hit = null; }
+    if (hit) {
+      try { return JSON.parse(hit); } catch (err) { /* 快取壞了就當沒有，往下讀 Sheet */ }
+    }
+  }
+
+  var roster = readLineUsers_();
+  if (cache && roster.ok) {
+    try { cache.put(LINE_USERS_CACHE_KEY, JSON.stringify(roster), LINE_USERS_CACHE_TTL); } catch (err) {}
+  }
+  return roster;
+}
+
+/** 管理頁改完白名單後立刻生效，不必等 TTL 到期 */
+function invalidateLineUsersCache_() {
+  try { CacheService.getScriptCache().remove(LINE_USERS_CACHE_KEY); } catch (err) {}
+}
+
+/**
+ * 實際讀 Sheet。回傳形狀刻意讓「讀不到」與「讀到了但沒人」分得出來（ADR-008 H-5）：
+ *  - ok:false → Sheet 不見了／沒有 line_id 欄／讀取丟例外
+ *  - ok:true 且 activeCount === 0 → 表在、讀得到，但沒有任何一列 is_active
+ * 兩者都會 fail-closed 拒絕寫入，但寫進 logs 的 detail 不一樣——出事時要分得出來
+ * 是「表被誰刪了」還是「勾選框沒人打勾」，這兩件事的修法完全不同。
+ */
+function readLineUsers_() {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LINE_USERS_SHEET);
+    if (!sheet) return { ok: false, reason: 'sheet_missing', users: {}, activeCount: 0 };
+
+    var values = sheet.getDataRange().getValues();
+    if (values.length < 2) return { ok: true, reason: 'empty', users: {}, activeCount: 0 };
+
+    var headers = values[0].map(function (h) { return String(h).trim(); });
+    if (headers.indexOf('line_id') === -1) {
+      return { ok: false, reason: 'no_line_id_column', users: {}, activeCount: 0 };
+    }
+
+    var users = {}, activeCount = 0;
+    for (var i = 1; i < values.length; i++) {
+      var obj = {};
+      for (var c = 0; c < headers.length; c++) obj[headers[c]] = values[i][c];
+
+      var id = String(obj.line_id == null ? '' : obj.line_id).trim();
+      if (!id) continue;                       // 空列（Sheet 底部常有）直接跳過
+      users[id] = obj;
+      if (truthy_(obj.is_active)) activeCount++;
+    }
+    return { ok: true, reason: activeCount ? 'ok' : 'no_active', users: users, activeCount: activeCount };
+  } catch (err) {
+    return { ok: false, reason: 'read_failed', error: String(err), users: {}, activeCount: 0 };
+  }
+}
+
+/**
+ * 寫入閘門。任何寫入路徑都先過這裡，通不過就拒絕並寫一列 logs。
+ *
+ * 一律 fail-closed（ADR-008 F-1）：這次是「新增」一道門，不是「維護」既有可用性。
+ * 一出狀況就自動變回全開的門，跟沒有門是同一件事。寧可同步壞掉讓人當場發現。
+ *
+ * 功能權限（feat_*）刻意不在這裡驗——那一層只做前端隱藏（ADR-008 E-2）。
+ * 被繞過的代價僅止於「多看了一個空白分頁」，跟寫入資格不是同一個量級。
+ */
+function writeGate_(rawLineId, what) {
+  var id = String(rawLineId == null ? '' : rawLineId).trim();
+  var roster = lineUsersRoster_();
+
+  if (!roster.ok) {
+    return denyWrite_(id, what, 'whitelist_unavailable',
+      '白名單讀不到，一律拒絕寫入',
+      '原因：' + roster.reason + (roster.error ? '／' + roster.error : '') +
+      '（分頁「' + LINE_USERS_SHEET + '」是否存在、是否有 line_id 欄？）');
+  }
+  if (!roster.activeCount) {
+    return denyWrite_(id, what, 'whitelist_empty',
+      '白名單讀得到但沒有任何啟用中的成員，一律拒絕寫入',
+      '分頁「' + LINE_USERS_SHEET + '」有表頭但沒有任何一列 is_active 為 TRUE');
+  }
+  if (!id) {
+    return denyWrite_(id, what, 'missing_line_id',
+      '這次寫入沒有帶 line_id，拒絕',
+      '前端尚未選身份，或跑的是改版前的舊版頁面（快取未更新）');
+  }
+
+  var user = roster.users[id];
+  if (!user) {
+    return denyWrite_(id, what, 'not_on_whitelist',
+      '這個 line_id 不在白名單內，拒絕',
+      '在 ' + LINE_USERS_SHEET + ' 新增一列並把 is_active 勾起來即可放行');
+  }
+  if (!truthy_(user.is_active)) {
+    return denyWrite_(id, what, 'inactive',
+      '這個 line_id 的 is_active 不是 TRUE，拒絕',
+      '成員在名單上但被停用；要放行就把 is_active 勾起來');
+  }
+  return { allowed: true, user: user };
+}
+
+/**
+ * 被擋下來的寫入一律留一列 logs（ADR-008 F-1「不可靜默失敗」）。
+ *
+ * 包 try/catch 的理由跟 logCleanup_ 一樣：log 是事後回頭查的東西，寫 log 失敗
+ * 不該把「已經判定要拒絕」這件事變成別的結果。但拒絕本身一定要有人看得到，
+ * 所以另外補一行 console——logs 分頁壞掉時，那行 console 是最後的線索。
+ */
+function denyWrite_(lineId, what, code, result, detail) {
+  console.log('🚫 寫入被白名單擋下（' + code + '）：' + what + ' / line_id=' + (lineId || '(空)'));
+  try {
+    logTransaction_('同步', '失敗', what, result, detail + '｜code=' + code, '', lineId);
+  } catch (err) {
+    console.log('寫 logs 失敗（不影響拒絕的結果）：' + err);
+  }
+  return { allowed: false, error: code, reason: code };
+}
+
+/**
+ * 白名單健檢——在編輯器裡直接執行，不需重新部署。
+ * 比照 diagnoseLogSheet 的用法：改完表、加完人之後跑一次，確認它真的讀得到。
+ */
+function diagnoseLineUsers() {
+  invalidateLineUsersCache_();
+  var roster = readLineUsers_();
+
+  if (!roster.ok) {
+    console.log('❌ 白名單讀不到：' + roster.reason + (roster.error ? '／' + roster.error : ''));
+    console.log('   目前所有寫入都會被拒絕（fail-closed）。');
+    return roster;
+  }
+  console.log('✅ 分頁「' + LINE_USERS_SHEET + '」讀得到，啟用中 ' + roster.activeCount + ' 人');
+  Object.keys(roster.users).forEach(function (id) {
+    var u = roster.users[id];
+    var feats = Object.keys(u).filter(function (k) { return k.indexOf('feat_') === 0 && truthy_(u[k]); });
+    console.log('   ' + (truthy_(u.is_active) ? '●' : '○') + ' ' + (u.display_name || '(無稱呼)') +
+      ' ' + id + (truthy_(u.is_admin) ? ' [admin]' : '') +
+      ' 功能：' + (feats.length ? feats.join(' ') : '（全關）'));
+  });
+  if (!roster.activeCount) console.log('⚠️ 沒有任何一列 is_active 為 TRUE，目前所有寫入都會被拒絕。');
+  return roster;
 }
 
 // ===== 讀取：GET /exec?sheet=tasks =====
@@ -52,16 +280,30 @@ function handlePwaSync_(e) {
   }
   if (body.secret !== secret) return jsonOut({ error: 'unauthorized' });
 
+  // 白名單閘門（ADR-008 D-2）。密鑰只證明「這是我們家的 App」，證明不了「這是誰」；
+  // line_id 才回答後者。兩道門串聯，過不了任一道就不寫。
+  const gate = writeGate_(body.line_id, 'PWA ' + (body.action || '?') + ' → ' + (body.sheet || '?'));
+  if (!gate.allowed) return jsonOut({ error: gate.error, reason: gate.reason });
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(body.sheet);
   if (!sheet) return jsonOut({ error: 'sheet_not_found' });
 
   if (body.action === 'append') {
     const headers = sheetHeaders_(sheet);
-    return jsonOut(upsertRow_(sheet, headers, body.record || {}, body.sheet));
+    // key_field 讓 line_users 這種以 line_id 為鍵的分頁也能走同一套 upsert
+    const out = upsertRow_(sheet, headers, body.record || {}, body.sheet, body.key_field);
+    if (body.sheet === LINE_USERS_SHEET) invalidateLineUsersCache_();
+    return jsonOut(out);
   }
 
   if (body.action === 'replaceAll') {
+    // 這兩張表不歸前端那份 state 管，整包覆蓋等於把它們清空（ADR-008 Part D）
+    if (NO_REPLACE_ALL.indexOf(body.sheet) !== -1) {
+      console.log('🚫 拒絕對分頁「' + body.sheet + '」做 replaceAll：它不屬於前端 state');
+      return jsonOut({ error: 'sheet_not_replaceable', sheet: body.sheet });
+    }
+
     const records = body.records || [];
     const deduped = dedupeById_(records);
 
@@ -122,7 +364,8 @@ function dedupeById_(records) {
 }
 
 /**
- * 以 id 定位既有列 → 覆蓋；找不到才 append（ADR-007 票 A）。
+ * 以鍵欄定位既有列 → 覆蓋；找不到才 append（ADR-007 票 A）。
+ * 鍵欄預設是 id；line_users 傳 key_field='line_id'（ADR-008 D-4 的管理頁走這條）。
  * 遇到多筆同 id：覆蓋第一筆、刪除其餘，並寫進 logs——讓系統自帶清理能力。
  *
  * 比對方式是「id 欄整欄一次撈進記憶體再線性搜尋」。不建索引、不維護對照表：
@@ -131,14 +374,15 @@ function dedupeById_(records) {
  * 找不到 id 欄、或這筆記錄沒有 id 時，退回單純 append 但**留一行 console**。
  * 靜默失敗在這個專案已經貴過三次了。
  */
-function upsertRow_(sheet, headers, record, sheetName) {
+function upsertRow_(sheet, headers, record, sheetName, keyField) {
+  const key = keyField || 'id';                          // line_users 以 line_id 為鍵
   const row = headers.map(h => record[h] ?? '');
-  const idCol = headers.indexOf('id') + 1;               // 1-based；0 代表找不到
-  const recId = (record.id != null && record.id !== '') ? String(record.id) : '';
+  const idCol = headers.indexOf(key) + 1;                // 1-based；0 代表找不到
+  const recId = (record[key] != null && record[key] !== '') ? String(record[key]) : '';
 
   if (idCol === 0 || !recId) {
     console.log('upsert 退回 append（' +
-      (idCol === 0 ? '分頁「' + sheetName + '」沒有 id 欄' : '這筆記錄沒有 id') + '）');
+      (idCol === 0 ? '分頁「' + sheetName + '」沒有 ' + key + ' 欄' : '這筆記錄沒有 ' + key) + '）');
     sheet.appendRow(row);
     return { success: true, row: sheet.getLastRow(), updated: false, cleaned: 0 };
   }
@@ -158,7 +402,7 @@ function upsertRow_(sheet, headers, record, sheetName) {
 
   if (extras.length) {
     logCleanup_(
-      'upsert ' + sheetName + ' id=' + recId,
+      'upsert ' + sheetName + ' ' + key + '=' + recId,
       '覆蓋第 ' + target + ' 列，刪除重複 ' + extras.length + ' 列',
       '刪除的列號：' + extras.slice().sort((a, b) => a - b).join(', ')
     );
