@@ -55,6 +55,9 @@
   @keyframes fade{from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:none;}}
 
   .card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px;}
+  /* 明寫，否則哪天有人給 .card 加上 display:flex，[hidden] 就會被蓋掉而無聲失效
+     （同一個坑在 nav button 上踩過一次，見下方的註解） */
+  .card[hidden]{display:none;}
   .card h2{margin:0 0 10px; font-size:15px; font-weight:600; color:var(--muted);}
 
   input[type=text], input[type=number], input[type=date], textarea, select{
@@ -474,26 +477,25 @@
     <!-- ⓪ 目前身份（ADR-008 B-2／C-3） -->
     <div class="me-card" id="meCard" hidden></div>
 
-    <!-- ① 記帳狀況 -->
-    <div class="card">
+    <!-- ① 記帳狀況（feat_expense 關掉時整張卡收起，見 renderDashboard） -->
+    <div class="card" id="dashExpenseCard">
       <h2>本月支出</h2>
       <div class="scope-bar" id="scopeHome" hidden></div>
       <div id="dashExpense"></div>
       <button class="dash-link" onclick="goView('expenses')">前往記帳 →</button>
     </div>
 
-    <!-- ② 未完成任務前 3 筆 -->
-    <div class="card">
+    <!-- ② 未完成任務前 3 筆（feat_tasks 關掉時整張卡收起） -->
+    <div class="card" id="dashTasksCard">
       <h2>接下來要做的</h2>
       <div id="dashTasks"></div>
       <button class="dash-link" onclick="goView('tasks')">全部任務 →</button>
     </div>
 
-    <!-- ③ 今日 Compass -->
-    <div class="compass-card">
-      <div class="compass-label">🧭 今日指南針<span id="dashCompassSaved" style="font-weight:400;font-size:12px;margin-left:6px;"></span></div>
-      <div id="dashCompass"></div>
-    </div>
+    <!-- ③ 今日指南針的快顯已於 2026-09-15 移除。
+         它是寫死在首頁的，不跟著功能矩陣走——日誌被關掉的人照樣看得到一個
+         寫不進去的輸入框。指南針本身沒有消失，仍在「日誌」分頁裡（rvCompass）。
+         其餘模組的儀表板 UI 待重新設計，見 Notion 待辦的「儀表板與功能矩陣」票。 -->
 
     <!-- ④ 導覽配置：點了即時反映，不需儲存 -->
     <div class="slot-card">
@@ -1806,26 +1808,20 @@ function toggleTaskFromHome(id){
   toggleTask(id);
   renderDashTasks();
 }
-function renderDashCompass(){
-  const r=state.reviews[myReviewKey()];
-  const answered=!!(r&&r.compass);
-  document.getElementById('dashCompassSaved').textContent=answered?'✓ 今天已作答':'';
-  document.getElementById('dashCompass').innerHTML = answered
-    ? `<div class="review-body">${esc(r.compass)}</div>
-       <button class="dash-link" onclick="goView('review')">到日誌修改 →</button>`
-    : `<textarea id="dashCompassInput" placeholder="今天你做了哪一個符合未來自己的選擇？哪怕只是一個小決定。" style="min-height:72px;background:#fff;"></textarea>
-       <div style="margin-top:10px"><button class="btn" onclick="saveCompassFromHome()">記下今天的選擇</button></div>`;
-}
-function saveCompassFromHome(){
-  const compass=document.getElementById('dashCompassInput').value.trim();
-  if(!compass){toast('先寫點什麼吧 ✍️'); return;}
-  const k=myReviewKey();
-  const r=state.reviews[k]||{compass:'',good:'',stuck:'',next:''};
-  state.reviews[k]={...r, compass, line_id:r.line_id||myLineId||'', ts:Date.now()};
-  save(); renderDashCompass(); loadTodayReview(); renderReviews(); toast('今日指南針已記下 🧭');
-}
+/* 儀表板的卡片也要跟著功能矩陣走。
+   少了這一段，功能被關掉的人首頁還是看得到那張卡，點「前往記帳 →」卻被
+   switchView 擋下來——看起來就像壞了。功能矩陣本來就只做前端隱藏
+   （ADR-008 E-2），那就該藏得徹底，不要漏掉首頁這一塊。
+
+   只處理記帳與任務兩張；其餘模組的儀表板 UI 待重新設計。 */
 function renderDashboard(){
-  renderDashExpense(); renderDashTasks(); renderDashCompass();
+  toggleDashCard('dashExpenseCard','expenses');
+  toggleDashCard('dashTasksCard','tasks');
+  renderDashExpense(); renderDashTasks();
+}
+function toggleDashCard(id, view){
+  const el=document.getElementById(id);
+  if(el) el.hidden=!featureAllowed(view);
 }
 
 /* ---------- 初始化 ---------- */
