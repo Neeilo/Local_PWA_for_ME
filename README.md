@@ -20,6 +20,11 @@
 6. 📋 **LOG** — LINE 快速輸入的交易記錄，成敗一眼可分、可依來源篩選、可「只看失敗」
 7. 💚 **心情紀錄** — 五級 + 備註，頂部近 14 天心情脈搏色條
 
+首次開啟會先問「你是誰」，從 `line_users` 白名單裡點選自己。選定的身份存這支手機，
+之後記的東西都會標上 `line_id`，並在首頁／記帳／任務多一顆「只看我的／全部」的切換。
+每個帳號看得到哪些分頁由白名單上的功能矩陣決定；名單上的管理者另外看得到一張
+「成員與權限」卡，可以直接勾選誰能寫入、誰能用哪些功能。
+
 雜記的類別存成內容前綴（`[作品] 做了一個 PWA`），寫進 `notes` 既有的 `text` 欄位，**分頁與欄位一個字都不用改**。代價是類別從「資料」降級成「約定」，要統計就得靠字串解析——對這個規模的系統划算。原本的成長頁（週回顧＋輸出追蹤）已移除，其中「輸出追蹤」以此形式併入雜記；兩者的舊資料從未上過雲端，移除後仍留在 `localStorage`，匯出 JSON 備份看得到。
 
 ## 技術架構
@@ -28,7 +33,7 @@
 |---|---|
 | 前端 | 純 HTML / CSS / JS，單檔（`index.html`） |
 | 本地儲存 | `localStorage`，單一 JSON state key：`personal-os-state-v1` |
-| 雲端同步 | Google Apps Script + Google Sheets（tasks / reviews / moods / notes / expenses，載入時與回前景時 pull、儲存時 push；`logs` 唯讀不回推） |
+| 雲端同步 | Google Apps Script + Google Sheets（tasks / reviews / moods / notes / expenses，載入時與回前景時 pull、儲存時 push；`logs`／`line_users` 不回推） |
 | PWA | `manifest.json` + Service Worker（`sw.js`，HTML network-first、其餘資產 cache-first） |
 | 部署 | GitHub Pages |
 
@@ -44,6 +49,11 @@ Google Sheets 各分頁欄位：
 | `notes` | `id \| text \| created_at` |
 | `expenses` | `id \| expense_date \| type \| category \| amount \| note \| created_at` |
 | `logs` | `id \| ts \| source \| status \| input \| result \| detail \| target_row \| user_id` |
+| `line_users` | `line_id \| display_name \| is_active \| is_admin \| feat_expense \| feat_tasks \| feat_review \| feat_notes \| feat_mood \| feat_log \| created_at \| updated_at` |
+
+`tasks` / `reviews` / `moods` / `notes` / `expenses` 各多一欄 `line_id`（一律在最後一欄），
+記錄這筆是誰寫的。**不需要手動去 Sheet 加表頭**——前端存檔走的是整包 `replaceAll`，
+它會連表頭列一起重寫，下一次同步就會自己長出來。
 
 導覽配置存在獨立的 `localStorage` key `personal-os-nav-placement`（舊的 `personal-os-nav-slot` 會在首次載入時自動遷移），**刻意不放進 `state`**——`state` 會被 `pushAllToCloud` 整包推上雲端，而這是介面偏好，不需跨裝置一致（[ADR-006] §C）。
 
@@ -71,6 +81,114 @@ LINE 快速輸入的 Apps Script 端程式碼鏡像在 `apps-script/`，安裝�
 四種前綴每次交易無論成敗都寫一列 `logs`，供除錯與狀態回查。寫 log 包 try/catch，失敗只記 `console.log`、不拖累主流程——代價是「log 沒出現」看起來什麼事都沒發生，所以另備 `diagnoseLogSheet` 健檢函式。
 
 `logs` 是 Apps Script 單向寫入的唯讀記錄，**不進前端 `state`、不進 `pushAllToCloud`**：前端存檔是整包 `replaceAll`，一旦回推就會把 Apps Script 寫的記錄整包洗掉。
+
+## 身份、白名單與功能權限（ADR-008）
+
+三件事共用雲端的同一張 `line_users` 表，但責任分得很開——混在一起想，之後每一次
+改動都會在錯的層級打轉：
+
+| | 回答什麼 | 存在哪 | 誰把關 |
+|---|---|---|---|
+| **身份** | 我說我是誰 | 這支手機的 `localStorage`（`personal-os-line-id`） | 沒有人，這是宣告 |
+| **白名單** | 誰能寫 | `line_users.is_active` | Apps Script `writeGate_` |
+| **功能矩陣** | 誰看得到哪些分頁 | `line_users.feat_*` | 只有前端隱藏 |
+
+### 選身份不是登入
+
+首次開啟會蓋一張全螢幕的「你是誰」，從白名單裡點選自己，選定值存 `localStorage`
+（比照導覽配置的慣例，**刻意不進 `state`**——`state` 會被整包推上雲端，而身份選擇
+不需要跨裝置一致）。
+
+**這一步是身份宣告，不是身份驗證。** 在瀏覽器裡把 `line_id` 改成別人的並不會拿到
+別人的權限，只會讓雲端把你的寫入擋下來。真要做到驗證得有自有後端跑 LINE Login
+OAuth，而 PWA 是純前端靜態頁——那個複雜度跟「家人之間彼此熟識」的情境不成比例
+（[ADR-008] B-1）。
+
+### 白名單只擋寫入，不擋讀取
+
+`doPost` 依 `line_id` 查 `line_users`，不在名單內一律拒絕。`doGet`**維持現狀不處理**：
+Apps Script 讀不到 HTTP Header，exec 網址一旦外流，讀取本來就擋不住——那是
+[ADR-007] 已記錄在案的既有限制，本次只把「寫入」這一層關起來，不重新設計整個安全模型。
+
+**一律 fail-closed**：白名單讀不到、名單是空的、沒帶 `line_id`——全部拒絕，而且每一次
+都寫一列 `logs`。這次是「新增」一道門，不是「維護」既有可用性；一出狀況就自動變回
+全開的門，跟沒有門是同一件事。
+
+`logs` 的 `detail` 刻意讓兩種失敗分得出來：`whitelist_unavailable`（分頁不見了／沒有
+`line_id` 欄／讀取丟例外）與 `whitelist_empty`（表在、讀得到，但沒有任何一列
+`is_active`）。這兩件事的修法完全不同，混在一起等於沒記。
+
+白名單查詢走 `CacheService`，TTL 5 分鐘——改動頻率極低、讀取頻率極高的教科書場景，
+而 LINE webhook 有回覆時限。**只快取成功的讀取**：把失敗也快取起來，等於一次暫時性
+的 Sheet 故障要讓所有人被鎖在門外整整五分鐘。管理頁改完白名單會主動清快取，自己
+這端即時生效，其他裝置最多等 5 分鐘。
+
+### 功能矩陣只做前端隱藏
+
+`feat_expense` / `feat_tasks` / `feat_review` / `feat_notes` / `feat_mood` / `feat_log`
+控制導覽列顯不顯示那一格，**後端不驗證**。沿用既有 `SHOW_MOOD` 的模式：被繞過的代價
+僅止於「多看了一個空白分頁」，不涉及資料外洩或寫壞資料，跟寫入資格不是同一個量級
+（[ADR-008] E-2）。首頁不在矩陣上——它是進 App 的第一頁，關掉沒意義。
+
+**空白 = 關閉**（E-2b）：新功能加一欄之後，既有使用者在該欄是空的，就該是關的，需要
+手動逐人勾開。但「欄位根本不存在」是另一回事——那代表矩陣還沒佈到 Sheet 上，這時
+一律視為開放，否則第一次部署會把所有分頁都藏起來，看起來就像 App 壞了。
+
+功能矩陣與導覽配置是**兩套不同機制，實作上沒有混在一起**（[ADR-008] H-8）：功能被
+關掉不會動到 `personal-os-nav-placement` 的值，日後重新開放時，使用者原本選的左右
+位置還在。每側 3 個的上限只算「畫面上真的有幾格」——被關掉的分頁不佔版面，自然
+不該佔額度。
+
+### 只看我的／全部
+
+純前端 filter，依 `line_id` 篩選。`line_id` 在這裡只是**篩選鍵，不是存取權限鍵**——
+家人之間資料互相看得到是預期行為（記帳／任務本來就要協作）。真的需要隔離時欄位
+已就位，加一層是小票不是砍掉重練（[ADR-008] C-2）。名單上只有一個人時這顆開關
+不會出現，因為兩邊永遠是同一個結果。
+
+> ⚠️ 改版前的舊資料沒有 `line_id`，切到「只看我的」會看不到。**刻意不自動蓋章**——
+> 那等於連 LINE 那端別人記的帳都一起認領走，冒名比空白難查得多。身份卡上有一顆
+> 「認領舊資料」，由人明確決定要不要認。
+
+### 成員與權限（管理頁）
+
+`is_admin` 的人在首頁多一張卡，可以勾選誰能寫入、誰是管理者、誰能用哪些功能。
+**範圍刻意只到這裡，不含刪除他人資料**——那種等級的操作不能只靠前端藏，必須疊一層
+後端驗證，等於在同一套系統裡開了兩種深淺不同的安全模型（[ADR-008] D-4）。
+
+寫回走**單列 upsert（`action:'append'` + `key_field:'line_id'`），不走 `replaceAll`**：
+整包覆蓋一旦送出不完整的名單，會把所有人——包含正在按按鈕的自己——鎖在門外。後端
+也把 `line_users` 與 `logs` 的 `replaceAll` 直接擋掉了。前端另有兩道自毀防護：不能關掉
+自己的寫入資格或管理權限，也不能把最後一個啟用中的成員停用。
+
+> ⚠️ 已知取捨：管理頁只靠前端 `is_admin` 隱藏，後端只驗「能不能寫」，不驗「能不能寫
+> `line_users`」。也就是**任何一個白名單內的人，繞過前端就能改權限表**。這與 E-2 是
+> 同一套安全深淺，在「家庭成員、彼此熟識、非公開」的前提下是刻意接受的；前提一變，
+> 這裡就是第一個要補後端驗證的地方。
+
+### LINE Bot 共用同一張表
+
+`ALLOWED_USER_IDS` 指令碼屬性**已不再被讀取**，LINE 端改查同一張 `line_users`
+（[ADR-008] F-2）。同一批人、同一個 `line_id`，沒道理維護兩份名單。確認新路徑正常後
+可以把舊屬性刪掉。
+
+> ⚠️ **語意變了**：改版前「屬性沒設 = 不限制任何人」，現在「白名單查不到 = 拒絕」。
+> `line_users` 還沒建好之前，LINE 這端會全部擋下來，這是刻意的。
+
+`whoami` 仍排在白名單檢查**之前**——它是用來取得要填進 `line_users` 的值，也是萬一
+填錯、把自己擋在門外時唯一的救援途徑。卡住時另有 `diagnoseLineUsers()`，在 Apps
+Script 編輯器直接執行就會印出它實際讀到什麼，不需重新部署。
+
+### 離線與部署順序
+
+名單讀不到時（離線、雲端不通）**不會把人擋在選身份的畫面上**：快取裡有舊名單就先用，
+完全沒有就給一顆「先在本機用」——資料照樣存 `localStorage`，只是暫時不推雲端，身份卡
+會用紅底講清楚同步是停的。名單一旦讀得到，這個逃生門會自動失效並請人選身份，因為
+它是逃生門，不是一種模式。
+
+> ⚠️ **部署順序**：後端一上線就開始 fail-closed，而還沒更新的舊版頁面不會送 `line_id`，
+> 寫入會被擋（本機資料不會掉，`logs` 會留記錄）。先把 `line_users` 建好、`is_active`
+> 勾起來，前端 HTML 是 network-first，重開一次 App 就會拿到新版。
 
 ## 檔案結構
 
@@ -146,3 +264,17 @@ Apps Script 與 Pages 分成兩個 job：認證與 scriptId 完全不會進到 P
   - ⏳ 未來票：本機為何先生出兩筆同 id（唯一未解的成因，票 A 與票 B 都只是攔截症狀）
   - ⏳ 未來票：輪替 `CLOUD_SECRET`（搬進指令碼屬性只解決「不進 git history」，它仍公開在部署出去的 `index.html` 裡）
   - ⏳ 未來票：`doGet` 沒有任何驗證 + web app 是 `ANYONE_ANONYMOUS`，任何人拿到 exec 網址就能讀取全部分頁
+- **ADR-008**（依 [ADR-008]，2026-09-15）：✅ 已完成
+  - ✅ B：「選身份」畫面（`line_users` 白名單點選，存 `localStorage`，不進 `state`），明確標示為身份宣告而非驗證
+  - ✅ C：`tasks`／`reviews`／`moods`／`notes`／`expenses` 各補 `line_id` 欄（由 `replaceAll` 的表頭自動長出，不需手動加）＋ 首頁／記帳／任務的「只看我的／全部」切換
+  - ✅ D：`doPost` 寫入前查 `line_users` 白名單，`CacheService` 快取 TTL 5 分鐘（**只快取成功的讀取**），fail-closed 且「讀不到」與「名單為空」在 `logs` 的 `detail` 分得出來；`doGet` 依約定不動
+  - ✅ D-4：`is_admin` 管理頁（首頁卡片形式，不佔導覽格），走單列 upsert 不走 `replaceAll`，另加「不能關掉自己的權限」與「至少留一個啟用成員」兩道自毀防護
+  - ✅ E：功能矩陣 `feat_*` 只做前端隱藏；空白＝關閉，但**欄位不存在＝視為開放**（否則首次部署會把所有分頁藏光）；與導覽配置維持兩套獨立機制（H-8）
+  - ✅ F-2：LINE Bot 白名單改查同一張 `line_users`，`ALLOWED_USER_IDS` 退場；語意由 fail-open 改為 fail-closed，`whoami` 仍排在閘門之前作為救援途徑
+  - ✅ 後端一併擋掉 `line_users` 與 `logs` 的 `replaceAll`（整包覆蓋會把白名單清空、順便鎖上所有人）
+  - ✅ `diagnoseLineUsers()` 健檢函式（比照 `diagnoseLogSheet`），SW v10→v11
+  - ⏳ 未來票（承 ADR-008 Part I）：商業模式可行時的公開開放評估
+  - ⏳ 未來票：是否需要真正的資料隔離（目前只有前端 filter，非存取權限層）
+  - ⏳ 未來票：功能矩陣欄位若持續增加，是否改為正規化的多對多關聯表
+  - ⏳ 未來票：任何白名單內的人繞過前端就能改 `line_users`（管理頁只靠前端 `is_admin` 隱藏）——與 E-2 同一套安全深淺，前提一變就是第一個要補後端驗證的地方
+  - ⏳ 未來票：`doGet` 讀取層的驗證強化（與 ADR-007 未來票同一個根，本次刻意不處理）

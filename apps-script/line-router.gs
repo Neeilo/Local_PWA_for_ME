@@ -77,28 +77,25 @@ var GEMINI_TIMEOUT_REPLY = 'AI 暫時無法回應，請稍後再試';
 var GEMINI_MAX_OUTPUT_TOKENS = 2048;
 
 /**
- * 允許使用的 LINE userId 白名單，改讀指令碼屬性 ALLOWED_USER_IDS（逗號分隔）。
- * 讀不到 = 不限制（維持與改版前相同的語意），但會留一行 console 提醒。
+ * 白名單改查 line_users 分頁（ADR-008 F-2），不再讀指令碼屬性 ALLOWED_USER_IDS。
  *
- * 不寫在原始碼裡的理由與 CLOUD_SECRET 相同：這份程式碼鏡像進公開的 repo，
- * 而 exec 網址本來就公開（建置時注入 index.html）——兩者湊齊就能冒名寫入。
- * 取得自己的 userId 最快的方式：在 LINE 傳一句 whoami，bot 會直接回你。
- * （也會寫進執行記錄，但 webhook 觸發的執行只看得到 console.log，看不到 Logger.log）
+ * 同一批人、同一個 line_id，沒道理維護兩份名單——PWA 那邊查 Sheet、LINE 這邊查
+ * 指令碼屬性，遲早會有一邊忘了改。實作共用 Code.gs 的 writeGate_（同一個 Apps
+ * Script 專案共用全域範圍），連 fail-closed 的判斷與 logs 的寫法都是同一份。
+ *
+ * ⚠️ 語意變了，明講：改版前「屬性沒設＝不限制任何人」，現在「白名單查不到＝拒絕」
+ *    （ADR-008 F-1 fail-closed）。line_users 還沒建好之前，LINE 這端會全部擋下來，
+ *    這是刻意的——一出狀況就自動變回全開的門，跟沒有門是同一件事。
+ *    卡住時：在編輯器直接跑 diagnoseLineUsers() 看它到底讀到什麼。
  *
  * ⚠️ Apps Script 的 doPost 讀不到 HTTP Header，驗不了 LINE 官方簽章，
  *    所以 exec 網址一旦外流，任何人都能往你的 Sheet 寫東西。白名單是唯一的防線。
+ *
+ * 讀 Sheet 比讀指令碼屬性慢，而 LINE webhook 有回覆時限——所以 D-3 的 CacheService
+ * 快取（TTL 5 分鐘）對這一端尤其關鍵，不是可有可無的最佳化。
+ *
+ * 舊的 ALLOWED_USER_IDS 指令碼屬性自此不再被讀取，確認新路徑正常後可以刪掉。
  */
-function allowedUserIds_() {
-  var raw = PropertiesService.getScriptProperties().getProperty('ALLOWED_USER_IDS');
-  if (!raw) {
-    // 安靜地變成「不限制」是最糟的組合：以為有防線，其實沒有。至少讓它出聲。
-    console.log('⚠️ 指令碼屬性 ALLOWED_USER_IDS 未設定，目前等於不限制任何人寫入');
-    return [];
-  }
-  return String(raw).split(',').map(function (s) { return s.trim(); })
-    .filter(function (s) { return s; });
-}
-var ALLOWED_USER_IDS = allowedUserIds_();
 
 /**
  * 記帳分類固定清單，與 index.html 的 EXPENSE_CATEGORIES 一字不差。
@@ -203,7 +200,7 @@ function handleLineEvent_(event) {
 
   var text = String(event.message.text || '').trim();
 
-  // whoami 刻意排在白名單檢查之前：它就是用來取得要填進 ALLOWED_USER_IDS 的值，
+  // whoami 刻意排在白名單檢查之前：它就是用來取得要填進 line_users 的值，
   // 也是萬一填錯、把自己擋在門外時唯一的救援途徑。只回傳發話者自己的 ID，
   // 問不到別人的，所以放在白名單前面不會擴大攻擊面。
   if (text.toLowerCase() === 'whoami') {
@@ -211,8 +208,10 @@ function handleLineEvent_(event) {
     return;
   }
 
-  if (ALLOWED_USER_IDS.length > 0 && ALLOWED_USER_IDS.indexOf(userId) === -1) {
-    lineReply_(event.replyToken, '這個帳號沒有權限寫入喔。');
+  // 與 PWA 同步共用同一道閘門、同一張表（ADR-008 F-2）
+  var gate = writeGate_(userId, 'LINE ' + firstLine_(text));
+  if (!gate.allowed) {
+    lineReply_(event.replyToken, lineDeniedMessage_(gate.error));
     return;
   }
 
@@ -266,6 +265,10 @@ function routeLineMessage_(rawText, userId) {
 
   try {
     var record = route.build(parsed, route);
+    // 資料歸屬（ADR-008 C-1）。蓋在這裡而不是各 build 函式裡：路由表每新增一個
+    // 前綴都會自動帶上，不必記得補。分頁還沒加 line_id 欄時，appendToSheet_ 是
+    // 依實際表頭對位的，這個鍵會被安靜忽略——不會因此寫壞任何一列。
+    record.line_id = userId || '';
     var rowNumber = appendToSheet_(route.sheetName, record);
     logTransaction_(prefix, '成功', text, route.summary(parsed, route), '', rowNumber, userId);
     return route.format(parsed, route);
@@ -846,6 +849,26 @@ function extractGeminiText_(parsed) {
 /* ========================================================================== */
 /* 回覆                                                                        */
 /* ========================================================================== */
+
+/**
+ * 被擋下來時回給使用者的訊息。
+ *
+ * 「沒有權限」與「名單根本讀不到」對使用者來說都是「不能用」，但對要修的人來說
+ * 是兩件完全不同的事——訊息分開寫，Neil 看一眼就知道要去改 Sheet 還是加人。
+ * 細節仍在 logs 裡（denyWrite_ 每次都寫一列），這裡只給一句話。
+ */
+function lineDeniedMessage_(code) {
+  if (code === 'whitelist_unavailable') {
+    return '名單暫時讀不到，先擋下來以策安全。\n（請檢查 line_users 分頁是否存在）';
+  }
+  if (code === 'whitelist_empty') {
+    return '名單目前是空的，所有寫入都會被擋。\n（請在 line_users 勾選 is_active）';
+  }
+  if (code === 'inactive') {
+    return '這個帳號目前被停用了。';
+  }
+  return '這個帳號沒有權限寫入喔。\n輸入 whoami 可以查到自己的 userId。';
+}
 
 function supportedPrefixesMessage_() {
   var lines = ['目前支援：'];

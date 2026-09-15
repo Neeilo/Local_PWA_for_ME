@@ -33,7 +33,7 @@
 | 屬性 | 用途 | 沒設定會怎樣 |
 |---|---|---|
 | `CLOUD_SECRET` | PWA 同步的寫入密鑰，需與 GitHub Secret 同值 | **所有寫入一律拒絕**（fail-closed），回 `server_misconfigured` |
-| `ALLOWED_USER_IDS` | LINE 白名單，逗號分隔多筆 | 等於不限制任何人寫入，並留一行 console 警告 |
+| ~~`ALLOWED_USER_IDS`~~ | **已退場**（ADR-008 F-2），白名單改查 `line_users` 分頁 | 不再被讀取，可以刪掉 |
 | `LINE_CHANNEL_ACCESS_TOKEN` | LINE 回覆用長期權杖 | 寫入照常，但 bot 不會回話 |
 | `GEMINI_API_KEY` | 「查」前綴用 | 只有查詢不能用，其他前綴照常 |
 | `GEMINI_MODEL` | 覆寫預設模型 ID（選填） | 用程式內建預設值 |
@@ -337,13 +337,32 @@ log 是事後回頭查的東西，不是交易本身：`logs` 分頁沒建、表
 寫入是依 Sheet **實際表頭列**對位，欄序沒有寫死，之後調欄位順序不必回頭改程式。
 log 由 `routeLineMessage_` 統一寫，新分頁不必自己處理。
 
-## 白名單
+## 白名單（`line_users` 分頁，ADR-008）
 
-`ALLOWED_USER_IDS` 空陣列 = 不限制。要鎖定只有自己能寫入：
+PWA 同步與 LINE Bot **共用同一張表、同一道閘門**（`Code.gs` 的 `writeGate_`）。
+同一批人、同一個 `line_id`，維護兩份名單遲早會有一邊忘了改。
 
-1. 在 LINE 傳 `whoami`，bot 會回你的 userId
-2. 填進 `var ALLOWED_USER_IDS = ['U你的ID'];`
-3. 重新部署
+新增一個人：
+
+1. 請他在 LINE 傳 `whoami`，bot 會回他的 userId
+2. 在 `line_users` 分頁加一列，填 `line_id` 與 `display_name`，把 `is_active` 勾起來
+3. 需要哪些功能就勾哪幾個 `feat_*`（**空白 = 不開放**）
+4. 不需要重新部署；其他裝置最多等 5 分鐘（快取 TTL）
+
+欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `line_id` | LINE userId，鍵值。`whoami` 取得 |
+| `display_name` | PWA 的「選身份」畫面顯示的稱呼 |
+| `is_active` | **這欄本身就是白名單**。不是 TRUE 就拒絕寫入 |
+| `is_admin` | 能在 PWA 首頁看到「成員與權限」卡，勾選他人的白名單與功能權限 |
+| `feat_expense` / `feat_tasks` / `feat_review` / `feat_notes` / `feat_mood` / `feat_log` | 功能矩陣。**只控制 PWA 導覽顯不顯示，不影響 LINE 寫入** |
+| `created_at` / `updated_at` | 加入時間／最後異動時間 |
+
+> ⚠️ **語意已改為 fail-closed**：改版前「`ALLOWED_USER_IDS` 沒設 = 不限制任何人」，
+> 現在「白名單查不到 = 拒絕」。`line_users` 還沒建好之前，LINE 這端會全部擋下來。
+> 這是刻意的——一出狀況就自動變回全開的門，跟沒有門是同一件事。
 
 `whoami` 刻意排在白名單檢查之前——它是取得 ID 的來源，也是填錯時把自己
 鎖在門外的救援途徑。它只回傳發話者自己的 ID，問不到別人的。
@@ -351,9 +370,20 @@ log 由 `routeLineMessage_` 統一寫，新分頁不必自己處理。
 > ⚠️ 不要填 `/v2/bot/info` 回傳的 userId，那是 bot 自己的，填了等於放行 bot、
 > 擋掉自己。
 
+被擋下來的每一次都會寫一列 `logs`（`source` 是「同步」，`input` 開頭會標
+`LINE` 或 `PWA`），`detail` 帶 `code=`，可以直接對應：
+
+| code | 意思 | 怎麼修 |
+|---|---|---|
+| `whitelist_unavailable` | 分頁不見了／沒有 `line_id` 欄／讀取丟例外 | 跑 `diagnoseLineUsers()` 看它實際讀到什麼 |
+| `whitelist_empty` | 表在、讀得到，但沒有任何一列 `is_active` | 去勾 `is_active` |
+| `missing_line_id` | 寫入沒帶 `line_id` | PWA 還沒選身份，或跑的是舊版快取頁面 |
+| `not_on_whitelist` | 這個 id 不在表上 | 加一列 |
+| `inactive` | 在表上但被停用 | 勾回 `is_active` |
+
 ## 除錯
 
-兩支健檢函式都**不需要重新部署**：編輯器上方的函式下拉選單選它 → 按「執行」→
+健檢函式都**不需要重新部署**：編輯器上方的函式下拉選單選它 → 按「執行」→
 看「執行記錄」。編輯器執行的是「目前存檔的程式碼」，網頁應用程式服務的是
 「已部署的版本」，兩者分開，所以可以在不動部署的情況下直接問。
 
@@ -373,6 +403,12 @@ log 由 `routeLineMessage_` 統一寫，新分頁不必自己處理。
 檢查 `logs` 分頁存不存在、表頭有沒有缺欄位、目前幾列。
 因為寫 log 的失敗是**刻意被吞掉**的，這支就是把那個安靜的失敗叫出來講話。
 
+### `diagnoseLineUsers` — 寫入被擋、或想確認名單讀得到時
+
+印出 `line_users` 實際被讀成什麼：啟用中幾人、每個人開了哪些功能、誰是管理者。
+會先清掉快取再讀，所以剛改完表就跑得出新結果。讀不到時會直接說是哪一種失敗
+（分頁不存在／沒有 `line_id` 欄／讀取丟例外），對得上 `logs` 裡的 `code=`。
+
 ### `diagnoseGemini` — 查詢一直回「AI 暫時無法回應」時
 
 直接問 Google 兩件事：這把 key 有效嗎、這把 key 現在能用哪些模型。
@@ -389,8 +425,11 @@ log 由 `routeLineMessage_` 統一寫，新分頁不必自己處理。
 
 - **無法驗證 LINE 官方簽章**：Apps Script 的 `doPost` 讀不到 HTTP Header。
   exec 網址一旦外流，任何人都能往 Sheet 寫入。
-  防線是 `ALLOWED_USER_IDS` 白名單——第一次傳訊息後，到 Apps Script
-  「執行項目」找 `LINE userId: Uxxxx`，填進陣列即可鎖定。
+  防線是 `line_users` 白名單——第一次傳訊息後，到 Apps Script
+  「執行項目」找 `LINE userId: Uxxxx`，或直接請對方傳 `whoami`，填進分頁即可鎖定。
+- **`line_users` 的寫入權限只到「能不能寫」這一層**：後端不驗「能不能寫 `line_users`」，
+  所以任何一個白名單內的人，繞過前端就能改權限表。這在「家庭成員、彼此熟識、非公開」
+  的前提下是刻意接受的取捨（ADR-008 D-4／E-2）；前提一變，這裡是第一個要補的地方。
 - **`logs` 是單向寫入，PWA 不可回推**：前端存檔是整包 `replaceAll`。
   若 LOG 頁面把 logs 讀進 `state` 又跟著推回雲端，Apps Script 寫的記錄會被整包洗掉。
   logs 一律**唯讀、即時抓、不進 `state`、不進 `pushAllToCloud`**。

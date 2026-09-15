@@ -363,10 +363,97 @@
   }
   .log-note{font-size:12px; color:var(--muted); text-align:center; padding:8px 0 0;}
 
+  /* ---------- 選身份／白名單／功能矩陣（ADR-008） ---------- */
+  /* 全螢幕蓋版：這是「你是誰」，不是一張可以滑過去的卡片 */
+  .id-gate{
+    position:fixed; inset:0; z-index:40; background:var(--bg);
+    display:flex; flex-direction:column; justify-content:center;
+    padding:24px 20px calc(24px + env(safe-area-inset-bottom));
+    overflow-y:auto;
+  }
+  .id-gate[hidden]{display:none;}
+  .id-gate h2{margin:0 0 6px; font-size:20px;}
+  .id-gate .sub{font-size:13px; color:var(--muted); margin:0 0 18px;}
+  .id-list{display:flex; flex-direction:column; gap:8px;}
+  .id-opt{
+    display:flex; align-items:center; gap:10px; width:100%; text-align:left;
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:14px 16px; font-size:16px; color:var(--ink);
+  }
+  .id-opt.sel{border-color:var(--accent); background:var(--accent-soft); color:var(--accent); font-weight:600;}
+  .id-opt .who{flex:1;}
+  .id-opt .tag{font-size:11px; color:var(--muted); font-weight:400;}
+  .id-gate .gate-note{
+    font-size:12px; color:var(--muted); margin:16px 0 0; padding-top:14px;
+    border-top:1px solid var(--line);
+  }
+  .id-gate .gate-err{
+    background:#FBEDEA; border:1px solid var(--danger); color:var(--danger);
+    border-radius:10px; padding:12px 14px; font-size:13px; margin-bottom:14px;
+  }
+  .gate-actions{display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;}
+  .gate-actions button{
+    flex:1; min-width:120px; padding:11px 12px; font-size:14px; font-weight:600;
+    background:var(--card); border:1px solid var(--line); border-radius:10px; color:var(--ink);
+  }
+  .gate-actions button.ghost{color:var(--muted); font-weight:400;}
+
+  /* 身份卡（首頁） */
+  .me-card{
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:12px 14px; margin-bottom:12px;
+  }
+  .me-who{font-size:15px; font-weight:600; flex:1; min-width:0;}
+  .me-who .sub{display:block; font-size:12px; font-weight:400; color:var(--muted);}
+  .me-card button.link{
+    background:none; border:none; color:var(--accent); font-size:13px; padding:4px 0; flex:none;
+  }
+  /* 同步被關掉時要看得見，不能只是「存了但沒上去」 */
+  .me-card.offline{border-color:var(--danger); background:#FBEDEA;}
+  .me-card.offline .me-who{color:var(--danger);}
+
+  /* 只看我的／全部 */
+  .scope-bar{display:flex; align-items:center; gap:8px; margin-bottom:10px;}
+  .scope-bar .lbl{font-size:12px; color:var(--muted); flex:none;}
+  .scope-bar .seg{margin-bottom:0; flex:1;}
+  .scope-bar[hidden]{display:none;}
+
+  /* 管理頁（is_admin，ADR-008 D-4） */
+  .adm-row{border-bottom:1px solid var(--line);}
+  .adm-row:last-child{border-bottom:none;}
+  .adm-head{
+    display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+    background:none; border:none; padding:10px 0; font-size:14px; color:var(--ink);
+  }
+  .adm-head .who{flex:1; min-width:0;}
+  .adm-head .who small{display:block; color:var(--muted); font-size:11px; font-weight:400; word-break:break-all;}
+  .adm-head .state{font-size:12px; color:var(--muted); flex:none;}
+  .adm-head .state.on{color:var(--accent); font-weight:600;}
+  .adm-body{padding:0 0 12px;}
+  .adm-grid{display:flex; flex-wrap:wrap; gap:6px;}
+  .adm-grid button{
+    padding:7px 10px; font-size:13px; background:var(--bg);
+    border:1px solid var(--line); border-radius:8px; color:var(--muted);
+  }
+  .adm-grid button.on{border-color:var(--accent); background:var(--accent-soft); color:var(--accent); font-weight:600;}
+  .adm-grid button.danger.on{border-color:var(--danger); background:#FBEDEA; color:var(--danger);}
+  .adm-sec{font-size:12px; color:var(--muted); margin:10px 0 6px;}
+
   @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important;} }
 </style>
 </head>
 <body>
+
+<!-- 選身份（ADR-008 B-2）
+     這是「身份宣告」，不是「身份驗證」——真正的把關在 Apps Script 的 writeGate_，
+     它會拿這個 line_id 去查 line_users 白名單。這裡選錯不會讓你拿到別人的權限，
+     只會讓你的寫入被後端擋下來。 -->
+<div class="id-gate" id="idGate" hidden>
+  <h2>你是誰？</h2>
+  <p class="sub">選一次就好，之後這支手機會記得。</p>
+  <div id="idGateBody"></div>
+</div>
 
 <header>
   <div class="eyebrow" id="todayLabel"></div>
@@ -378,9 +465,13 @@
 <main>
   <!-- 首頁 Dashboard -->
   <section class="view active" id="view-home">
+    <!-- ⓪ 目前身份（ADR-008 B-2／C-3） -->
+    <div class="me-card" id="meCard" hidden></div>
+
     <!-- ① 記帳狀況 -->
     <div class="card">
       <h2>本月支出</h2>
+      <div class="scope-bar" id="scopeHome" hidden></div>
       <div id="dashExpense"></div>
       <button class="dash-link" onclick="goView('expenses')">前往記帳 →</button>
     </div>
@@ -407,6 +498,19 @@
       <div class="slot-fixed">🧭 首頁固定在圓心，其餘自由排左右</div>
       <div id="placeRows"></div>
       <p class="slot-hint">每側最多 3 個。點了就換，不用儲存；只存這支手機，不同步雲端。</p>
+    </div>
+
+    <!-- ⑤ 白名單管理（僅 is_admin 可見，ADR-008 D-4）
+         範圍刻意只到「勾選白名單與功能權限」，不含刪除他人資料——那種等級的操作
+         不能只靠前端藏，得再疊一層後端驗證，會變成同一套系統裡兩種深淺的安全模型。 -->
+    <div class="slot-card" id="adminCard" hidden>
+      <div class="place-head">
+        <h2>🔐 成員與權限</h2>
+        <span class="place-count" id="adminCount"></span>
+      </div>
+      <div class="slot-fixed">改動即時寫回 <b>line_users</b>，其他人最多等 5 分鐘生效。</div>
+      <div id="adminRows"></div>
+      <p class="slot-hint">功能權限只控制導覽列顯不顯示，擋不住直接打 API 的人——家人之間夠用，不是資安邊界。</p>
     </div>
   </section>
 
@@ -441,6 +545,7 @@
 
     <div class="card">
       <h2>當月明細</h2>
+      <div class="scope-bar" id="scopeExpenses" hidden></div>
       <div id="expList"></div>
     </div>
   </section>
@@ -461,6 +566,7 @@
     </div>
     <div class="card">
       <h2>進行中</h2>
+      <div class="scope-bar" id="scopeTasks" hidden></div>
       <div id="taskListOpen"></div>
     </div>
     <div class="card">
@@ -589,6 +695,363 @@ const DEFAULT_PLACEMENT = {
   expenses:'left', notes:'left', tasks:'right', review:'right', logs:'off', mood:'off'
 };
 let navPlacement = Object.assign({}, DEFAULT_PLACEMENT);
+
+/* ---------- 身份、白名單與功能矩陣（ADR-008） ----------
+   三件事共用同一張雲端 line_users 表，但責任分得很開：
+
+     身份（B-2）    「我說我是誰」。存這支手機的 localStorage，不進 state——
+                    state 會被整包推上雲端，而身份選擇不需要跨裝置一致。
+     白名單（D-2）  「誰能寫」。真正的把關在 Apps Script 的 writeGate_，
+                    前端這邊只是先擋一層，省下被拒絕時灌進 logs 的雜訊。
+     功能矩陣（E-2）「誰看得到哪些分頁」。**只做前端隱藏**，後端不驗證。
+                    被繞過的代價僅止於「多看了一個空白分頁」。
+
+   ⚠️ 明講：選身份是宣告，不是驗證。這裡改掉自己的 line_id 不會拿到別人的權限，
+   只會讓雲端把你的寫入擋下來。真的要防，得有自有後端做 OAuth——純前端做不到，
+   而那個複雜度與「家人之間彼此熟識」的情境不成比例（ADR-008 B-1）。 */
+const LINE_ID_KEY = 'personal-os-line-id';
+const ROSTER_CACHE_KEY = 'personal-os-line-users';
+const LOCAL_ONLY_KEY = 'personal-os-local-only';
+const SCOPE_KEY = 'personal-os-scope';
+const LINE_USERS_SHEET = 'line_users';
+
+/* 分頁 ↔ 功能欄。首頁刻意不在表上：它是進 App 的第一頁，關掉沒意義（D-1）。 */
+const FEATURE_BY_VIEW = {
+  expenses:'feat_expense', notes:'feat_notes', tasks:'feat_tasks',
+  review:'feat_review', logs:'feat_log', mood:'feat_mood'
+};
+// 標籤直接沿用 NAV_ITEMS，避免同一個名字在兩個地方各寫一次、改了一邊忘了另一邊
+const FEATURE_KEYS = NAV_ITEMS.map(function(it){ return FEATURE_BY_VIEW[it.view]; });
+const FEATURE_LABEL = {};
+NAV_ITEMS.forEach(function(it){ FEATURE_LABEL[FEATURE_BY_VIEW[it.view]] = it.icon + ' ' + it.label; });
+
+let myLineId = null;
+let roster = [];
+let rosterStatus = 'loading';   // loading | ok | empty | unavailable
+let localOnly = false;          // 沒選身份也先用，雲端同步暫停
+let scopeMine = false;
+let gateNotice = '';
+let gateOptions = [];           // 目前蓋版上列出的人，點擊以索引回查，避免把 id 塞進 onclick 字串
+
+/* Sheet 的勾選框回傳布林 true，手打的是字串 'TRUE'。判斷規則與後端 truthy_()
+   一字不差——兩邊不一致的話，同一張表在前後端會被讀成兩種結果，那種 bug 最難查。
+   空白＝關閉（E-2b）：新功能加一欄之後，既有使用者在該欄是空的，就該是關的。 */
+function truthy(v){
+  if(v===true) return true;
+  const t=String(v==null?'':v).trim().toUpperCase();
+  return t==='TRUE'||t==='1'||t==='YES'||t==='Y';
+}
+function rosterId(u){ return String((u&&u.line_id)||'').trim(); }
+function rosterName(u){ return String((u&&u.display_name)||'').trim() || rosterId(u); }
+function activeUsers(){ return roster.filter(truthyActive); }
+function truthyActive(u){ return truthy(u&&u.is_active); }
+function myUser(){ return myLineId ? (roster.find(u=>rosterId(u)===myLineId)||null) : null; }
+function isAdmin(){ return truthy((myUser()||{}).is_admin); }
+
+/* 這一列有沒有任何 feat_ 欄？沒有就代表矩陣還沒佈到 Sheet 上，一律視為開放。
+   「欄位不存在」與「欄位留空」是兩件事：後者是刻意關掉（E-2b），前者只是還沒
+   部署——把所有分頁都藏起來只會讓人以為 App 壞了。 */
+function hasFeatureMatrix(u){
+  return !!u && Object.keys(u).some(k=>k.indexOf('feat_')===0);
+}
+function featureAllowed(view){
+  if(view==='home') return true;
+  const key=FEATURE_BY_VIEW[view];
+  if(!key) return true;
+  const u=myUser();
+  if(!u || !hasFeatureMatrix(u)) return true;
+  return truthy(u[key]);
+}
+
+/* ---------- 身份：讀取與套用 ---------- */
+function loadIdentity(){
+  // 私密瀏覽或封鎖網站資料時，讀 localStorage 會直接 throw
+  try{ myLineId=(localStorage.getItem(LINE_ID_KEY)||'').trim()||null; }catch(e){ myLineId=null; }
+  try{ scopeMine=localStorage.getItem(SCOPE_KEY)==='mine'; }catch(e){ scopeMine=false; }
+  try{ localOnly=localStorage.getItem(LOCAL_ONLY_KEY)==='1'; }catch(e){ localOnly=false; }
+  // 快取一份名單：離線冷啟動時，選身份的畫面才有東西可以選
+  try{ const c=JSON.parse(localStorage.getItem(ROSTER_CACHE_KEY)||'[]'); roster=Array.isArray(c)?c:[]; }catch(e){ roster=[]; }
+}
+
+/**
+ * 抓 line_users。走 doGet，不需要驗證（ADR-008 D-2 刻意不動讀取層）。
+ *
+ * 讀不到時**不清掉快取裡的舊名單**：離線只是讀不到，不代表名單沒了。
+ * 把它當成空的會直接把人鎖在選身份的畫面上，而那畫面本身是離線時最沒用的東西。
+ */
+async function refreshRoster(){
+  let rows=null;
+  try{
+    const j=await fetch(`${CLOUD_URL}?sheet=${LINE_USERS_SHEET}`).then(r=>r.json());
+    rows = (j && Array.isArray(j.data)) ? j.data : null;   // 分頁不存在時回的是 {error:...}
+  }catch(e){ rows=null; }
+
+  if(rows){
+    roster=rows.filter(u=>rosterId(u));
+    rosterStatus = activeUsers().length ? 'ok' : 'empty';
+    try{ localStorage.setItem(ROSTER_CACHE_KEY, JSON.stringify(roster)); }catch(e){}
+  }else{
+    rosterStatus='unavailable';
+  }
+
+  // 選過的身份若已不在啟用名單上（被停用、或換了一張表），退回重選。
+  // 留著也沒用——雲端會把它的寫入全部擋下來，而且擋得很安靜。
+  if(myLineId && rosterStatus!=='unavailable' && !activeUsers().some(u=>rosterId(u)===myLineId)){
+    myLineId=null;
+    try{ localStorage.removeItem(LINE_ID_KEY); }catch(e){}
+    gateNotice='你原本選的身份已經不在名單上了，請重新選一次。';
+  }
+
+  // 一度離線而選了「先在本機用」，現在名單讀得到了 → 該挑身份了
+  if(localOnly && rosterStatus==='ok'){
+    localOnly=false;
+    try{ localStorage.removeItem(LOCAL_ONLY_KEY); }catch(e){}
+  }
+
+  applyIdentity();
+  if(!myLineId && !localOnly) openIdentityGate(gateNotice);
+  else if(!document.getElementById('idGate').hidden) renderIdentityGate();
+}
+
+/* 身份一變，導覽、身份卡、管理頁、篩選鈕與所有列表都要跟著換一輪 */
+function applyIdentity(){
+  applyNavPlacement();
+  renderMeCard();
+  renderAdminCard();
+  renderScopeBars();
+  renderAll();
+}
+
+/* ---------- 選身份的蓋版 ---------- */
+function openIdentityGate(notice){
+  gateNotice=notice||'';
+  document.getElementById('idGate').hidden=false;
+  renderIdentityGate();
+}
+function closeIdentityGate(){
+  gateNotice='';
+  document.getElementById('idGate').hidden=true;
+}
+function renderIdentityGate(){
+  const box=document.getElementById('idGateBody');
+  if(!box) return;
+  gateOptions=activeUsers();
+  let html = gateNotice ? `<div class="gate-err">${esc(gateNotice)}</div>` : '';
+
+  if(!gateOptions.length && rosterStatus==='unavailable'){
+    // 離線是常態，不是錯誤。本機優先的 App 不該因為讀不到名單就整個停擺。
+    html+=`<div class="gate-err">讀不到成員名單——可能是離線，或雲端暫時不通。<br>
+      沒有身份也可以先用：資料照樣存在這支手機，只是暫時不同步到雲端。</div>
+      <div class="gate-actions">
+        <button onclick="retryRoster()">再試一次</button>
+        <button class="ghost" onclick="useLocalOnly()">先在本機用</button>
+      </div>`;
+  }else if(!gateOptions.length){
+    html+=`<div class="gate-err">名單是空的：<b>line_users</b> 分頁裡沒有任何一列 is_active 是 TRUE。<br>
+      在 LINE 傳一句 <b>whoami</b> 就能查到自己的 userId，填進去並勾起 is_active 即可。</div>
+      <div class="gate-actions"><button onclick="retryRoster()">再試一次</button></div>`;
+  }else{
+    html+='<div class="id-list">'+gateOptions.map(function(u,i){
+      const sel = myLineId===rosterId(u) ? ' sel' : '';
+      const tag = truthy(u.is_admin) ? '<span class="tag">管理者</span>' : '';
+      return `<button class="id-opt${sel}" onclick="pickIdentity(${i})">
+        <span class="who">${esc(rosterName(u))}</span>${tag}</button>`;
+    }).join('')+'</div>';
+    html+=`<p class="gate-note">這一步是「你說你是誰」，不是密碼驗證——真正的把關在雲端那一側的白名單。
+      選錯只會讓你的同步被擋下來，不會拿到別人的權限。</p>`;
+  }
+  box.innerHTML=html;
+}
+function retryRoster(){
+  gateNotice='';
+  document.getElementById('idGateBody').innerHTML='<p class="sub">重新讀取名單中…</p>';
+  refreshRoster();
+}
+function pickIdentity(i){
+  const u=gateOptions[i];
+  if(!u) return;
+  myLineId=rosterId(u);
+  localOnly=false;
+  try{
+    localStorage.setItem(LINE_ID_KEY, myLineId);
+    localStorage.removeItem(LOCAL_ONLY_KEY);
+  }catch(e){}
+  closeIdentityGate();
+  applyIdentity();
+  toast('哈囉，'+rosterName(u));
+  // 身份定了才推得上去。先 pull 補齊再 push，否則整包 replaceAll 會蓋掉
+  // 這支手機還沒收到的雲端資料——跟 save() 等 pull 是同一個理由。
+  syncFromCloud().then(pushAllToCloud);
+}
+function switchIdentity(){
+  openIdentityGate('');
+  refreshRoster();
+}
+/* 離線時的逃生門。不是一種「模式」，所以名單一旦讀得到就會自動失效、請人選身份。 */
+function useLocalOnly(){
+  localOnly=true;
+  try{ localStorage.setItem(LOCAL_ONLY_KEY,'1'); }catch(e){}
+  closeIdentityGate();
+  applyIdentity();
+  toast('先在本機使用，雲端同步暫停');
+}
+
+/* ---------- 身份卡 ---------- */
+function renderMeCard(){
+  const el=document.getElementById('meCard');
+  if(!el) return;
+  el.hidden=false;
+
+  if(!myLineId){
+    el.classList.add('offline');
+    el.innerHTML=`<span class="me-who">⚠️ 還沒選身份
+        <span class="sub">資料只存在這支手機，不會同步到雲端</span></span>
+      <button class="link" onclick="switchIdentity()">現在選</button>`;
+    return;
+  }
+  el.classList.remove('offline');
+  const n=orphanCount();
+  el.innerHTML=`<span class="me-who">👤 ${esc(rosterName(myUser())||myLineId)}
+      <span class="sub">${isAdmin()?'管理者・':''}之後記的東西會標記成你的</span></span>
+    ${n?`<button class="link" onclick="claimOrphans()">認領舊資料 ${n}</button>`:''}
+    <button class="link" onclick="switchIdentity()">換人</button>`;
+}
+
+/* 改版前的舊資料沒有 line_id。刻意**不自動蓋章**——那等於連 LINE 那端別人記的帳
+   都一起認領走，冒名比空白難查得多。給一顆按鈕，由人明確決定要不要認。 */
+function orphanCount(){
+  let n=0;
+  ['tasks','moods','notes','expenses'].forEach(k=>{
+    (state[k]||[]).forEach(r=>{ if(!String(r.line_id||'').trim()) n++; });
+  });
+  Object.keys(state.reviews||{}).forEach(k=>{
+    if(!String((state.reviews[k]||{}).line_id||'').trim()) n++;
+  });
+  return n;
+}
+function claimOrphans(){
+  if(!myLineId) return;
+  const n=orphanCount();
+  if(!n) return;
+  if(!confirm(`把這支手機上 ${n} 筆沒有歸屬的舊資料標記成你的？\n只會影響「只看我的」的篩選結果，不會動到內容。`)) return;
+  ['tasks','moods','notes','expenses'].forEach(k=>{
+    (state[k]||[]).forEach(r=>{ if(!String(r.line_id||'').trim()) r.line_id=myLineId; });
+  });
+  Object.keys(state.reviews||{}).forEach(k=>{
+    if(!String((state.reviews[k]||{}).line_id||'').trim()) state.reviews[k].line_id=myLineId;
+  });
+  save(); applyIdentity(); toast(`已認領 ${n} 筆`);
+}
+
+/* ---------- 只看我的／全部（ADR-008 C-3） ----------
+   純前端 filter，不動後端邏輯、也不動儲存結構：line_id 在這裡只是篩選鍵，
+   不是存取權限鍵（C-2）。家人之間資料本來就互相看得到。 */
+function inScope(rec){
+  if(!scopeMine || !myLineId) return true;
+  return String((rec&&rec.line_id)||'').trim()===myLineId;
+}
+function setScope(mine){
+  scopeMine=!!mine;
+  try{ localStorage.setItem(SCOPE_KEY, scopeMine?'mine':'all'); }catch(e){}
+  renderScopeBars(); renderAll();
+}
+function renderScopeBars(){
+  // 名單上只有一個人時，「只看我的」跟「全部」永遠是同一件事——不擺沒有作用的開關
+  const show = !!myLineId && activeUsers().length>1;
+  ['scopeHome','scopeExpenses','scopeTasks'].forEach(function(id){
+    const el=document.getElementById(id);
+    if(!el) return;
+    el.hidden=!show;
+    if(!show) return;
+    el.innerHTML=`<span class="lbl">顯示</span>
+      <div class="seg">
+        <button class="${scopeMine?'':'sel'}" onclick="setScope(false)">全部</button>
+        <button class="${scopeMine?'sel':''}" onclick="setScope(true)">只看我的</button>
+      </div>`;
+  });
+}
+
+/* ---------- 成員與權限（is_admin，ADR-008 D-4） ----------
+   範圍刻意只到「勾白名單與功能權限」。要做到刪除他人資料那種等級，就不能只靠
+   前端藏，必須疊一層後端驗證——那等於在同一套系統裡開了兩種深淺的安全模型。
+   真的需要時 is_admin 欄位已經在，加後端把關是小票，不是砍掉重練。 */
+let adminOpen=null;
+function toggleAdminRow(i){
+  const id=rosterId(roster[i]);
+  adminOpen = (adminOpen===id) ? null : id;
+  renderAdminCard();
+}
+function renderAdminCard(){
+  const card=document.getElementById('adminCard');
+  if(!card) return;
+  if(!isAdmin()){ card.hidden=true; return; }
+  card.hidden=false;
+
+  document.getElementById('adminCount').textContent='啟用中 '+activeUsers().length+'／共 '+roster.length+' 人';
+  document.getElementById('adminRows').innerHTML=roster.map(function(u,i){
+    const id=rosterId(u), on=truthy(u.is_active), open=adminOpen===id;
+    let html=`<div class="adm-row">
+      <button class="adm-head" onclick="toggleAdminRow(${i})">
+        <span class="who">${esc(rosterName(u))}<small>${esc(id)}</small></span>
+        <span class="state${on?' on':''}">${on?'啟用中':'已停用'}</span>
+        <span class="state">${open?'▴':'▾'}</span>
+      </button>`;
+    if(open){
+      const feats=FEATURE_KEYS.map(function(k){
+        return `<button class="${truthy(u[k])?'on':''}" onclick="toggleAdminFlag(${i},'${k}')">${FEATURE_LABEL[k]}</button>`;
+      }).join('');
+      html+=`<div class="adm-body">
+        <div class="adm-sec">寫入資格與管理權限</div>
+        <div class="adm-grid">
+          <button class="${on?'on':''}" onclick="toggleAdminFlag(${i},'is_active')">✅ 可寫入</button>
+          <button class="danger ${truthy(u.is_admin)?'on':''}" onclick="toggleAdminFlag(${i},'is_admin')">🔐 管理者</button>
+        </div>
+        <div class="adm-sec">可用功能（關掉只是藏起導覽入口，不擋寫入）</div>
+        <div class="adm-grid">${feats}</div>
+      </div>`;
+    }
+    return html+'</div>';
+  }).join('') || '<div class="empty-hint">名單上還沒有任何人</div>';
+}
+async function toggleAdminFlag(i, key){
+  const u=roster[i];
+  if(!u) return;
+  const id=rosterId(u), next=!truthy(u[key]);
+
+  // 把自己的寫入資格或管理權限關掉 = 把自己鎖在門外，而且管理頁會跟著消失，
+  // 救不回來。這種一步到位的自毀，擋下來比事後解釋便宜太多。
+  if(id===myLineId && (key==='is_active'||key==='is_admin') && !next){
+    toast('不能把自己的權限關掉'); return;
+  }
+  if(key==='is_active' && !next && activeUsers().length<=1){
+    toast('至少要留一個啟用中的成員'); return;
+  }
+
+  const before=u[key], beforeStamp=u.updated_at;
+  u[key]=next?'TRUE':'FALSE';
+  u.updated_at=new Date().toISOString();
+  renderAdminCard(); applyNavPlacement(); renderScopeBars();
+
+  // 單列 upsert，不走 replaceAll：整包覆蓋一旦送出不完整的名單，會把所有人
+  // （包含正在按按鈕的自己）鎖在門外。後端也把 line_users 的 replaceAll 擋掉了。
+  const ok=await cloudUpsert(LINE_USERS_SHEET, u, 'line_id');
+  if(ok){
+    try{ localStorage.setItem(ROSTER_CACHE_KEY, JSON.stringify(roster)); }catch(e){}
+    toast('已更新');
+  }else{
+    u[key]=before; u.updated_at=beforeStamp;
+    renderAdminCard(); applyNavPlacement(); renderScopeBars();
+    toast('⚠️ 寫回雲端失敗，已復原');
+  }
+}
+function cloudUpsert(sheet, record, keyField){
+  if(!myLineId) return Promise.resolve(false);
+  return fetch(CLOUD_URL,{
+    method:'POST',
+    headers:{'Content-Type':'text/plain'},
+    body:JSON.stringify({secret:CLOUD_SECRET, line_id:myLineId, sheet, action:'append', key_field:keyField, record})
+  }).then(r=>r.json()).then(j=>!!(j&&j.success)).catch(()=>false);
+}
 
 /* ---------- 雜記類別（原成長頁的「創造」類型） ----------
    選填。選了就在內容前面加上 [類別] 存進 notes 既有的 text 欄位，
@@ -735,22 +1198,26 @@ function cloudGet(sheet){
   return fetch(`${CLOUD_URL}?sheet=${sheet}`).then(r=>r.json()).then(j=>j.data||[]).catch(()=>[]);
 }
 function cloudReplaceAll(sheet,headers,records){
+  // line_id 一起送：密鑰只證明「這是我們家的 App」，證明不了「這是誰」，
+  // 後端的 writeGate_ 要靠它查白名單（ADR-008 D-2）。
   return fetch(CLOUD_URL,{
     method:'POST',
     headers:{'Content-Type':'text/plain'},
-    body:JSON.stringify({secret:CLOUD_SECRET, sheet, action:'replaceAll', headers, records})
+    body:JSON.stringify({secret:CLOUD_SECRET, line_id:myLineId||'', sheet, action:'replaceAll', headers, records})
   }).then(r=>r.json());
 }
-function taskToCloud(t){ return {id:String(t.id), text:t.txt, is_completed:!!t.done, created_at:new Date(t.ts).toISOString(), priority:t.priority||DEFAULT_PRIORITY}; }
+function taskToCloud(t){ return {id:String(t.id), text:t.txt, is_completed:!!t.done, created_at:new Date(t.ts).toISOString(), priority:t.priority||DEFAULT_PRIORITY, line_id:t.line_id||''}; }
 function taskFromCloud(r){
   const p=String(r.priority||'').toUpperCase();
   return {id:Number(r.id)||Date.now(), txt:r.text||'', done:r.is_completed===true||r.is_completed==='TRUE'||r.is_completed==='true',
           ts:r.created_at?new Date(r.created_at).getTime():Date.now(),
-          priority:PRIORITIES.includes(p)?p:DEFAULT_PRIORITY};
+          priority:PRIORITIES.includes(p)?p:DEFAULT_PRIORITY,
+          line_id:String(r.line_id||'').trim()};
 }
 function expenseToCloud(e){
   return {id:String(e.id), expense_date:e.date, type:e.type, category:e.category,
-          amount:e.amount, note:e.note||'', created_at:new Date(e.ts).toISOString()};
+          amount:e.amount, note:e.note||'', created_at:new Date(e.ts).toISOString(),
+          line_id:e.line_id||''};
 }
 function expenseFromCloud(r){
   return {id:Number(r.id)||Date.now(),
@@ -758,23 +1225,29 @@ function expenseFromCloud(r){
           type:r.type==='income'?'income':'expense',
           category:EXPENSE_CATEGORIES.includes(r.category)?r.category:'其他',
           amount:Number(r.amount)||0, note:r.note||'',
-          ts:r.created_at?new Date(r.created_at).getTime():Date.now()};
+          ts:r.created_at?new Date(r.created_at).getTime():Date.now(),
+          line_id:String(r.line_id||'').trim()};
 }
-function moodToCloud(m){ return {id:String(m.id), mood_date:todayKey(new Date(m.ts)), level:m.level, note:m.note||''}; }
-function moodFromCloud(r){ return {id:Number(r.id)||Date.now(), level:Number(r.level), note:r.note||'', ts:r.mood_date?new Date(r.mood_date).getTime():Date.now()}; }
-function noteToCloud(n){ return {id:String(n.id), text:n.txt, created_at:new Date(n.ts).toISOString()}; }
-function noteFromCloud(r){ return {id:Number(r.id)||Date.now(), txt:r.text||'', ts:r.created_at?new Date(r.created_at).getTime():Date.now()}; }
+function moodToCloud(m){ return {id:String(m.id), mood_date:todayKey(new Date(m.ts)), level:m.level, note:m.note||'', line_id:m.line_id||''}; }
+function moodFromCloud(r){ return {id:Number(r.id)||Date.now(), level:Number(r.level), note:r.note||'', ts:r.mood_date?new Date(r.mood_date).getTime():Date.now(), line_id:String(r.line_id||'').trim()}; }
+function noteToCloud(n){ return {id:String(n.id), text:n.txt, created_at:new Date(n.ts).toISOString(), line_id:n.line_id||''}; }
+function noteFromCloud(r){ return {id:Number(r.id)||Date.now(), txt:r.text||'', ts:r.created_at?new Date(r.created_at).getTime():Date.now(), line_id:String(r.line_id||'').trim()}; }
 
 function pushAllToCloud(){
-  // 這裡永遠不該出現 'logs'：那是 Apps Script 單向寫入的記錄，
-  // 一旦被整包 replaceAll 推回去，LINE 那邊寫的東西會全部被洗掉（ADR-006 §C）。
-  // tasks 欄序固定為 id | text | is_completed | created_at | priority（priority 一律最後一欄）
-  const p1=cloudReplaceAll('tasks',['id','text','is_completed','created_at','priority'], state.tasks.map(taskToCloud));
-  const p2=cloudReplaceAll('reviews',['review_date','good','stuck','most_important'],
-    Object.keys(state.reviews).map(k=>({review_date:k, good:state.reviews[k].good||'', stuck:state.reviews[k].stuck||'', most_important:state.reviews[k].next||''})));
-  const p3=cloudReplaceAll('moods',['id','mood_date','level','note'], state.moods.map(moodToCloud));
-  const p4=cloudReplaceAll('notes',['id','text','created_at'], state.notes.map(noteToCloud));
-  const p5=cloudReplaceAll('expenses',['id','expense_date','type','category','amount','note','created_at'],
+  // 沒有身份就不推。後端本來就會擋（ADR-008 D-2），先在這裡擋一層是為了不要每次
+  // 存檔都在 logs 留五列「被拒絕」——那會把真正該看的記錄淹掉。本機那份已經存好了，
+  // 選完身份後 pickIdentity() 會補推一次，資料不會掉。
+  if(!myLineId) return;
+
+  // 這裡永遠不該出現 'logs' 或 'line_users'：前者是 Apps Script 單向寫入的記錄，
+  // 後者是白名單本身——任一被整包 replaceAll 推回去都會被洗掉（ADR-006 §C／ADR-008）。
+  // 欄序即表頭：replaceAll 會用這份 headers 重寫表頭列，所以 line_id 一律補在最後一欄。
+  const p1=cloudReplaceAll('tasks',['id','text','is_completed','created_at','priority','line_id'], state.tasks.map(taskToCloud));
+  const p2=cloudReplaceAll('reviews',['review_date','good','stuck','most_important','line_id'],
+    Object.keys(state.reviews).map(k=>({review_date:k, good:state.reviews[k].good||'', stuck:state.reviews[k].stuck||'', most_important:state.reviews[k].next||'', line_id:state.reviews[k].line_id||''})));
+  const p3=cloudReplaceAll('moods',['id','mood_date','level','note','line_id'], state.moods.map(moodToCloud));
+  const p4=cloudReplaceAll('notes',['id','text','created_at','line_id'], state.notes.map(noteToCloud));
+  const p5=cloudReplaceAll('expenses',['id','expense_date','type','category','amount','note','created_at','line_id'],
     state.expenses.map(expenseToCloud));
   Promise.all([p1,p2,p3,p4,p5]).catch(()=>{});
 }
@@ -799,7 +1272,8 @@ async function pullFromCloud(){
     cReviews.forEach(row=>{
       if(!row.review_date) return;
       if(!state.reviews[row.review_date]){
-        state.reviews[row.review_date]={compass:'', good:row.good||'', stuck:row.stuck||'', next:row.most_important||'', ts:Date.now()};
+        state.reviews[row.review_date]={compass:'', good:row.good||'', stuck:row.stuck||'', next:row.most_important||'',
+                                        line_id:String(row.line_id||'').trim(), ts:Date.now()};
       }
     });
 
@@ -838,13 +1312,15 @@ function exportData(){
 /* ---------- 導覽 ---------- */
 const TITLES={home:'首頁',expenses:'記帳',tasks:'任務',review:'日誌',mood:'心情',notes:'雜記',logs:'LOG'};
 function switchView(name,btn){
+  // 沒開放的分頁連切都不該切得過去——導覽藏起來了，但首頁捷徑與舊的深連結還在
+  if(!featureAllowed(name)){ toast('這個功能還沒對你開放'); return; }
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.getElementById('view-'+name).classList.add('active');
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
   if(btn) btn.classList.add('active');
   document.getElementById('viewTitle').textContent=TITLES[name];
   // 心情脈搏隸屬心情模組：心情沒被調進導覽時，它的視覺元件也不該自己跑出來
-  const showPulse = navPlacement.mood!=='off' && (name==='tasks'||name==='mood');
+  const showPulse = navPlacement.mood!=='off' && featureAllowed('mood') && (name==='tasks'||name==='mood');
   document.getElementById('pulse').style.display=showPulse?'flex':'none';
   document.getElementById('pulseLabel').style.display=showPulse?'block':'none';
   if(name==='home') renderDashboard();
@@ -872,7 +1348,7 @@ function addTask(){
   const inp=document.getElementById('taskInput');
   const txt=inp.value.trim();
   if(!txt) return;
-  state.tasks.unshift({id:Date.now(),txt,done:false,ts:Date.now(),priority:newTaskPriority});
+  state.tasks.unshift({id:Date.now(),txt,done:false,ts:Date.now(),priority:newTaskPriority,line_id:myLineId||''});
   inp.value='';
   save(); renderTasks(); toast('已加入任務');
 }
@@ -899,8 +1375,8 @@ function byPriority(a,b){
   return d!==0 ? d : a.ts-b.ts;
 }
 function renderTasks(){
-  const open=state.tasks.filter(t=>!t.done).sort(byPriority);
-  const done=state.tasks.filter(t=>t.done);
+  const open=state.tasks.filter(t=>!t.done && inScope(t)).sort(byPriority);
+  const done=state.tasks.filter(t=>t.done && inScope(t));
   const html=t=>{
     const p=t.priority||DEFAULT_PRIORITY;
     return `
@@ -934,7 +1410,7 @@ function saveReview(){
   const stuck  = document.getElementById('rvStuck').value.trim();
   const next   = document.getElementById('rvNext').value.trim();
   if(!compass&&!good&&!stuck&&!next){toast('先寫點什麼吧 ✍️'); return;}
-  state.reviews[todayKey()]={compass,good,stuck,next,ts:Date.now()};
+  state.reviews[todayKey()]={compass,good,stuck,next,line_id:(state.reviews[todayKey()]||{}).line_id||myLineId||'',ts:Date.now()};
   save(); renderReviews(); loadTodayReview(); toast('今日日誌已儲存');
 }
 function renderReviews(){
@@ -961,7 +1437,7 @@ function pickMood(l){selectedMood=l; renderMoodBtns();}
 function addMood(){
   if(!selectedMood){toast('先選一個心情吧'); return;}
   const note=document.getElementById('moodNote').value.trim();
-  state.moods.unshift({id:Date.now(),level:selectedMood,note,ts:Date.now()});
+  state.moods.unshift({id:Date.now(),level:selectedMood,note,ts:Date.now(),line_id:myLineId||''});
   document.getElementById('moodNote').value='';
   selectedMood=null;
   save(); renderMoodBtns(); renderMoods(); renderPulse(); toast('心情已記錄');
@@ -1017,7 +1493,7 @@ function addNote(){
   if(!txt) return;
   // 類別存成內容前綴，notes 分頁的欄位一個字都不用改
   const tag=selectedNoteTag;
-  state.notes.unshift({id:Date.now(), txt: tag ? '['+tag+'] '+txt : txt, ts:Date.now()});
+  state.notes.unshift({id:Date.now(), txt: tag ? '['+tag+'] '+txt : txt, ts:Date.now(), line_id:myLineId||''});
   inp.value='';
   selectedNoteTag=null;
   renderNoteTagRow();
@@ -1051,7 +1527,9 @@ function sortExpenses(){
   // 消費日新→舊；同日以輸入時間新→舊
   state.expenses.sort((a,b)=> a.date===b.date ? b.ts-a.ts : (a.date<b.date?1:-1));
 }
-function expensesOfMonth(mk){ return state.expenses.filter(e=>e.date.slice(0,7)===mk); }
+/* 「只看我的」在這裡收斂：月小計、圓餅圖與當月明細全部共用這個出口，
+   一個地方改完三處跟著對。編輯與刪除仍是以 id 直接對 state 操作，不受影響。 */
+function expensesOfMonth(mk){ return state.expenses.filter(e=>e.date.slice(0,7)===mk && inScope(e)); }
 function monthTotal(mk,type='expense'){
   return expensesOfMonth(mk).filter(e=>e.type===type).reduce((s,e)=>s+e.amount,0);
 }
@@ -1105,7 +1583,7 @@ function submitExpense(){
     if(e) Object.assign(e,{date,type:expType,category:expCategory,amount,note});
     toast('已更新這筆');
   }else{
-    state.expenses.unshift({id:Date.now(),date,type:expType,category:expCategory,amount,note,ts:Date.now()});
+    state.expenses.unshift({id:Date.now(),date,type:expType,category:expCategory,amount,note,ts:Date.now(),line_id:myLineId||''});
     toast('已記一筆');
   }
   sortExpenses();
@@ -1207,7 +1685,7 @@ function renderDashExpense(){
     <div class="donut-wrap">${donutSVG(rows,total)}<div class="legend">${legend}</div></div>`;
 }
 function renderDashTasks(){
-  const top=state.tasks.filter(t=>!t.done).sort(byPriority).slice(0,3);
+  const top=state.tasks.filter(t=>!t.done && inScope(t)).sort(byPriority).slice(0,3);
   const el=document.getElementById('dashTasks');
   if(!top.length){ el.innerHTML='<div class="empty-hint">目前沒有進行中的任務 🎉</div>'; return; }
   el.innerHTML=top.map(t=>{
@@ -1238,7 +1716,7 @@ function saveCompassFromHome(){
   if(!compass){toast('先寫點什麼吧 ✍️'); return;}
   const k=todayKey();
   const r=state.reviews[k]||{compass:'',good:'',stuck:'',next:''};
-  state.reviews[k]={...r, compass, ts:Date.now()};
+  state.reviews[k]={...r, compass, line_id:r.line_id||myLineId||'', ts:Date.now()};
   save(); renderDashCompass(); loadTodayReview(); renderReviews(); toast('今日指南針已記下 🧭');
 }
 function renderDashboard(){
@@ -1281,8 +1759,13 @@ function enforceSideLimits(){
     });
   });
 }
+/* 上限是版面問題，而版面只在乎「畫面上真的有幾格」——被功能矩陣關掉的分頁
+   不佔位，所以不算進去。enforceSideLimits 刻意不跟著改：它是存壞設定的防護網，
+   看的是儲存的值本身，跟這個帳號當下開了哪些功能無關。 */
 function sideCount(side){
-  return NAV_ITEMS.filter(function(it){ return navPlacement[it.view]===side; }).length;
+  return NAV_ITEMS.filter(function(it){
+    return navPlacement[it.view]===side && featureAllowed(it.view);
+  }).length;
 }
 function setNavPlacement(view, side){
   if(!navPlacement.hasOwnProperty(view) || !NAV_SIDE_LABEL[side]) return;
@@ -1304,12 +1787,18 @@ function applyNavPlacement(){
     const btn=nav.querySelector('button[data-view="'+it.view+'"]');
     if(!btn) return;
     const side=navPlacement[it.view];
-    btn.hidden = side==='off';
+    // 兩套機制串聯但不混用（ADR-008 H-8）：版位是「放左邊還右邊」，功能矩陣是
+    // 「這個帳號有沒有這個功能」。功能被關掉不會動到 navPlacement 的值——
+    // 日後重新開放時，使用者原本選的左右位置還在。
+    btn.hidden = side==='off' || !featureAllowed(it.view);
     if(side==='left') nav.insertBefore(btn, home);
     else if(side==='right') nav.appendChild(btn);
   });
+  // 目前正看著的分頁被關掉時，別把人留在一個已經不該存在的畫面上
+  const cur=document.querySelector('.view.active');
+  if(cur && !featureAllowed(cur.id.replace('view-',''))) goView('home');
   // 心情脈搏隸屬心情模組：心情沒在導覽上時，它的視覺元件也不該自己跑出來
-  if(navPlacement.mood==='off'){
+  if(navPlacement.mood==='off' || !featureAllowed('mood')){
     document.getElementById('pulse').style.display='none';
     document.getElementById('pulseLabel').style.display='none';
   }
@@ -1321,7 +1810,9 @@ function renderPlacementCard(){
   const counts=document.getElementById('placeCount');
   if(counts) counts.textContent='左 '+sideCount('left')+'/'+NAV_SIDE_LIMIT+'\u3000右 '+sideCount('right')+'/'+NAV_SIDE_LIMIT;
 
-  box.innerHTML=NAV_ITEMS.map(function(it){
+  const items=NAV_ITEMS.filter(function(it){ return featureAllowed(it.view); });
+  const hidden=NAV_ITEMS.length-items.length;
+  box.innerHTML=items.map(function(it){
     const cur=navPlacement[it.view];
     const btns=['left','right','off'].map(function(side){
       // 已滿的那側標成 full：仍可點（會給提示），但先讓人看出來為什麼選不動
@@ -1332,6 +1823,11 @@ function renderPlacementCard(){
     return '<div class="place-row"><span class="place-name">'+it.icon+' '+esc(it.label)+'</span>'
       +'<div class="place-btns">'+btns+'</div></div>';
   }).join('');
+  // 少了幾個選項是要說出來的——沉默會被讀成「壞掉了」
+  if(hidden){
+    box.innerHTML+='<p class="slot-hint">還有 '+hidden+' 個功能沒有對你開放，'
+      +'需要的話請管理者到「成員與權限」勾起來。</p>';
+  }
 }
 
 /* ---------- LOG 頁（ADR-006 §C／§D） ----------
@@ -1472,6 +1968,7 @@ function renderAll(){
   renderMoodBtns(); renderMoods(); renderPulse();
   renderNotes(); renderNoteTagRow();
   renderExpenseView(); renderDashboard();
+  renderMeCard();          // 認領數會隨資料增減，跟著列表一起刷新
 }
 (function init(){
   const d=new Date();
@@ -1483,18 +1980,27 @@ function renderAll(){
   document.getElementById('expDate').value=todayKey();
   renderCatRow();
   loadNavPlacement();
+  loadIdentity();
   applyNavPlacement();
+  renderScopeBars();
   load();
-  syncFromCloud();
+
+  /* 先讀白名單，再開始同步。順序是有意義的：pushAllToCloud 需要 line_id 才推得動，
+     而 refreshRoster() 也是「還沒選身份」時把選身份蓋版叫出來的地方。
+     讀不到名單不會擋住本機使用——localStorage 那條路從頭到尾都沒被碰過。 */
+  refreshRoster().then(syncFromCloud);
 
   /* 回到前景時重新 pull。App 留在背景期間，LINE 快速輸入或其他裝置
      可能已經往雲端新增資料；不先補齊就編輯，下一次 save() 的 replaceAll
-     會把那些資料從雲端抹掉。節流避免頻繁切換前後景時重複請求。 */
+     會把那些資料從雲端抹掉。節流避免頻繁切換前後景時重複請求。
+
+     白名單一起補：權限是**別人在別的裝置上**改的，只靠冷啟動更新會慢一整輪；
+     一度離線而按了「先在本機用」的人，也在這裡被接回選身份的流程。 */
   const FOREGROUND_PULL_MIN_GAP=5000;
   document.addEventListener('visibilitychange',()=>{
     if(document.visibilityState!=='visible') return;
     if(Date.now()-lastPullAt<FOREGROUND_PULL_MIN_GAP) return;
-    syncFromCloud();
+    refreshRoster().then(syncFromCloud);
   });
 
   if('serviceWorker' in navigator){
