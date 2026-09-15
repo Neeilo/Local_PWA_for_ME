@@ -430,6 +430,12 @@
   .adm-head .who small{display:block; color:var(--muted); font-size:11px; font-weight:400; word-break:break-all;}
   .adm-head .state{font-size:12px; color:var(--muted); flex:none;}
   .adm-head .state.on{color:var(--accent); font-weight:600;}
+  /* 待審＝從沒被核准過，跟「核准過又關掉」是兩件事，顏色也分開 */
+  .adm-head .state.pending{color:var(--m2); font-weight:600;}
+  .adm-pending{
+    background:#FDF3E3; border:1px solid var(--m2); color:#7A5410;
+    border-radius:10px; padding:10px 12px; font-size:13px; margin-bottom:10px;
+  }
   .adm-body{padding:0 0 12px;}
   .adm-grid{display:flex; flex-wrap:wrap; gap:6px;}
   .adm-grid button{
@@ -746,6 +752,14 @@ function rosterName(u){ return String((u&&u.display_name)||'').trim() || rosterI
 function activeUsers(){ return roster.filter(truthyActive); }
 function truthyActive(u){ return truthy(u&&u.is_active); }
 function myUser(){ return myLineId ? (roster.find(u=>rosterId(u)===myLineId)||null) : null; }
+/* 「空白」與「FALSE」對閘門來說一樣是擋，但對管理者是兩件事：前者是剛用 LINE
+   的 Line_ID 指令註冊、還沒被看過的人，後者是核准過又被關掉的人。管理頁要分得出來，
+   否則新註冊會混在停用名單裡沒人發現。toggleAdminFlag 一律寫明 TRUE/FALSE，
+   所以只要被按過一次，就不會再被誤判成待審。 */
+function isPending(u){
+  return !truthy(u&&u.is_active) && String((u&&u.is_active)==null?'':u.is_active).trim()==='';
+}
+function pendingUsers(){ return roster.filter(isPending); }
 function isAdmin(){ return truthy((myUser()||{}).is_admin); }
 
 /* 這一列有沒有任何 feat_ 欄？沒有就代表矩陣還沒佈到 Sheet 上，一律視為開放。
@@ -987,13 +1001,27 @@ function renderAdminCard(){
   if(!isAdmin()){ card.hidden=true; return; }
   card.hidden=false;
 
-  document.getElementById('adminCount').textContent='啟用中 '+activeUsers().length+'／共 '+roster.length+' 人';
-  document.getElementById('adminRows').innerHTML=roster.map(function(u,i){
-    const id=rosterId(u), on=truthy(u.is_active), open=adminOpen===id;
+  const waiting=pendingUsers();
+  document.getElementById('adminCount').textContent=
+    '啟用中 '+activeUsers().length+'／共 '+roster.length+' 人'
+    +(waiting.length?'　待審 '+waiting.length:'');
+
+  // 待審的人不排到最前面——列會在手指底下跳掉，而且 toggleAdminRow 是用索引定位。
+  // 改成在最上面講一句，數量與名字都寫出來，長名單也掃得到。
+  const banner = waiting.length
+    ? `<div class="adm-pending">🔔 有 ${waiting.length} 位用 LINE 註冊了，等你核准：`
+      + waiting.map(u=>esc(rosterName(u))).join('、')
+      + `<br>點開他的那一列，按「✅ 可寫入」即可放行，記得順便勾選可用功能。</div>`
+    : '';
+
+  document.getElementById('adminRows').innerHTML=banner+roster.map(function(u,i){
+    const id=rosterId(u), on=truthy(u.is_active), waitingRow=isPending(u), open=adminOpen===id;
+    const label = on ? '啟用中' : (waitingRow ? '待審' : '已停用');
+    const cls   = on ? ' on'   : (waitingRow ? ' pending' : '');
     let html=`<div class="adm-row">
       <button class="adm-head" onclick="toggleAdminRow(${i})">
         <span class="who">${esc(rosterName(u))}<small>${esc(id)}</small></span>
-        <span class="state${on?' on':''}">${on?'啟用中':'已停用'}</span>
+        <span class="state${cls}">${label}</span>
         <span class="state">${open?'▴':'▾'}</span>
       </button>`;
     if(open){
@@ -1061,7 +1089,7 @@ const NOTE_TAGS = ['文章','作品','系統','分享','其他'];
 let selectedNoteTag = null;
 
 /* ---------- LOG 頁（ADR-006 §C／§D） ---------- */
-const LOG_SOURCES = ['任務','記帳','收入','查詢'];
+const LOG_SOURCES = ['任務','記帳','收入','查詢','註冊'];
 const LOG_WINDOW_DAYS = 7;
 // 抓回來的記錄只活在記憶體裡：不進 state、不寫 localStorage、不進 pushAllToCloud
 let logsCache = null;

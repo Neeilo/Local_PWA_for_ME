@@ -146,6 +146,20 @@ var ROUTE_TABLE = {
   }
 };
 
+/**
+ * 自行註冊的前綴（ADR-008 Part F 延伸）。
+ *
+ * 大小寫不拘：這串是要人手打的，`Line_ID` / `line_id` / `LINE_ID` 都該收。
+ * 格式 `Line_ID/<自己的 userId>`——userId 從 `whoami` 取得後整串貼回來。
+ *
+ * 為什麼要人再貼一次自己的 ID：webhook 本來就帶著發話者的 userId，程式其實
+ * 不需要這個參數。但它把「註冊」變成一個要先去查、再確認的動作，而不是打錯字
+ * 就會誤觸的單字。bot 會比對貼進來的 ID 與發話者本人是否相同，不同一律退回——
+ * 沒有這道比對，任何人都能替別人送出註冊。
+ */
+var REGISTER_PREFIX = 'line_id';
+var REGISTER_USAGE = 'Line_ID/你的userId（先傳 whoami 取得）';
+
 var PRIORITIES = ['H', 'M', 'L'];
 var DEFAULT_PRIORITY = 'M';
 
@@ -205,6 +219,17 @@ function handleLineEvent_(event) {
   // 問不到別人的，所以放在白名單前面不會擴大攻擊面。
   if (text.toLowerCase() === 'whoami') {
     lineReply_(event.replyToken, '你的 userId：\n' + (userId || '(取不到，訊息可能來自群組)'));
+    return;
+  }
+
+  // 註冊跟 whoami 一樣，必須排在白名單檢查**之前**——還沒進名單的人才需要註冊，
+  // 排在閘門後面等於「要先有權限才能申請權限」，這個功能就永遠用不到。
+  // 它唯一會寫的是 line_users 的一列待審資料（is_active 留白），不放行任何寫入。
+  var slash = text.indexOf('/');
+  var maybePrefix = (slash === -1 ? text : text.slice(0, slash)).trim().toLowerCase();
+  if (maybePrefix === REGISTER_PREFIX) {
+    var arg = slash === -1 ? '' : text.slice(slash + 1).trim();
+    lineReply_(event.replyToken, handleRegister_(arg, userId, text));
     return;
   }
 
@@ -850,6 +875,136 @@ function extractGeminiText_(parsed) {
 /* 回覆                                                                        */
 /* ========================================================================== */
 
+/* ========================================================================== */
+/* 自行註冊（Line_ID 前綴）                                                    */
+/* ========================================================================== */
+
+/**
+ * 把自己加進 line_users，但**只建立待審資料**（`is_active` 留白）。
+ *
+ * 這是刻意的：如果註冊就等於啟用，白名單等於「知道這個 bot 的人都能寫」，
+ * ADR-008 Part D 那道門就形同虛設。註冊解決的是「Neil 要手動把 32 字元的 userId
+ * 貼進 Sheet」這段摩擦，不是解決「誰可以寫」——後者仍然要由人按一下。
+ *
+ * 唯一的例外是**名單完全空的時候**：第一個註冊的人直接啟用為管理者，並打開全部
+ * 功能。沒有這個例外會是死結——沒有人在名單上，就沒有人能核准第一個人。代價是
+ * 部署完到 Neil 註冊之間有一個空窗，誰先傳誰就是管理者；這段窗口以分鐘計，而且
+ * 要先是這個 bot 的好友才傳得到。
+ *
+ * `is_active` 留白（而不是寫 FALSE）是有意義的：前端管理頁用「空白＝待審、
+ * FALSE＝被停用過」來分辨這兩種人。對閘門而言兩者一樣是擋，只有標籤不同。
+ */
+function handleRegister_(claimedId, userId, rawText) {
+  if (!userId) {
+    // 群組訊息的 source 沒有 userId，註冊的對象會是空的
+    return '這裡取不到你的 userId（訊息可能來自群組）。\n請在跟 bot 的一對一聊天室裡再試一次。';
+  }
+  if (!claimedId) {
+    return '格式：' + REGISTER_USAGE + '\n先傳一句 whoami，再把拿到的 ID 整串貼回來。';
+  }
+
+  // 只能註冊自己。少了這道比對，任何人都能替別人送出註冊，
+  // 管理者看到的待審清單就會混進不是本人申請的資料。
+  if (claimedId !== userId) {
+    logTransaction_('註冊', '失敗', rawText, '貼上的 userId 與發話者不符', 
+      '發話者 ' + userId + '，貼上的是 ' + claimedId, '', userId);
+    return '這串 ID 不是你的，沒辦法幫你註冊。\n只能註冊自己——傳 whoami 取得你自己的 ID 再貼過來。';
+  }
+
+  // 刻意不走快取：註冊要看到此刻最新的名單，5 分鐘前的快照會讓剛被核准的人
+  // 又收到一次「還在待審」，或讓同一個人重複建立兩列。
+  var roster = readLineUsers_();
+  if (!roster.ok && roster.reason === 'sheet_missing') {
+    try {
+      ensureLineUsersSheet_();
+      roster = readLineUsers_();
+    } catch (err) {
+      console.log('建立 ' + LINE_USERS_SHEET + ' 失敗：' + err);
+    }
+  }
+  if (!roster.ok) {
+    logTransaction_('註冊', '失敗', rawText, '名單讀不到', '原因：' + roster.reason, '', userId);
+    return '名單暫時讀不到，沒辦法幫你註冊。\n請稍後再試，或請管理者檢查 line_users 分頁。';
+  }
+
+  var existing = roster.users[userId];
+  if (existing) {
+    if (truthy_(existing.is_active)) {
+      return '你已經在名單上了，直接用就可以 👌\n' + supportedPrefixesMessage_();
+    }
+    // 重複註冊不再寫一列，只把目前狀態講清楚——名單被灌成一堆同 id 的待審資料，
+    // 管理者反而看不出誰是誰。
+    return '你已經註冊過了，還在等核准。\n請管理者在 App 的「成員與權限」把你打開。';
+  }
+
+  var bootstrap = Object.keys(roster.users).length === 0;
+  var now = new Date().toISOString();
+  var row = {
+    line_id: userId,
+    display_name: lineDisplayName_(userId),
+    // 名單空的時候第一位直接啟用為管理者，否則沒人能核准他（見上方說明）
+    is_active: bootstrap ? 'TRUE' : '',
+    is_admin: bootstrap ? 'TRUE' : '',
+    created_at: now,
+    updated_at: now
+  };
+  // 第一位要把功能全開：矩陣「有欄位但全留白」會被判讀成全部關閉（ADR-008 E-2b），
+  // 管理者一進 App 只看得到首頁，連「成員與權限」以外的東西都不見。
+  for (var i = 0; i < LINE_USERS_FEATURES.length; i++) {
+    row[LINE_USERS_FEATURES[i]] = bootstrap ? 'TRUE' : '';
+  }
+
+  var rowNumber;
+  try {
+    rowNumber = appendToSheet_(LINE_USERS_SHEET, row);
+  } catch (err) {
+    console.log('註冊寫入失敗：' + err);
+    logTransaction_('註冊', '失敗', rawText, '寫入失敗', String(err && err.stack || err), '', userId);
+    return '註冊寫入失敗了：' + err.message;
+  }
+
+  // 剛寫進去的那一列要立刻算數，不然他還要等最多 5 分鐘才寫得進東西
+  invalidateLineUsersCache_();
+
+  if (bootstrap) {
+    logTransaction_('註冊', '成功', rawText, '名單原本是空的，第一位成員直接啟用為管理者',
+      '已開啟全部功能', rowNumber, userId);
+    return '✅ 註冊完成，你是第一位成員\n' +
+      '已直接啟用並給了管理權限（名單原本是空的，總得有人能核准後面的人）。\n' +
+      '之後在 App 首頁的「成員與權限」可以核准其他人。';
+  }
+  logTransaction_('註冊', '成功', rawText, '已建立待審資料，等候核准', '', rowNumber, userId);
+  return '✅ 收到你的註冊，等管理者核准\n' +
+    '核准之前還不能寫入。請管理者到 App 首頁的「成員與權限」把你打開，\n' +
+    '順便勾選你可以用哪些功能。';
+}
+
+/**
+ * 從 LINE 個人資料取顯示名稱，省得使用者自己打一次。
+ *
+ * 取不到就回空字串，**不讓註冊因此失敗**——稱呼只是給「選身份」畫面看的，
+ * 為了一個顯示用的字串把整個註冊擋掉不划算。前端在稱呼空白時會退回顯示 userId。
+ */
+function lineDisplayName_(userId) {
+  var token = lineToken_();
+  if (!token || !userId) return '';
+  try {
+    var res = UrlFetchApp.fetch('https://api.line.me/v2/bot/profile/' + encodeURIComponent(userId), {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + token },
+      muteHttpExceptions: true
+    });
+    if (res.getResponseCode() !== 200) {
+      console.log('取 LINE 個人資料失敗 HTTP ' + res.getResponseCode());
+      return '';
+    }
+    return String(JSON.parse(res.getContentText()).displayName || '').trim();
+  } catch (err) {
+    console.log('取 LINE 個人資料連線失敗：' + err);
+    return '';
+  }
+}
+
 /**
  * 被擋下來時回給使用者的訊息。
  *
@@ -878,6 +1033,7 @@ function supportedPrefixesMessage_() {
     }
   }
   lines.push('・' + QUERY_USAGE);
+  lines.push('・' + REGISTER_USAGE);
   lines.push('（輸入 whoami 可查自己的 userId）');
   return lines.join('\n');
 }
@@ -921,13 +1077,16 @@ function summarizeExpense_(parsed, route) {
  * 但一定要把 LINE 的回應碼記進 Log：沒有它，「權杖沒設」「權杖錯了」
  * 「權杖是別的 Channel 的」從外面看起來全都是同一種安靜的失敗。
  */
+/** 從網頁複製權杖常會帶到換行或空白，前後修掉，否則 LINE 會回 401 */
+function lineToken_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('LINE_CHANNEL_ACCESS_TOKEN');
+  return raw ? String(raw).trim() : '';
+}
+
 function lineReply_(replyToken, text) {
   if (!replyToken) return;
 
-  var raw = PropertiesService.getScriptProperties()
-    .getProperty('LINE_CHANNEL_ACCESS_TOKEN');
-  // 從網頁複製權杖常會帶到換行或空白，前後修掉，否則 LINE 會回 401
-  var token = raw ? String(raw).trim() : '';
+  var token = lineToken_();
 
   if (!token) {
     console.log('回覆略過：指令碼屬性 LINE_CHANNEL_ACCESS_TOKEN 不存在或是空字串');

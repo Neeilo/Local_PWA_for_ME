@@ -342,20 +342,27 @@ log 由 `routeLineMessage_` 統一寫，新分頁不必自己處理。
 PWA 同步與 LINE Bot **共用同一張表、同一道閘門**（`Code.gs` 的 `writeGate_`）。
 同一批人、同一個 `line_id`，維護兩份名單遲早會有一邊忘了改。
 
-新增一個人：
+新增一個人（**建議走自行註冊，不必手動貼 userId**）：
 
 1. 請他在 LINE 傳 `whoami`，bot 會回他的 userId
-2. 在 `line_users` 分頁加一列，填 `line_id` 與 `display_name`，把 `is_active` 勾起來
-3. 需要哪些功能就勾哪幾個 `feat_*`（**空白 = 不開放**）
-4. 不需要重新部署；其他裝置最多等 5 分鐘（快取 TTL）
+2. 請他把 ID 整串貼回來：`Line_ID/U1234abcd…` → 名單上自動出現一列**待審**資料
+3. 你在 App 首頁的「成員與權限」點開他，按「✅ 可寫入」放行
+4. 需要哪些功能就勾哪幾個 `feat_*`（**空白 = 不開放**，核准不會自動開功能）
+5. 不需要重新部署；其他裝置最多等 5 分鐘（快取 TTL），你自己這端即時生效
+
+也可以直接在 Sheet 上手動加一列，欄位如下表。兩條路寫的是同一張表。
+
+> ⚠️ **名單空的時候，第一個用 `Line_ID` 註冊的人直接啟用為管理者、功能全開。**
+> 沒有這個例外沒人能核准第一個人。部署後請立刻註冊，別把這個空窗留著。
+> 分頁不存在時，註冊會自動建表並寫入完整表頭（只寫表頭，不放行任何人）。
 
 欄位：
 
 | 欄位 | 說明 |
 |---|---|
-| `line_id` | LINE userId，鍵值。`whoami` 取得 |
+| `line_id` | LINE userId，鍵值。`whoami` 取得，或由 `Line_ID` 註冊自動填入 |
 | `display_name` | PWA 的「選身份」畫面顯示的稱呼 |
-| `is_active` | **這欄本身就是白名單**。不是 TRUE 就拒絕寫入 |
+| `is_active` | **這欄本身就是白名單**。不是 TRUE 就拒絕寫入。**留白 = 待審**（剛註冊、沒被看過），**`FALSE` = 核准過又關掉**；對閘門一樣是擋，差別只在管理頁的標籤 |
 | `is_admin` | 能在 PWA 首頁看到「成員與權限」卡，勾選他人的白名單與功能權限 |
 | `feat_expense` / `feat_tasks` / `feat_review` / `feat_notes` / `feat_mood` / `feat_log` | 功能矩陣。**只控制 PWA 導覽顯不顯示，不影響 LINE 寫入** |
 | `created_at` / `updated_at` | 加入時間／最後異動時間 |
@@ -378,7 +385,7 @@ PWA 同步與 LINE Bot **共用同一張表、同一道閘門**（`Code.gs` 的 
 | `whitelist_unavailable` | 分頁不見了／沒有 `line_id` 欄／讀取丟例外 | 跑 `diagnoseLineUsers()` 看它實際讀到什麼 |
 | `whitelist_empty` | 表在、讀得到，但沒有任何一列 `is_active` | 去勾 `is_active` |
 | `missing_line_id` | 寫入沒帶 `line_id` | PWA 還沒選身份，或跑的是舊版快取頁面 |
-| `not_on_whitelist` | 這個 id 不在表上 | 加一列 |
+| `not_on_whitelist` | 這個 id 不在表上 | 請他傳 `Line_ID/<自己的userId>` 註冊，或手動加一列 |
 | `inactive` | 在表上但被停用 | 勾回 `is_active` |
 
 ## 除錯
@@ -402,6 +409,17 @@ PWA 同步與 LINE Bot **共用同一張表、同一道閘門**（`Code.gs` 的 
 
 檢查 `logs` 分頁存不存在、表頭有沒有缺欄位、目前幾列。
 因為寫 log 的失敗是**刻意被吞掉**的，這支就是把那個安靜的失敗叫出來講話。
+
+### 註冊被退回時
+
+| 回覆 | 意思 |
+|---|---|
+| 「這串 ID 不是你的」 | 貼上的 userId 與發話者不符。只能註冊自己——重傳 `whoami` 拿自己的 |
+| 「取不到你的 userId」 | 訊息來自群組。要在跟 bot 的一對一聊天室裡傳 |
+| 「你已經註冊過了，還在等核准」 | 已經有一列待審資料，重傳不會再建一列。等管理者放行 |
+| 「名單暫時讀不到」 | `line_users` 讀取失敗，跑 `diagnoseLineUsers()` 看原因 |
+
+不符的註冊嘗試會寫進 `logs`（`source` 是「註冊」），LOG 頁的篩選鈕看得到。
 
 ### `diagnoseLineUsers` — 寫入被擋、或想確認名單讀得到時
 

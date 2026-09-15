@@ -43,6 +43,44 @@ var LINE_USERS_CACHE_TTL = 300;          // 5 分鐘（ADR-008 D-3）
 var NO_REPLACE_ALL = [LINE_USERS_SHEET, 'logs'];
 
 /**
+ * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
+ * 這裡只在「建表」與「註冊」時用到——閘門不看 feat_*（ADR-008 E-2）。
+ */
+var LINE_USERS_FEATURES = ['feat_expense', 'feat_tasks', 'feat_review',
+                           'feat_notes', 'feat_mood', 'feat_log'];
+
+/** 建表用的完整表頭（ADR-008 D-1 的欄序） */
+var LINE_USERS_HEADERS = ['line_id', 'display_name', 'is_active', 'is_admin']
+  .concat(LINE_USERS_FEATURES).concat(['created_at', 'updated_at']);
+
+/**
+ * 確保 line_users 有表可寫。只有「註冊」這條路徑會呼叫。
+ *
+ * 為什麼讓程式建表：沒有這一步，第一個人得先手動開一張分頁、手打十二個欄名，
+ * 而那正是註冊功能要消滅的摩擦。建的只是表頭，不寫任何一列資料——名單仍然是空的，
+ * 閘門仍然 fail-closed 擋住所有寫入，所以這個動作本身不會放行任何人。
+ *
+ * 分頁已存在但整張空白（連表頭都沒有）時，補上表頭即可，不重建分頁——
+ * 重建會把使用者可能已經手動輸入的東西一起丟掉。
+ */
+function ensureLineUsersSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(LINE_USERS_SHEET);
+
+  if (!sheet) {
+    sheet = ss.insertSheet(LINE_USERS_SHEET);
+    sheet.appendRow(LINE_USERS_HEADERS);
+    console.log('已建立分頁「' + LINE_USERS_SHEET + '」並寫入表頭');
+    return sheet;
+  }
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(LINE_USERS_HEADERS);
+    console.log('分頁「' + LINE_USERS_SHEET + '」原本沒有表頭，已補上');
+  }
+  return sheet;
+}
+
+/**
  * Sheet 的勾選框回傳布林 true，手打的會是字串 'TRUE'。兩種都要認得。
  *
  * 空白＝關閉（ADR-008 E-2b）：新功能加一欄之後，既有使用者在該欄是空的，
