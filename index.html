@@ -663,6 +663,9 @@
       <h2>資料備份</h2>
       <p style="font-size:14px;color:var(--muted);margin:0 0 10px">資料存在這支手機的瀏覽器裡，建議定期匯出備份。</p>
       <button class="btn" onclick="exportData()">匯出 JSON 備份</button>
+      <!-- 月結算：把已刪除的資料匯出到裝置，確認之後才從雲端清掉（ADR-009 §一.4）。
+           刻意做成手動觸發、且刪除前一定要人按確認——不設自動清理，也不先斬後奏。 -->
+      <button class="btn" onclick="archiveTombstones()">封存已刪除的資料</button>
     </div>
   </section>
 
@@ -1617,14 +1620,99 @@ async function pullFromCloud(){
 }
 
 /* ---------- 備份 ---------- */
-function exportData(){
-  const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'});
+function downloadJson(filename, payload){
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
-  a.download='neil-os-backup-'+todayKey()+'.json';
+  a.download=filename;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+function exportData(){
+  downloadJson('neil-os-backup-'+todayKey()+'.json', state);
   toast('備份已下載');
+}
+
+/* ---------- 封存：兩段式（ADR-009 §一.4） ----------
+   標記 → 匯出 → 確認 → 刪除。不先斬後奏：雲端那一份在檔案確定到手之前不會消失。
+
+   ⚠️ 一個 ADR 沒料到的現實：**瀏覽器沒有「下載成功」這個事件**。a.click() 之後
+   你不知道使用者按了儲存、按了取消、還是根本沒看到那個對話框。所以這裡的
+   「下載成功訊號」只能由人給——下載完跳一個確認框，請他確認檔案真的在手上，
+   按下去才刪。人就是那個訊號，這是誠實的做法，不是偷懶。 */
+const ARCHIVE_SHEETS=[
+  {sheet:'tasks',    key:'id'},
+  {sheet:'moods',    key:'id'},
+  {sheet:'notes',    key:'id'},
+  {sheet:'expenses', key:'id'},
+  {sheet:'reviews',  key:['review_date','line_id']}
+];
+
+/* 鍵由後端算好一起回傳，前端**不自己算**。
+   doGet 走 JSON.stringify，Date 會變成 UTC ISO 字串，這裡自己切出來的日期在
+   UTC+8 可能差一天；鍵一對不上，archivePurge 會安靜地一筆都刪不掉——沒有錯誤
+   訊息，只是沒有效果。同一套規則只留一份實作在後端，就沒有對不上的可能。 */
+function cloudTombstones(sheet, keyField){
+  const kf=encodeURIComponent(Array.isArray(keyField)?keyField.join(','):keyField);
+  return fetch(`${CLOUD_URL}?sheet=${sheet}&only=tombstones&key_field=${kf}`).then(r=>r.json()).then(j=>{
+    if(!j) throw new Error('empty_response');
+    if(j.error){ if(j.error==='sheet_not_found') return {rows:[], keys:[]}; throw new Error(j.error); }
+    return {rows:j.data||[], keys:j.keys||[]};
+  });
+}
+
+function cloudArchivePurge(sheet, keyField, keys){
+  return fetch(CLOUD_URL,{
+    method:'POST',
+    headers:{'Content-Type':'text/plain'},
+    body:JSON.stringify({secret:CLOUD_SECRET, line_id:myLineId||'', sheet,
+                         action:'archivePurge', key_field:keyField, keys})
+  }).then(r=>r.json()).catch(()=>({error:'network'}));
+}
+
+async function archiveTombstones(){
+  if(!myLineId){ toast('先選身份才能封存'); return; }
+
+  // 第一段：撈出所有已軟刪除的列
+  let batches;
+  try{
+    batches=await Promise.all(ARCHIVE_SHEETS.map(s=>cloudTombstones(s.sheet, s.key)));
+  }catch(e){
+    toast('⚠️ 讀不到雲端，這次不封存');      // 讀不到就什麼都不做，絕不猜
+    return;
+  }
+
+  const plan=[];
+  let total=0;
+  ARCHIVE_SHEETS.forEach((s,i)=>{
+    const b=batches[i]||{rows:[], keys:[]};
+    const keys=(b.keys||[]).filter(k=>k);        // 鍵不完整的列後端已回空字串，跳過
+    if(keys.length){ plan.push({sheet:s.sheet, key:s.key, keys, rows:b.rows}); total+=keys.length; }
+  });
+
+  if(!total){ toast('沒有已刪除的資料需要封存'); return; }
+
+  // 第二段：先匯出
+  const payload={exported_at:new Date().toISOString(), total,
+                 sheets:plan.map(p=>({sheet:p.sheet, rows:p.rows}))};
+  downloadJson('neil-os-archive-'+todayKey()+'.json', payload);
+
+  // 第三段：人來當「下載成功」的訊號
+  const ok=confirm('已匯出 '+total+' 筆已刪除的資料。\n\n' +
+    '請先確認檔案真的存到裝置上了，再按「確定」。\n' +
+    '按下確定之後，這些資料會從雲端永久刪除，無法復原。');
+  if(!ok){ toast('已取消，雲端資料原封不動'); return; }
+
+  // 第四段：確認之後才真的刪
+  let deleted=0, failed=0;
+  for(const p of plan){
+    const res=await cloudArchivePurge(p.sheet, p.key, p.keys);
+    if(res && res.success) deleted+=res.deleted||0; else failed++;
+  }
+  if(failed) toast('⚠️ 已刪除 '+deleted+' 筆，有 '+failed+' 張分頁失敗，可再試一次');
+  else toast('已封存並清除 '+deleted+' 筆');
+  syncFromCloud();
 }
 
 /* ---------- 導覽 ---------- */
