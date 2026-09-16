@@ -372,10 +372,14 @@ Apps Script 與 Pages 分成兩個 job：認證與 scriptId 完全不會進到 P
   - ⏳ 未來票：功能矩陣欄位若持續增加，是否改為正規化的多對多關聯表
   - ⏳ 未來票：任何白名單內的人繞過前端就能改 `line_users`（管理頁只靠前端 `is_admin` 隱藏）——與 E-2 同一套安全深淺，前提一變就是第一個要補後端驗證的地方
   - ⏳ 未來票：`doGet` 讀取層的驗證強化（與 ADR-007 未來票同一個根，本次刻意不處理）
-- **ADR-009**（依 [ADR-009]，2026-09-16）：🚧 Phase 0 完成，等 Neil 確認測試報告後才動工
+- **ADR-009**（依 [ADR-009]，2026-09-16）：🚧 Phase 0 完成並已合併；測試報告已確認放行，Phase 2 施工中
   - ✅ Phase 0：`upsertRow_` 擴充複合鍵（`review_date`＋`line_id`，reviews 沒有 `id` 欄）、墓碑過濾 `withoutTombstones_`、兩段式封存 `tombstoneRows_`／`purgeTombstoneRows_`、欄位安裝 `ensureAdr009Columns()`、LINE Push 前置驗證 `testLinePush()`
   - ✅ Phase 0：後端單元測試 27 項（含兩次突變測試，確認測試真的抓得到回歸），並接進 CI 擋在 `clasp push` 前面。報告見 [`tests/ADR-009-phase0-test-report.md`](tests/ADR-009-phase0-test-report.md)
   - ⚠️ **新函式目前全部沒有呼叫端，是刻意的**。ADR-009「待其他環境知道的事 #1」要求測試先行、報告經確認才准接手既有模組的讀寫路徑，不可以先動工、測試事後補。唯二會執行的是 `ensureAdr009Columns()` 與 `testLinePush()`，兩支都要在 Apps Script 編輯器手動跑（比照 `diagnoseLineUsers()`）
   - 📌 實作時發現、ADR 沒寫到的：Sheet 讀回來的 `review_date` 是 Date 物件、前端送的是 `YYYY-MM-DD` 字串，不正規化的話複合鍵永遠對不上，每次 upsert 都退化成 append——與安全性改善計畫的 DATA-05 同一個根。取本地年月日而非 `toISOString()`（UTC 在 UTC+8 會算成前一天）
-  - ⏳ Phase 2（待確認後施工）：`doGet` 過濾 `del=true`、五個模組改即時單筆 upsert、15 秒輪詢＋手動刷新、共用白板、週期提醒、`ScriptApp.newTrigger()` 安裝函式
-  - ⚠️ 待裁決：與 `codex/security-sync-hardening-20260916` 分支的 DATA-01／DATA-03／tombstone 範圍重疊，Phase 2 動工前要先決定兩條線怎麼合
+  - ✅ 2026-09-16：`ensureAdr009Columns()` 已執行，五張分頁的新欄位到位；`testLinePush()` 實測成功——**ADR-009 C5 的條件式決策條件成立，週期提醒的通知管道確定走 LINE Push，不移入未來票**
+  - ✅ Phase 2-a：週期提醒的日期算法（`nextDueDate_`／`dueBucket_`／`shouldNotify_`）＋ 22 項測試。全新程式碼、純函式、仍未接線——先做這一半是因為它與 security 分支零重疊
+  - ⚠️ **已知限制（需 schema 裁決）**：月底錨點會漂移。`1/31` 的下一期被夾成 `2/28` 後，再下一期是 `3/28` 而非 `3/31`——每一期只把上一期的 `due_date` 傳下去，ADR 說的「**原訂**到期日」在第一次夾值後就遺失了。修法需要一個記住原始錨點的欄位（ADR 欄位清單沒有），未經裁決不自行擴充 schema。測試已把這個行為釘住，不假裝它不存在
+  - ⚠️ **ADR 沒寫到的兩個缺口**：到期區塊寫的是「1／3／5／7 天以上四個門檻」，但第 6 天沒有歸屬（現採唯一能整除的讀法 ≤1／≤3／≤5／其餘）；「已過期」也沒寫，現另回 `overdue` 由呼叫端決定要獨立一塊還是併進最急那塊
+  - ⏳ Phase 2-b（等 `codex/security-sync-hardening-20260916` 推上遠端）：`doGet` 過濾 `del=true`、五個模組改即時單筆 upsert、15 秒輪詢＋手動刷新、共用白板、`ScriptApp.newTrigger()` 安裝函式
+  - 📌 分支裁決（2026-09-16）：兩條線併成同一條依序做完再合併。但該分支目前**只存在於本機**（Notion 記載建立遠端分支時回傳 403），遠端沒有任何 `codex/*`，所以同步層的重寫卡在它推上來之前
