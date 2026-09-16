@@ -330,6 +330,53 @@ function handlePwaSync_(e) {
   }
 
   /**
+   * 週期任務完成：原列收尾、新增一列接手下一期（ADR-009 §四）。
+   *
+   * ⚠️ ADR 沒寫到、但不處理就會出事的地方：**重複打勾會不會生出兩列。**
+   * 使用者把已完成的週期任務取消打勾再重新打勾，天真的實作會再生一列下一期。
+   *
+   * 解法不需要新欄位：生出下一期的同時，把**週期設定搬到新的那一列**、從原列
+   * 清掉。原列從此不是週期任務，再怎麼打勾都不會再生。週期本來就該跟著「還沒
+   * 做的那一期」走，這不是為了防呆而扭曲的設計，是本來就該長的樣子。
+   */
+  if (body.action === 'completeRecurring') {
+    const headers = sheetHeaders_(sheet);
+    const rec = body.record || {};
+    const next = nextDueDate_(rec.due_date, rec.recur_interval, rec.recur_unit,
+                              keyValue_(body.today) || keyValue_(new Date()));
+
+    // 算不出下一期（沒設週期、單位不認得、日期壞掉）就當一般完成處理，不硬生
+    if (!next) {
+      const plain = upsertRow_(sheet, headers, rec, body.sheet, body.key_field);
+      return jsonOut({ success: true, spawned: false, reason: 'not_recurring', row: plain.row });
+    }
+
+    // 下一期：新的 id、接手週期設定、到期日換成下一期，notified 天生為空
+    const child = {};
+    headers.forEach(function (h) { child[h] = rec[h] == null ? '' : rec[h]; });
+    child.id = String(body.next_id || Date.now());
+    child.is_completed = '';
+    child.due_date = next;
+    child.notified = '';
+    child.del = '';
+
+    // 原列：標完成，並把週期設定交出去——它不再是週期任務
+    const done = {};
+    headers.forEach(function (h) { done[h] = rec[h] == null ? '' : rec[h]; });
+    done.is_completed = 'TRUE';
+    done.recur_interval = '';
+    done.recur_unit = '';
+
+    upsertRow_(sheet, headers, done, body.sheet, body.key_field);
+    const added = upsertRow_(sheet, headers, child, body.sheet, body.key_field);
+
+    logCleanup_('週期任務 ' + body.sheet + ' id=' + rec.id,
+      '完成並接手下一期 ' + next,
+      '新列 id=' + child.id + '；週期設定已從原列移交，重複打勾不會再生');
+    return jsonOut({ success: true, spawned: true, next_due: next, next_id: child.id, row: added.row });
+  }
+
+  /**
    * 封存第二段（ADR-009 §一.4）：前端回報「已成功下載」之後，才真的刪。
    *
    * 送上來的 keys 是第一段（?only=tombstones）匯出的那一批。後端不信任這份清單

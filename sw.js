@@ -1,5 +1,5 @@
-/* Neil OS Service Worker v17 — HTML network-first，其餘資產 cache-first */
-const CACHE = 'neil-os-v17';
+/* Neil OS Service Worker v18 — HTML network-first，其餘資產 cache-first */
+const CACHE = 'neil-os-v18';
 const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
