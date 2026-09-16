@@ -450,6 +450,22 @@
   .adm-sec{font-size:12px; color:var(--muted); margin:10px 0 6px;}
 
   @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important;} }
+/* 固定高度＋橫向 scroll-snap：兩個視圖各佔滿一頁，滑到哪就停在哪 */
+.pane-scroll{
+  display:flex; overflow-x:auto; scroll-snap-type:x mandatory;
+  gap:0; scrollbar-width:none; -webkit-overflow-scrolling:touch;
+}
+.pane-scroll::-webkit-scrollbar{ display:none; }
+.pane{ flex:0 0 100%; scroll-snap-align:start; min-height:132px; }
+.pane h2{ margin-top:0; }
+.pane-hint{ font-size:11px; opacity:.45; text-align:center; margin-bottom:4px; }
+.board-item{ display:flex; align-items:center; gap:8px; padding:5px 0; font-size:14px; }
+.board-item .tag{ font-size:11px; opacity:.6; flex:0 0 auto; }
+.due-group{ margin-bottom:10px; }
+.due-group .head{ font-size:12px; opacity:.7; margin-bottom:3px; }
+.due-group.overdue .head{ color:#d24; opacity:1; font-weight:600; }
+.pin{ background:none; border:none; cursor:pointer; opacity:.35; font-size:14px; padding:0 2px; }
+.pin.on{ opacity:1; }
 .due-pick{ margin-top:8px; font-size:13px; }
 .due-pick summary{ cursor:pointer; opacity:.75; }
 .due-row{ display:flex; align-items:center; gap:6px; margin-top:8px; flex-wrap:wrap; }
@@ -518,6 +534,23 @@
       <h2>接下來要做的</h2>
       <div id="dashTasks"></div>
       <button class="dash-link" onclick="goView('tasks')">全部任務 →</button>
+    </div>
+
+    <!-- 白板與到期區塊共用同一張卡片，橫向滑動切換（ADR-009 §三）。
+         不用 Tab 點擊是刻意的：手機上滑一下比瞄準一個小標籤容易，而這張卡片
+         只有兩個視圖，滑動的方向感本身就說明了「還有另一邊」。 -->
+    <div class="card" id="dashBoardCard">
+      <div class="pane-hint" id="paneHint">← 左右滑動切換 →</div>
+      <div class="pane-scroll" id="paneScroll">
+        <section class="pane">
+          <h2>共用白板</h2>
+          <div id="boardList"></div>
+        </section>
+        <section class="pane">
+          <h2>快到期了</h2>
+          <div id="dueList"></div>
+        </section>
+      </div>
     </div>
 
     <!-- ③ 今日指南針的快顯已於 2026-09-15 移除。
@@ -1461,7 +1494,7 @@ function taskFromCloud(r){
 function expenseToCloud(e){
   return {id:String(e.id), expense_date:e.date, type:e.type, category:e.category,
           amount:e.amount, note:e.note||'', created_at:new Date(e.ts).toISOString(),
-          line_id:e.line_id||'', del:e.del?'TRUE':''};
+          line_id:e.line_id||'', del:e.del?'TRUE':'', board:e.board?'TRUE':''};
 }
 function expenseFromCloud(r){
   return {id:Number(r.id)||Date.now(),
@@ -1470,12 +1503,12 @@ function expenseFromCloud(r){
           category:EXPENSE_CATEGORIES.includes(r.category)?r.category:'其他',
           amount:Number(r.amount)||0, note:r.note||'',
           ts:r.created_at?new Date(r.created_at).getTime():Date.now(),
-          line_id:String(r.line_id||'').trim()};
+          line_id:String(r.line_id||'').trim(), board:truthy(r.board)};
 }
 function moodToCloud(m){ return {id:String(m.id), mood_date:todayKey(new Date(m.ts)), level:m.level, note:m.note||'', line_id:m.line_id||'', del:m.del?'TRUE':''}; }
 function moodFromCloud(r){ return {id:Number(r.id)||Date.now(), level:Number(r.level), note:r.note||'', ts:r.mood_date?new Date(r.mood_date).getTime():Date.now(), line_id:String(r.line_id||'').trim()}; }
-function noteToCloud(n){ return {id:String(n.id), text:n.txt, created_at:new Date(n.ts).toISOString(), line_id:n.line_id||'', del:n.del?'TRUE':''}; }
-function noteFromCloud(r){ return {id:Number(r.id)||Date.now(), txt:r.text||'', ts:r.created_at?new Date(r.created_at).getTime():Date.now(), line_id:String(r.line_id||'').trim()}; }
+function noteToCloud(n){ return {id:String(n.id), text:n.txt, created_at:new Date(n.ts).toISOString(), line_id:n.line_id||'', del:n.del?'TRUE':'', board:n.board?'TRUE':''}; }
+function noteFromCloud(r){ return {id:Number(r.id)||Date.now(), txt:r.text||'', ts:r.created_at?new Date(r.created_at).getTime():Date.now(), line_id:String(r.line_id||'').trim(), board:truthy(r.board)}; }
 
 /* ---------- 各模組的單筆送出（取代整包 replaceAll） ----------
    每個變動點改成只送自己那一筆。整張表不再有「被某支手機的快照覆蓋」這個動作，
@@ -1863,7 +1896,9 @@ function renderTasks(){
       <input type="checkbox" ${t.done?'checked':''} onchange="toggleTask(${t.id})">
       <button class="prio-dot prio-${p}" onclick="cyclePriority(${t.id})"
         aria-label="優先度 ${PRIORITY_LABEL[p]}，點擊切換" title="優先度：${PRIORITY_LABEL[p]}"></button>
-      <div class="txt">${esc(t.txt)}</div>
+      <div class="txt">${esc(t.txt)}${t.due?` <span class="tag">${esc(t.due)}${t.recurUnit?'／每'+esc(String(t.recurN||1))+esc(t.recurUnit):''}</span>`:''}</div>
+      <button class="pin ${t.board?'on':''}" onclick="toggleBoard('tasks',${t.id})"
+        aria-label="釘到白板" title="釘到共用白板">📌</button>
       <button class="del" onclick="delTask(${t.id})" aria-label="刪除">✕</button>
     </div>`;
   };
@@ -2009,6 +2044,7 @@ function renderNotes(){
       <div class="note-txt">${esc(n.txt)}</div>
       <div class="note-meta">
         <span class="mood-meta">${fmtTime(n.ts)}</span>
+        <button class="pin ${n.board?'on':''}" onclick="toggleBoard('notes',${n.id})" aria-label="釘到白板" title="釘到共用白板">📌</button>
         <button class="del" onclick="delNote(${n.id})" aria-label="刪除">✕</button>
       </div>
     </div>`).join('');
@@ -2142,6 +2178,7 @@ function renderExpenseView(){
         <div class="exp-date">${esc(e.date)}${e.type==='income'?' · 收入':''}</div>
       </div>
       <div class="exp-amt ${e.type==='income'?'income':''}">${e.type==='income'?'+':'-'}${fmtAmount(e.amount)}</div>
+      <button class="pin ${e.board?'on':''}" onclick="toggleBoard('expenses',${e.id})" aria-label="釘到白板" title="釘到共用白板">📌</button>
       <button class="del" onclick="delExpense(${e.id})" aria-label="刪除">✕</button>
     </div>`).join('');
 }
@@ -2218,6 +2255,113 @@ function renderDashboard(){
   toggleDashCard('dashExpenseCard','expenses');
   toggleDashCard('dashTasksCard','tasks');
   renderDashExpense(); renderDashTasks();
+  renderBoard(); renderDue();
+}
+
+/* ---------- 共用白板（ADR-009 §三） ----------
+   標籤式，不開新資料表：tasks／expenses／notes 各有一個 board 欄，釘起來的
+   項目集合起來就是白板。單一白板、不分專案不分類別——ADR 收斂過的範圍。
+
+   刻意**不套「只看我的」**：這是共用白板，看不到別人釘的東西就失去意義了。 */
+const BOARD_KINDS={
+  tasks:    {label:'任務', text:t=>t.txt},
+  expenses: {label:'記帳', text:e=>e.date+' '+e.category+' '+e.amount},
+  notes:    {label:'雜記', text:n=>n.txt}
+};
+
+function toggleBoard(kind, id){
+  const list=state[kind]||[];
+  const r=list.find(x=>x.id===id);
+  if(!r) return;
+  r.board=!r.board;
+  save();
+  ({tasks:pushTask, expenses:pushExpense, notes:pushNote})[kind](r);
+  renderAll();
+}
+
+function boardItems(){
+  const out=[];
+  Object.keys(BOARD_KINDS).forEach(kind=>{
+    (state[kind]||[]).forEach(r=>{ if(r.board) out.push({kind, id:r.id, text:BOARD_KINDS[kind].text(r), ts:r.ts||0}); });
+  });
+  return out.sort((a,b)=>b.ts-a.ts);
+}
+
+function renderBoard(){
+  const el=document.getElementById('boardList');
+  if(!el) return;
+  const items=boardItems();
+  el.innerHTML = items.length
+    ? items.map(i=>`<div class="board-item"><span class="tag">${BOARD_KINDS[i.kind].label}</span>
+        <span>${esc(i.text)}</span></div>`).join('')
+    : '<div class="empty-hint">還沒有人釘東西上來。在任務、記帳或雜記列上按 📌</div>';
+}
+
+/* ---------- 到期區塊（ADR-009 §四） ----------
+   ⚠️ 門檻與後端的 DUE_THRESHOLDS 是同一組數字，卻各有一份實作——這正是本輪
+   一直在避免的事。這裡沒有辦法共用（後端在 Apps Script、前端在瀏覽器），所以
+   改用測試把兩邊釘在一起：tests 會同時載入兩份原始碼、比對這組門檻是否一致，
+   有人改了一邊沒改另一邊就會紅燈。
+
+   ⚠️ ADR 寫的是「1／3／5／7 天以上四個門檻」，但第 6 天沒有歸屬；這裡採唯一
+   能整除的讀法 ≤1／≤3／≤5／其餘。「已過期」ADR 沒寫，另立一塊放最前面——
+   把過期項目塞進「1 天內」會是假話。兩點都待 Neil 裁決。 */
+const DUE_THRESHOLDS_UI=[
+  {key:'d1',   max:1, label:'1 天內'},
+  {key:'d3',   max:3, label:'3 天內'},
+  {key:'d5',   max:5, label:'5 天內'}
+];
+const DUE_LATER_LABEL='更久以後';
+const DUE_OVERDUE_LABEL='已逾期';
+
+function daysUntilUI(dueKey, todayKey){
+  const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dueKey||'').trim());
+  if(!m) return null;
+  const due=new Date(+m[1], +m[2]-1, +m[3], 12,0,0,0);
+  const t=todayKey||todayKey1();
+  const n=/^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+  if(!n) return null;
+  const today=new Date(+n[1], +n[2]-1, +n[3], 12,0,0,0);
+  return Math.round((due-today)/86400000);
+}
+function todayKey1(){ return todayKey(); }
+
+function dueBucketUI(dueKey, todayKey){
+  const d=daysUntilUI(dueKey, todayKey);
+  if(d===null) return '';
+  if(d<0) return 'overdue';
+  for(const t of DUE_THRESHOLDS_UI){ if(d<=t.max) return t.key; }
+  return 'later';
+}
+
+/** 依到期遠近分組。已逾期排最前面——最急的東西放最下面沒有道理 */
+function dueGroups(tasks, todayKey){
+  const order=['overdue'].concat(DUE_THRESHOLDS_UI.map(t=>t.key)).concat(['later']);
+  const labels={overdue:DUE_OVERDUE_LABEL, later:DUE_LATER_LABEL};
+  DUE_THRESHOLDS_UI.forEach(t=>{ labels[t.key]=t.label; });
+
+  const groups={};
+  (tasks||[]).forEach(t=>{
+    if(t.done || t.del || !t.due) return;
+    const b=dueBucketUI(t.due, todayKey);
+    if(!b) return;
+    (groups[b]=groups[b]||[]).push(t);
+  });
+  return order.filter(k=>groups[k]&&groups[k].length)
+              .map(k=>({key:k, label:labels[k], items:groups[k]}));
+}
+
+function renderDue(){
+  const el=document.getElementById('dueList');
+  if(!el) return;
+  const groups=dueGroups(state.tasks, todayKey());
+  el.innerHTML = groups.length
+    ? groups.map(g=>`<div class="due-group ${g.key}">
+        <div class="head">${g.label}</div>
+        ${g.items.map(t=>`<div class="board-item"><span class="tag">${esc(t.due)}</span>
+          <span>${esc(t.txt)}</span></div>`).join('')}
+      </div>`).join('')
+    : '<div class="empty-hint">沒有設定到期日的任務。在任務頁新增時可以展開「到期日與週期」</div>';
 }
 function toggleDashCard(id, view){
   const el=document.getElementById(id);
