@@ -169,10 +169,41 @@ class FakeSpreadsheet {
  * 回傳的 call() 直接呼叫原始碼裡的函式，read() 讀得到頂層的 const
  * （vm 的頂層 const 不會變成全域屬性，但同一個 context 裡的後續運算看得見）。
  */
-export function loadCodeGs({ sheets = {}, properties = {} } = {}) {
+export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null } = {}) {
   const logs = [];              // console.log 的內容
   const transactions = [];      // logTransaction_ 收到的參數
+  const pushes = [];            // linePush_ 收到的 (userId, text)
+  const triggers = [];          // ScriptApp 建出來的觸發器
   const ss = new FakeSpreadsheet(sheets);
+
+  /** line-router.gs 裡的推播函式。Code.gs 靠全域範圍看見它，這裡假一個 */
+  const linePush_ = (to, text) => {
+    pushes.push({ to, text });
+    return pushImpl ? pushImpl({ to, text, pushes }) : { ok: true, code: 200, reason: '' };
+  };
+
+  /** 觸發器只記不真的排程——要驗的是「重複執行不會累積」這件事 */
+  const makeTriggerBuilder = (fn) => {
+    const spec = { handler: fn, hour: null, days: null };
+    const builder = {
+      timeBased: () => builder,
+      atHour: (h) => { spec.hour = h; return builder; },
+      everyDays: (d) => { spec.days = d; return builder; },
+      create: () => { triggers.push(spec); return spec; }
+    };
+    return builder;
+  };
+  const ScriptApp = {
+    getProjectTriggers: () => triggers.map((t) => ({
+      getHandlerFunction: () => t.handler,
+      __spec: t
+    })),
+    deleteTrigger: (t) => {
+      const i = triggers.indexOf(t.__spec);
+      if (i >= 0) triggers.splice(i, 1);
+    },
+    newTrigger: makeTriggerBuilder
+  };
 
   const context = createContext({
     console: {
@@ -191,8 +222,10 @@ export function loadCodeGs({ sheets = {}, properties = {} } = {}) {
       MimeType: { JSON: 'application/json' }
     },
     UrlFetchApp: { fetch: () => { throw new Error('測試不發網路請求'); } },
-    // line-router.gs 裡的函式，Code.gs 靠全域範圍看見它
+    // line-router.gs 裡的函式，Code.gs 靠全域範圍看見它們
     logTransaction_: (...args) => transactions.push(args),
+    linePush_,
+    ScriptApp,
     Date,
     Array,
     Object,
@@ -209,6 +242,8 @@ export function loadCodeGs({ sheets = {}, properties = {} } = {}) {
     sheets,
     logs,
     transactions,
+    pushes,
+    triggers,
     /** 呼叫 Code.gs 裡的函式，回傳值搬回這一側的 realm */
     call: (name, ...args) => toHost(context[name].apply(null, args)),
     /** 讀 Code.gs 裡的頂層宣告（含 const） */

@@ -880,3 +880,124 @@ function shouldNotify_(record, todayKey) {
   if (!keyValue_(record.line_id)) return false;
   return !!NOTIFY_BUCKETS[dueBucket_(record.due_date, todayKey)];
 }
+
+/* ========================================================================== */
+/* ADR-009 §四 C5 — 到期檢查與通知（每天一次的時間驅動觸發器）                  */
+/* ========================================================================== */
+
+var TASKS_SHEET = 'tasks';
+var DUE_CHECK_FUNCTION = 'checkDueReminders';
+var DUE_CHECK_HOUR = 9;          // 早上九點。到期提醒在半夜推沒有意義
+
+/**
+ * 安裝時間驅動觸發器（待其他環境知道的事 #5）。
+ *
+ * 為什麼寫成程式碼而不是在編輯器裡手動加：手動加的觸發器不在 repo 裡，
+ * 換人接手時沒有任何線索告訴他「有個東西每天早上九點會自己跑」。這個專案的
+ * 紀律是 GitHub 是唯一真相，那就不該有一段只存在於某個網頁設定畫面裡的行為。
+ *
+ * 先刪同名的舊觸發器再建：重複執行這支函式不會累積出三個觸發器、一天推三次。
+ * 部署完成後在編輯器手動執行一次即可，之後不必再管。
+ */
+function installAdr009Triggers() {
+  var removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === DUE_CHECK_FUNCTION) { ScriptApp.deleteTrigger(t); removed++; }
+  });
+  if (removed) console.log('移除了 ' + removed + ' 個同名的舊觸發器（避免一天推多次）');
+
+  ScriptApp.newTrigger(DUE_CHECK_FUNCTION).timeBased().atHour(DUE_CHECK_HOUR).everyDays(1).create();
+  console.log('✅ 已建立每日觸發器：' + DUE_CHECK_FUNCTION + '，每天約 ' + DUE_CHECK_HOUR + ' 點執行');
+  console.log('   這支函式可重複執行，不會累積出多個觸發器。');
+  return { removed: removed, created: DUE_CHECK_FUNCTION, hour: DUE_CHECK_HOUR };
+}
+
+/** 移除觸發器。決定不用這個功能時，有個乾淨的關法比留著讓它每天空跑好 */
+function uninstallAdr009Triggers() {
+  var removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === DUE_CHECK_FUNCTION) { ScriptApp.deleteTrigger(t); removed++; }
+  });
+  console.log(removed ? ('已移除 ' + removed + ' 個到期檢查觸發器') : '沒有找到到期檢查觸發器');
+  return { removed: removed };
+}
+
+/**
+ * 挑出這一輪該推通知的列。純函式，與 Sheet 和 LINE 都無關——
+ * 到期判斷是這個功能最容易出錯的地方，把它跟 I/O 分開才測得動。
+ */
+function dueRemindersToNotify_(records, todayKey) {
+  if (!records || !records.length) return [];
+  return records.filter(function (r) { return shouldNotify_(r, todayKey); });
+}
+
+/** 通知內容。到期日與還剩幾天都寫進去——只說「快到了」等於要人自己去查 */
+function dueReminderMessage_(record, todayKey) {
+  var days = daysUntil_(record.due_date, todayKey);
+  var when = days === null ? ''
+    : days < 0 ? ('已逾期 ' + Math.abs(days) + ' 天')
+    : days === 0 ? '今天到期'
+    : ('還剩 ' + days + ' 天');
+  return '⏰ 到期提醒\n' + (record.text || '(沒有內容)') +
+         '\n' + record.due_date + (when ? '（' + when + '）' : '');
+}
+
+/**
+ * 每天跑一次的到期檢查。由 installAdr009Triggers() 建立的觸發器呼叫。
+ *
+ * 推成功才標記 notified：推失敗就標記，等於這筆從此再也不會提醒，而使用者
+ * 根本不知道有過這件事。寧可明天再推一次，也不要安靜地漏掉。
+ *
+ * 整支包在 try/catch 裡：這是背景工作，丟例外沒有人看得到，只會在執行記錄裡
+ * 留一筆紅字。出事要留在 logs，那才是回頭查得到的地方。
+ */
+function checkDueReminders(todayKey) {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TASKS_SHEET);
+    if (!sheet) { console.log('分頁「' + TASKS_SHEET + '」不存在，略過'); return { notified: 0 }; }
+
+    var headers = sheetHeaders_(sheet);
+    if (headers.indexOf('due_date') === -1) {
+      console.log('分頁「' + TASKS_SHEET + '」還沒有 due_date 欄，先執行 ensureAdr009Columns()');
+      return { notified: 0, reason: 'no_due_date_column' };
+    }
+
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 2) return { notified: 0 };
+
+    var values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+    var records = values.map(function (row) {
+      var o = {};
+      headers.forEach(function (h, i) { o[h] = row[i]; });
+      return o;
+    });
+
+    // 參數只給測試用：綁死系統時鐘的測試會跟著真實日期漂，某一天突然變紅而
+    // 沒有人改過任何東西。觸發器呼叫時不帶參數，走的仍然是今天。
+    var today = keyValue_(todayKey) || keyValue_(new Date());
+    var due = dueRemindersToNotify_(records, today);
+    if (!due.length) { console.log('今天沒有需要通知的到期項目'); return { notified: 0 }; }
+
+    var sent = 0;
+    due.forEach(function (rec) {
+      var result = linePush_(keyValue_(rec.line_id), dueReminderMessage_(rec, today));
+      if (!result.ok) {
+        console.log('推播失敗，這筆保留未通知狀態，明天會再試：id=' + rec.id + '／' + result.reason);
+        return;
+      }
+      sent++;
+      rec.notified = 'TRUE';
+      upsertRow_(sheet, headers, rec, TASKS_SHEET, 'id');
+    });
+
+    logCleanup_('到期檢查 ' + today,
+      '通知 ' + sent + ' 筆（符合門檻 ' + due.length + ' 筆）',
+      sent === due.length ? '' : '有 ' + (due.length - sent) + ' 筆推播失敗，未標記 notified，明天會再試');
+    console.log('到期檢查完成：通知 ' + sent + ' / ' + due.length + ' 筆');
+    return { notified: sent, matched: due.length };
+  } catch (err) {
+    console.log('到期檢查失敗：' + err);
+    try { logTransaction_('同步', '失敗', '到期檢查', '例外中止', String(err), '', ''); } catch (e) {}
+    return { notified: 0, error: String(err) };
+  }
+}
