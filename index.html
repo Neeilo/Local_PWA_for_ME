@@ -450,6 +450,10 @@
   .adm-sec{font-size:12px; color:var(--muted); margin:10px 0 6px;}
 
   @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important;} }
+.due-pick{ margin-top:8px; font-size:13px; }
+.due-pick summary{ cursor:pointer; opacity:.75; }
+.due-row{ display:flex; align-items:center; gap:6px; margin-top:8px; flex-wrap:wrap; }
+.due-row input[type=number]{ width:64px; }
 .conn-banner{
   margin-top:6px; padding:6px 12px; border-radius:10px; font-size:13px; line-height:1.5;
   background:rgba(255,92,92,.14); color:#b03030; border:1px solid rgba(255,92,92,.3);
@@ -595,6 +599,23 @@
         <button class="prio-opt sel" data-val="M" onclick="pickNewPrio('M')"><span class="prio-dot prio-M"></span>中</button>
         <button class="prio-opt" data-val="L" onclick="pickNewPrio('L')"><span class="prio-dot prio-L"></span>低</button>
       </div>
+      <!-- 到期日與週期都是選填（ADR-009 §四）。摺起來是刻意的：大多數任務沒有
+           到期日，把這三個欄位一直攤在那裡會讓「隨手記一件事」這個主要用途變重。 -->
+      <details class="due-pick">
+        <summary>到期日與週期（選填）</summary>
+        <div class="due-row">
+          <input type="date" id="newTaskDue" aria-label="到期日">
+          <span class="lbl">每</span>
+          <input type="number" id="newTaskRecurN" min="1" step="1" placeholder="—" aria-label="週期數字">
+          <select id="newTaskRecurUnit" aria-label="週期單位">
+            <option value="">不重複</option>
+            <option value="天">天</option>
+            <option value="週">週</option>
+            <option value="月">月</option>
+            <option value="年">年</option>
+          </select>
+        </div>
+      </details>
     </div>
     <div class="card">
       <h2>進行中</h2>
@@ -1421,13 +1442,21 @@ function renderSyncBadge(){
   el.hidden=!n;
   el.textContent=n?('⏳ '+n+' 筆待同步'):'';
 }
-function taskToCloud(t){ return {id:String(t.id), text:t.txt, is_completed:!!t.done, created_at:new Date(t.ts).toISOString(), priority:t.priority||DEFAULT_PRIORITY, line_id:t.line_id||'', del:t.del?'TRUE':''}; }
+function taskToCloud(t){
+  return {id:String(t.id), text:t.txt, is_completed:!!t.done, created_at:new Date(t.ts).toISOString(),
+          priority:t.priority||DEFAULT_PRIORITY, line_id:t.line_id||'', del:t.del?'TRUE':'',
+          board:t.board?'TRUE':'', due_date:t.due||'',
+          recur_interval:t.recurN||'', recur_unit:t.recurUnit||'', notified:t.notified?'TRUE':''};
+}
 function taskFromCloud(r){
   const p=String(r.priority||'').toUpperCase();
   return {id:Number(r.id)||Date.now(), txt:r.text||'', done:r.is_completed===true||r.is_completed==='TRUE'||r.is_completed==='true',
           ts:r.created_at?new Date(r.created_at).getTime():Date.now(),
           priority:PRIORITIES.includes(p)?p:DEFAULT_PRIORITY,
-          line_id:String(r.line_id||'').trim()};
+          line_id:String(r.line_id||'').trim(),
+          board:truthy(r.board), due:String(r.due_date||'').slice(0,10),
+          recurN:r.recur_interval||'', recurUnit:String(r.recur_unit||'').trim(),
+          notified:truthy(r.notified)};
 }
 function expenseToCloud(e){
   return {id:String(e.id), expense_date:e.date, type:e.type, category:e.category,
@@ -1754,14 +1783,50 @@ function addTask(){
   const inp=document.getElementById('taskInput');
   const txt=inp.value.trim();
   if(!txt) return;
-  const t={id:Date.now(),txt,done:false,ts:Date.now(),priority:newTaskPriority,line_id:myLineId||''};
+  const due=(document.getElementById('newTaskDue')||{}).value||'';
+  const recurN=(document.getElementById('newTaskRecurN')||{}).value||'';
+  const recurUnit=(document.getElementById('newTaskRecurUnit')||{}).value||'';
+  // 只填了週期沒填到期日，週期無從算起——說清楚而不是安靜忽略
+  if(recurUnit && !due){ toast('週期任務要先有到期日'); return; }
+
+  const t={id:Date.now(),txt,done:false,ts:Date.now(),priority:newTaskPriority,line_id:myLineId||'',
+           due, recurN:recurUnit?(recurN||'1'):'', recurUnit:recurUnit||''};
   state.tasks.unshift(t);
   inp.value='';
+  ['newTaskDue','newTaskRecurN'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
+  const us=document.getElementById('newTaskRecurUnit'); if(us) us.value='';
   save(); pushTask(t); renderTasks(); toast('已加入任務');
 }
 function toggleTask(id){
   const t=state.tasks.find(t=>t.id===id);
-  if(t){t.done=!t.done; save(); pushTask(t); renderTasks();}
+  if(!t) return;
+  t.done=!t.done;
+  save(); renderTasks();
+
+  // 週期任務打勾時走 completeRecurring：後端會把週期交給新的一期，原列從此
+  // 不是週期任務。下一期的日期算法只留在後端一份，前端不重算（ADR-009 §四）。
+  if(t.done && t.recurUnit && t.due){
+    completeRecurringTask(t);
+    return;
+  }
+  pushTask(t);
+}
+
+function completeRecurringTask(t){
+  return fetch(CLOUD_URL,{
+    method:'POST',
+    headers:{'Content-Type':'text/plain'},
+    body:JSON.stringify({secret:CLOUD_SECRET, line_id:myLineId||'', sheet:'tasks',
+                         action:'completeRecurring', key_field:'id',
+                         record:taskToCloud(t), next_id:String(Date.now()+1)})
+  }).then(r=>r.json()).then(j=>{
+    if(j && j.success){
+      if(j.spawned) toast('已完成，下一期：'+j.next_due);
+      return syncFromCloud();                 // 新的一期由後端生，撈回來才看得到
+    }
+    // 沒成功就退回一般的單筆送出，至少「完成」這件事不會掉
+    pushTask(t);
+  }).catch(()=>{ pushTask(t); });
 }
 /* 直接點燈號循環 高→中→低 */
 function cyclePriority(id){
