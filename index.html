@@ -450,6 +450,17 @@
   .adm-sec{font-size:12px; color:var(--muted); margin:10px 0 6px;}
 
   @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important;} }
+.conn-banner{
+  margin-top:6px; padding:6px 12px; border-radius:10px; font-size:13px; line-height:1.5;
+  background:rgba(255,92,92,.14); color:#b03030; border:1px solid rgba(255,92,92,.3);
+}
+@media (prefers-color-scheme: dark){ .conn-banner{ background:rgba(255,92,92,.12); color:#ff9b9b; } }
+.refresh-btn{
+  position:absolute; top:14px; right:14px; width:36px; height:36px; border-radius:50%;
+  border:1px solid rgba(128,128,128,.3); background:transparent; font-size:17px; cursor:pointer;
+  color:inherit; line-height:1;
+}
+.refresh-btn:active{ transform:rotate(180deg); transition:transform .3s; }
 .sync-badge{
   margin-top:6px; display:inline-block; padding:3px 10px; border-radius:999px;
   font-size:12px; background:rgba(255,176,32,.16); color:#b26b00;
@@ -478,6 +489,8 @@
   <!-- 送不出去的東西要看得見。改版前整包 replaceAll 天生有重試，失敗是無感的；
        改成單筆之後，沒有這一行就沒有人知道有東西卡著（DATA-02）。 -->
   <div class="sync-badge" id="syncBadge" hidden></div>
+  <div class="conn-banner" id="connBanner" hidden></div>
+  <button class="refresh-btn" id="refreshBtn" onclick="manualRefresh()" title="重新整理">↻</button>
   <div class="pulse" id="pulse"></div>
   <div class="pulse-label" id="pulseLabel">近 14 天心情脈搏</div>
 </header>
@@ -1189,17 +1202,17 @@ function toast(msg){
 }
 
 /* ---------- 儲存 ---------- */
+/* 開機不再從 localStorage 把畫面填滿（ADR-009 §一.1）。
+   那份東西還在、也還在被寫入，但它從「畫面的真相」降級成備援：出事時撈得回來，
+   平常不拿來顯示。畫面等雲端那一份。
+
+   唯一先畫上去的是還沒送出去的那幾筆——它們在雲端還不存在，但確實是使用者
+   剛剛輸入的東西，不顯示等於騙他資料不見了。 */
 function load(){
-  try{
-    const raw=localStorage.getItem(STORAGE_KEY);
-    if(raw){
-      const parsed=JSON.parse(raw);
-      state=Object.assign(EMPTY_STATE(), parsed);
-    }
-  }catch(e){}
-  if(dedupeState()){ try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); }catch(e){} }
+  state=EMPTY_STATE();
+  applyPendingOverlay();
   migrate();
-  renderAll();
+  renderConnState(); renderAll();
 }
 /* ---------- state 讀取層去重（ADR-007 票 B） ----------
    同一個 id 在 state 裡躺兩筆，畫面就會跟著出現兩列。這裡以 id 為 key 去重，
@@ -1301,8 +1314,23 @@ function save(){
 /* ---------- 雲端同步（Google Sheets，僅 tasks/reviews/moods/notes） ---------- */
 // 單一分頁讀取失敗（例如分頁尚未建立）不應中斷其他分頁的同步，故各自吞掉錯誤回空陣列。
 // 合併規則只補不刪，回空陣列不會造成資料遺失。
+/* ⚠️ 這支函式的錯誤處理是整個改版最危險的一處，改之前先讀完這段。
+
+   改版前它把任何失敗都吞掉、回傳空陣列，那時無所謂——合併規則是「只補不刪」，
+   回空陣列什麼事都不會發生。現在雲端是真相、pull 是覆蓋式的，「回空陣列」的
+   意思變成「這張表本來就沒東西」，於是一次網路抖動就會把五張表全部清空。
+
+   所以失敗一律往上拋，讓 pullFromCloud 知道這次讀取不算數、原地不動。
+   唯一被當成「真的空」的是 sheet_not_found：那張分頁還沒被建出來，確實沒東西。 */
 function cloudGet(sheet){
-  return fetch(`${CLOUD_URL}?sheet=${sheet}`).then(r=>r.json()).then(j=>j.data||[]).catch(()=>[]);
+  return fetch(`${CLOUD_URL}?sheet=${sheet}`).then(r=>r.json()).then(j=>{
+    if(!j) throw new Error('empty_response');
+    if(j.error){
+      if(j.error==='sheet_not_found') return [];     // 分頁還沒建，真的是空的
+      throw new Error(j.error);
+    }
+    return j.data||[];
+  });
 }
 /* ---------- 待送佇列（ADR-009 §一.2 的落地方式） ----------
    即時單筆 upsert 解掉了 DATA-01（多裝置整包覆蓋互相抹除），但它自己帶來一個
@@ -1456,8 +1484,47 @@ function pushAllRows(){
   return flushOutbox();
 }
 
+/* ---------- 連線狀態（ADR-009 §一.1 的代價，要讓人看得懂） ---------- */
+function renderConnState(){
+  const el=document.getElementById('connBanner');
+  if(!el) return;
+  if(cloudOnline===false){
+    el.hidden=false;
+    el.textContent='⚠️ 連線異常，畫面上不是完整的資料。恢復連線後會自動更新。';
+  }else if(cloudOnline===null){
+    el.hidden=false;
+    el.textContent='連線中…';
+  }else{
+    el.hidden=true;
+    el.textContent='';
+  }
+}
+
+/* ---------- 輪詢（ADR-009 §二） ----------
+   15 秒撈一次整張表，不做增量同步——目前配額與效能都不構成理由（ADR 明列為未來票）。
+   背景時暫停：鎖著螢幕還每 15 秒打一次雲端，除了燒配額與電力之外什麼也沒換到。 */
+const POLL_INTERVAL=15000;
+let pollTimer=null;
+
+function startPolling(){
+  stopPolling();
+  pollTimer=setInterval(()=>{
+    if(document.visibilityState!=='visible') return;   // 保險：背景時不送
+    syncFromCloud();
+    flushOutbox();                                     // 順手把積著的推出去
+  }, POLL_INTERVAL);
+}
+function stopPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null; } }
+
+/** 手動刷新鈕：直接呼叫既有的 pull 入口，不需要新邏輯（ADR-009 §二） */
+function manualRefresh(){
+  toast('更新中…');
+  flushOutbox();
+  return syncFromCloud();
+}
+
 /* 統一的 pull 入口：同一時間只允許一個 pull 在跑，並記下完成時間，
-   讓 save() 能等它、讓回前景的觸發能節流。 */
+   讓回前景的觸發能節流。 */
 let pullPromise=null, lastPullAt=0;
 function syncFromCloud(){
   if(pullPromise) return pullPromise;
@@ -1465,44 +1532,88 @@ function syncFromCloud(){
   return pullPromise;
 }
 
+/* ---------- 讀取：雲端是真相（ADR-009 §一.1） ----------
+   改版前 localStorage 是畫面的權威來源，pull 只是「補上本機沒有的」。那套規則
+   讓刪除同步不了（本機那份還在，合併只補不刪），也讓兩支手機各自長出一份事實。
+
+   現在整張換成雲端那份。代價講明白：**離線時不再顯示任何資料**，畫面會是連線
+   異常而不是你上次看到的東西。這是 ADR 明確的選擇，不是疏漏。 */
+let cloudOnline=null;        // null=還沒試過、true=通、false=不通
+
+/* 還沒送出去的那幾筆要疊回畫面上。
+   它們在雲端還不存在，被覆蓋式 pull 洗掉的話，使用者會看著自己剛打的字消失——
+   東西其實好好地躺在佇列裡，但那不是他看得到的地方。 */
+function applyPendingOverlay(){
+  outbox.forEach(job=>{
+    const r=job.record||{};
+    if(job.sheet==='tasks'){
+      const t=taskFromCloud(r); const i=state.tasks.findIndex(x=>String(x.id)===String(t.id));
+      if(truthy(r.del)){ if(i>=0) state.tasks.splice(i,1); return; }
+      if(i>=0) state.tasks[i]=t; else state.tasks.unshift(t);
+    }else if(job.sheet==='moods'){
+      const m=moodFromCloud(r); const i=state.moods.findIndex(x=>String(x.id)===String(m.id));
+      if(truthy(r.del)){ if(i>=0) state.moods.splice(i,1); return; }
+      if(i>=0) state.moods[i]=m; else state.moods.unshift(m);
+    }else if(job.sheet==='notes'){
+      const n=noteFromCloud(r); const i=state.notes.findIndex(x=>String(x.id)===String(n.id));
+      if(truthy(r.del)){ if(i>=0) state.notes.splice(i,1); return; }
+      if(i>=0) state.notes[i]=n; else state.notes.unshift(n);
+    }else if(job.sheet==='expenses'){
+      const e=expenseFromCloud(r); const i=state.expenses.findIndex(x=>String(x.id)===String(e.id));
+      if(truthy(r.del)){ if(i>=0) state.expenses.splice(i,1); return; }
+      if(i>=0) state.expenses[i]=e; else state.expenses.unshift(e);
+    }else if(job.sheet==='reviews'){
+      const k=reviewKey(r.review_date, String(r.line_id||'').trim());
+      if(truthy(r.del)){ delete state.reviews[k]; return; }
+      const prev=state.reviews[k]||{};
+      state.reviews[k]={compass:prev.compass||'', good:r.good||'', stuck:r.stuck||'',
+                        next:r.most_important||'', line_id:String(r.line_id||'').trim(), ts:Date.now()};
+    }
+  });
+}
+
 async function pullFromCloud(){
+  let fetched;
   try{
-    const [cTasks,cReviews,cMoods,cNotes,cExpenses]=await Promise.all([
+    fetched=await Promise.all([
       cloudGet('tasks'), cloudGet('reviews'), cloudGet('moods'), cloudGet('notes'), cloudGet('expenses')
     ]);
-    const taskIds=new Set(state.tasks.map(t=>String(t.id)));
-    cTasks.forEach(r=>{ if(!taskIds.has(String(r.id))) state.tasks.push(taskFromCloud(r)); });
+  }catch(e){
+    // 讀不到就原地不動。把讀取失敗當成「雲端是空的」會清光所有資料——
+    // 那是這次改版最容易犯、也最貴的一個錯。
+    cloudOnline=false;
+    renderConnState(); renderAll();
+    return;
+  }
 
-    cReviews.forEach(row=>{
-      if(!row.review_date) return;
-      // 同一天不同人是兩筆，各自有鍵——這正是舊模型會互相蓋掉的地方
-      const owner=String(row.line_id||'').trim();
-      const key=reviewKey(row.review_date, owner);
-      if(!state.reviews[key]){
-        state.reviews[key]={compass:'', good:row.good||'', stuck:row.stuck||'', next:row.most_important||'',
-                            line_id:owner, ts:Date.now()};
-      }
-    });
+  const [cTasks,cReviews,cMoods,cNotes,cExpenses]=fetched;
 
-    const moodIds=new Set(state.moods.map(m=>String(m.id)));
-    cMoods.forEach(r=>{ if(!moodIds.has(String(r.id))) state.moods.push(moodFromCloud(r)); });
+  // 整張換掉。後端已經濾掉 del=true 的列，所以「別人刪掉的」在這裡自然消失
+  state.tasks    = cTasks.map(taskFromCloud);
+  state.moods    = cMoods.map(moodFromCloud);
+  state.notes    = cNotes.map(noteFromCloud);
+  state.expenses = cExpenses.filter(r=>r.id).map(expenseFromCloud);
+  state.reviews  = {};
+  cReviews.forEach(row=>{
+    if(!row.review_date) return;
+    const owner=String(row.line_id||'').trim();
+    // compass 只活在本機（它不上雲端），所以覆蓋時要留住原本那一份
+    const k=reviewKey(row.review_date, owner);
+    state.reviews[k]={compass:'', good:row.good||'', stuck:row.stuck||'',
+                      next:row.most_important||'', line_id:owner, ts:Date.now()};
+  });
 
-    const noteIds=new Set(state.notes.map(n=>String(n.id)));
-    cNotes.forEach(r=>{ if(!noteIds.has(String(r.id))) state.notes.push(noteFromCloud(r)); });
+  applyPendingOverlay();
 
-    const expIds=new Set(state.expenses.map(e=>String(e.id)));
-    cExpenses.forEach(r=>{ if(r.id && !expIds.has(String(r.id))) state.expenses.push(expenseFromCloud(r)); });
+  state.tasks.sort((a,b)=>b.ts-a.ts);
+  state.moods.sort((a,b)=>b.ts-a.ts);
+  state.notes.sort((a,b)=>b.ts-a.ts);
+  sortExpenses();
 
-    state.tasks.sort((a,b)=>b.ts-a.ts);
-    state.moods.sort((a,b)=>b.ts-a.ts);
-    state.notes.sort((a,b)=>b.ts-a.ts);
-    sortExpenses();
-
-    dedupeState();
-    migrate();
-    localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
-    renderAll();
-  }catch(e){ /* 離線或雲端不可用，略過本次同步 */ }
+  migrate();
+  try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); }catch(e){}
+  cloudOnline=true;
+  renderConnState(); renderAll();
 }
 
 /* ---------- 備份 ---------- */
@@ -2235,10 +2346,12 @@ function renderAll(){
      一度離線而按了「先在本機用」的人，也在這裡被接回選身份的流程。 */
   const FOREGROUND_PULL_MIN_GAP=5000;
   document.addEventListener('visibilitychange',()=>{
-    if(document.visibilityState!=='visible') return;
+    if(document.visibilityState!=='visible'){ stopPolling(); return; }
+    startPolling();                                   // 回前景才恢復輪詢
     if(Date.now()-lastPullAt<FOREGROUND_PULL_MIN_GAP) return;
-    refreshRoster().then(syncFromCloud);
+    refreshRoster().then(syncFromCloud).then(flushOutbox);
   });
+  startPolling();
 
   if('serviceWorker' in navigator){
     navigator.serviceWorker.register('sw.js').then(reg=>{
