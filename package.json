@@ -5,6 +5,7 @@
   "description": "Neil OS — 本地優先 PWA；Apps Script 後端由 GitHub Actions 單向部署，本機 clasp 只讀不寫",
   "type": "module",
   "scripts": {
+    "test": "node --test tests/*.test.mjs",
     "pull": "clasp pull && npm run scan",
     "preflight": "node scripts/clasp-preflight.mjs",
     "status": "clasp status",

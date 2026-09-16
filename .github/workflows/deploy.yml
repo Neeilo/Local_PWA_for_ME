@@ -72,6 +72,14 @@ jobs:
       - name: Fail if a secret got hardcoded back into the sources
         run: node scripts/scan-inline-secrets.mjs
 
+      # 同樣不受下面的休眠閘門保護，理由也一樣：後端邏輯對不對，跟管道啟不啟用
+      # 無關。node --test 是內建的，不需要 npm install，也不需要任何 Secret。
+      #
+      # 這道閘門擋在 clasp push 前面，而不是掛在部署後面——「測試失敗不部署」
+      # 是 2026-09-16 那份安全性改善計畫的放行條件之一，部署成功不能當驗收。
+      - name: Run the backend unit tests
+        run: npm test
+
       # clasp push 是整包覆蓋，不是增量合併：rootDir 裡沒有的檔案線上就會被刪。
       # 基準對齊完成前，apps-script/ 還不是線上專案的完整鏡像（少了 Code.gs），
       # 這時候 push 會把線上刪到只剩半套。所以管道先休眠，不紅燈也不硬幹——

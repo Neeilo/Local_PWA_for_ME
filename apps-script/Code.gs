@@ -363,31 +363,93 @@ function dedupeById_(records) {
   return { kept: kept, dropped: dropped };
 }
 
+/* ========================================================================== */
+/* 鍵欄：單欄或複合鍵（ADR-009 §一.5）                                         */
+/* ========================================================================== */
+
 /**
- * 以鍵欄定位既有列 → 覆蓋；找不到才 append（ADR-007 票 A）。
- * 鍵欄預設是 id；line_users 傳 key_field='line_id'（ADR-008 D-4 的管理頁走這條）。
- * 遇到多筆同 id：覆蓋第一筆、刪除其餘，並寫進 logs——讓系統自帶清理能力。
+ * 複合鍵的分隔符，與前端 reviewKey() 同一個字元。
+ * 日期是 YYYY-MM-DD、line_id 是英數，兩者都不可能出現它，拆回來不會拆錯。
+ */
+var KEY_SEPARATOR = '|';
+
+/**
+ * key_field 可以是字串（'id'、'line_id'）或陣列（['review_date','line_id']）。
+ * 省略、空字串、空陣列一律回到預設的 id——沒有鍵的 upsert 會退化成 append，
+ * 那正是 ADR-007 要根治的東西，不能讓它從「參數忘了傳」這條路溜回來。
+ */
+function keyFieldsOf_(keyField) {
+  if (Array.isArray(keyField)) {
+    const picked = keyField.filter(k => k != null && k !== '').map(String);
+    return picked.length ? picked : ['id'];
+  }
+  return (keyField == null || keyField === '') ? ['id'] : [String(keyField)];
+}
+
+/**
+ * 把一格值正規化成可以互相比對的字串。
  *
- * 比對方式是「id 欄整欄一次撈進記憶體再線性搜尋」。不建索引、不維護對照表：
+ * ⚠️ 日期欄是這裡唯一的陷阱，也是 reviews 非用複合鍵不可的連帶代價：Sheet 讀回來的
+ * review_date 是 Date 物件，前端送上來的是 'YYYY-MM-DD' 字串。直接 String() 會得到
+ * 'Mon Sep 16 2026 00:00:00 GMT+0800'，兩邊永遠對不上，於是每次 upsert 都變成
+ * append——正好是這次要根治的重複列，從另一個方向長回來。
+ *
+ * 取本地年月日而不是 toISOString()：後者是 UTC，在 UTC+8 會把當天算成前一天。
+ */
+function keyValue_(v) {
+  if (v == null) return '';
+  if (v instanceof Date) {
+    const pad = n => (n < 10 ? '0' : '') + n;
+    return v.getFullYear() + '-' + pad(v.getMonth() + 1) + '-' + pad(v.getDate());
+  }
+  return String(v).trim();
+}
+
+/**
+ * 一筆記錄的鍵。任何一個鍵欄是空的，就當作整筆沒有鍵（回空字串）——
+ * 半個鍵比沒有鍵更危險：'2026-09-16|' 會跟另一個沒有 line_id 的人對上。
+ */
+function recordKey_(record, keys) {
+  if (!record) return '';
+  const parts = [];
+  for (let i = 0; i < keys.length; i++) {
+    const v = keyValue_(record[keys[i]]);
+    if (!v) return '';
+    parts.push(v);
+  }
+  return parts.join(KEY_SEPARATOR);
+}
+
+/**
+ * 以鍵欄定位既有列 → 覆蓋；找不到才 append（ADR-007 票 A；ADR-009 §一.5 擴充複合鍵）。
+ *
+ * 鍵欄預設是 id；line_users 傳 key_field='line_id'（ADR-008 D-4 的管理頁走這條）；
+ * reviews 沒有 id 欄，傳 key_field=['review_date','line_id'] 走複合鍵。
+ * 遇到多筆同鍵：覆蓋第一筆、刪除其餘，並寫進 logs——讓系統自帶清理能力。
+ *
+ * 比對方式是「整段資料範圍撈進記憶體再線性搜尋」。不建索引、不維護對照表：
  * 資料量以百為單位，簡單優先。
  *
- * 找不到 id 欄、或這筆記錄沒有 id 時，退回單純 append 但**留一行 console**。
+ * 找不到鍵欄、或這筆記錄的鍵不完整時，退回單純 append 但**留一行 console**。
  * 靜默失敗在這個專案已經貴過三次了。
  */
 function upsertRow_(sheet, headers, record, sheetName, keyField) {
-  const key = keyField || 'id';                          // line_users 以 line_id 為鍵
+  const keys = keyFieldsOf_(keyField);
   const row = headers.map(h => record[h] ?? '');
-  const idCol = headers.indexOf(key) + 1;                // 1-based；0 代表找不到
-  const recId = (record[key] != null && record[key] !== '') ? String(record[key]) : '';
+  const cols = keys.map(k => headers.indexOf(k) + 1);     // 1-based；0 代表找不到
+  const missingCols = keys.filter((k, i) => cols[i] === 0);
+  const recKey = recordKey_(record, keys);
 
-  if (idCol === 0 || !recId) {
+  if (missingCols.length || !recKey) {
     console.log('upsert 退回 append（' +
-      (idCol === 0 ? '分頁「' + sheetName + '」沒有 ' + key + ' 欄' : '這筆記錄沒有 ' + key) + '）');
+      (missingCols.length
+        ? '分頁「' + sheetName + '」沒有 ' + missingCols.join('、') + ' 欄'
+        : '這筆記錄的鍵不完整：' + keys.join('＋')) + '）');
     sheet.appendRow(row);
     return { success: true, row: sheet.getLastRow(), updated: false, cleaned: 0 };
   }
 
-  const matches = findRowsById_(sheet, idCol, recId);
+  const matches = findRowsByKey_(sheet, cols, recKey);
   if (!matches.length) {
     sheet.appendRow(row);
     return { success: true, row: sheet.getLastRow(), updated: false, cleaned: 0 };
@@ -402,7 +464,7 @@ function upsertRow_(sheet, headers, record, sheetName, keyField) {
 
   if (extras.length) {
     logCleanup_(
-      'upsert ' + sheetName + ' ' + key + '=' + recId,
+      'upsert ' + sheetName + ' ' + keys.join(KEY_SEPARATOR) + '=' + recKey,
       '覆蓋第 ' + target + ' 列，刪除重複 ' + extras.length + ' 列',
       '刪除的列號：' + extras.slice().sort((a, b) => a - b).join(', ')
     );
@@ -410,16 +472,21 @@ function upsertRow_(sheet, headers, record, sheetName, keyField) {
   return { success: true, row: target, updated: true, cleaned: extras.length };
 }
 
-/** 回傳 id 欄等於 recId 的所有列號（1-based，含表頭偏移） */
-function findRowsById_(sheet, idCol, recId) {
+/**
+ * 回傳鍵欄組合等於 wantedKey 的所有列號（1-based，含表頭偏移）。
+ * 鍵不完整的列直接跳過，理由同 recordKey_：半個鍵不該跟任何人對上。
+ */
+function findRowsByKey_(sheet, cols, wantedKey) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
 
-  const ids = sheet.getRange(2, idCol, lastRow - 1, 1).getValues();
+  const width = Math.max.apply(null, cols);
+  const values = sheet.getRange(2, 1, lastRow - 1, width).getValues();
   const matches = [];
-  for (let i = 0; i < ids.length; i++) {
-    if (String(ids[i][0]) === recId) matches.push(i + 2);
-  }
+  values.forEach((row, i) => {
+    const parts = cols.map(c => keyValue_(row[c - 1]));
+    if (parts.every(p => p) && parts.join(KEY_SEPARATOR) === wantedKey) matches.push(i + 2);
+  });
   return matches;
 }
 
@@ -460,4 +527,156 @@ function summarizeIds_(ids) {
 function jsonOut(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+/* ========================================================================== */
+/* ADR-009 Phase 0 — 軟刪除、兩段式封存、欄位安裝                              */
+/*                                                                            */
+/* ⚠️ 這一段目前沒有任何呼叫端，是刻意的。ADR-009「待其他環境知道的事 #1」寫明： */
+/* 三個新函式的最小自動化測試要先跑過、報告經 Neil 確認，才准接手既有模組的      */
+/* 讀寫路徑。所以這裡先把函式與測試做完，doGet 的過濾與前端的即時 upsert 改寫    */
+/* 留到下一階段——不可以先動工、測試事後補。                                     */
+/*                                                                            */
+/* 唯一會真的執行的是 ensureAdr009Columns()，那是給 Neil 在 Apps Script 編輯器 */
+/* 手動執行一次的安裝函式（操作方式比照 diagnoseLineUsers）。它不會自己跑，也    */
+/* 不在任何同步路徑上。                                                        */
+/* ========================================================================== */
+
+/** 軟刪除旗標欄（ADR-009 §一.3）。空白＝沒刪，判斷規則沿用 truthy_ */
+var DEL_FIELD = 'del';
+
+/** 這一列是不是墓碑（已軟刪除） */
+function isTombstone_(record) {
+  return !!record && truthy_(record[DEL_FIELD]);
+}
+
+/**
+ * 濾掉墓碑列（ADR-009 §一.3；待其他環境知道的事 #4 要求由後端負責，不指望前端自己 filter）。
+ *
+ * 「沒有 del 欄」與「del 是空的」都當成沒刪——欄位安裝前全表照常回傳，
+ * 不會因為少一個欄位就把所有資料藏起來。這是刻意選的方向：比照 ADR-008 E-2
+ * 「欄位不存在＝視為開放」，寧可多顯示，也不要讓一次漏裝欄位看起來像資料全毀。
+ */
+function withoutTombstones_(rows) {
+  if (!rows || !rows.length) return [];
+  return rows.filter(r => !isTombstone_(r));
+}
+
+/**
+ * 封存第一段：把整張分頁的墓碑列撈出來交給前端匯出（ADR-009 §一.4）。
+ *
+ * 回傳每列的鍵與列號。鍵就是第二段刪除時要比對的憑據——列號會因為任何一次
+ * 插入刪除而位移，不能當憑據，所以兩段之間傳的是鍵不是列號。
+ */
+function tombstoneRows_(sheet, headers, keyField) {
+  const keys = keyFieldsOf_(keyField);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2 || !headers.length) return [];
+
+  const values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+  const out = [];
+  values.forEach((row, i) => {
+    const record = {};
+    headers.forEach((h, c) => { record[h] = row[c]; });
+    if (!isTombstone_(record)) return;
+    out.push({ key: recordKey_(record, keys), row: i + 2, record: record });
+  });
+  return out;
+}
+
+/**
+ * 封存第二段：前端回報「已成功下載」之後，才真的把這些列刪掉（ADR-009 §一.4）。
+ *
+ * 兩道鎖，缺一不可：
+ *   1. 鍵必須在 confirmedKeys 裡——沒被匯出過的列一律不動
+ *   2. 該列此刻仍然是墓碑——中途被誰改回來（取消 del）就放過它
+ *
+ * 清單是空的就什麼都不刪，直接回 0。「沒有東西要刪」與「把整張表刪光」之間
+ * 不該只差一個空陣列——這正是 ADR 說的「不先斬後奏」，鎖在程式裡而不是在紀律裡。
+ */
+function purgeTombstoneRows_(sheet, headers, sheetName, keyField, confirmedKeys) {
+  const wanted = {};
+  (confirmedKeys || []).forEach(k => { const s = keyValue_(k); if (s) wanted[s] = true; });
+  const wantedCount = Object.keys(wanted).length;
+  if (!wantedCount) return { deleted: 0, rows: [], skipped: 0 };
+
+  const hit = tombstoneRows_(sheet, headers, keyField).filter(c => c.key && wanted[c.key]);
+  // 由下往上刪，否則刪掉一列之後下面的列號會整個位移，刪錯人
+  const rows = hit.map(c => c.row).sort((a, b) => b - a);
+  rows.forEach(r => sheet.deleteRow(r));
+
+  const ordered = rows.slice().sort((a, b) => a - b);
+  if (rows.length) {
+    logCleanup_(
+      'archive ' + sheetName,
+      '確認匯出後刪除墓碑 ' + rows.length + ' 列（清單共 ' + wantedCount + ' 筆）',
+      '刪除的列號：' + ordered.join(', ')
+    );
+  }
+  return { deleted: rows.length, rows: ordered, skipped: wantedCount - rows.length };
+}
+
+/**
+ * ADR-009 新增的欄位（待其他環境知道的事 #7）。
+ * 只補清單裡缺的，既有欄位與資料一概不動。
+ */
+var ADR009_COLUMNS = {
+  tasks:    ['del', 'archive', 'board', 'due_date', 'recur_interval', 'recur_unit', 'notified'],
+  expenses: ['del', 'archive', 'board'],
+  notes:    ['del', 'archive', 'board'],
+  reviews:  ['del', 'archive'],
+  moods:    ['del', 'archive']
+};
+
+/**
+ * 把 wanted 裡缺的欄名 append 到表頭最右邊，回傳這次補了什麼。
+ * 一律往右加、不插入中間：欄序一變，正在跑的 replaceAll 就會把資料寫進錯誤的欄。
+ */
+function ensureColumnsOnSheet_(sheet, wanted) {
+  const headers = sheetHeaders_(sheet);
+  if (!headers.length) return { added: [], existing: [], reason: 'no_header' };
+
+  const have = {};
+  headers.forEach(h => { if (h) have[h] = true; });
+  const missing = wanted.filter(c => !have[c]);
+  if (!missing.length) return { added: [], existing: wanted.slice() };
+
+  sheet.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]);
+  return { added: missing, existing: wanted.filter(c => have[c]) };
+}
+
+/**
+ * 欄位安裝——在 Apps Script 編輯器裡選這個函式按「執行」，跑一次就好。
+ *
+ * 為什麼不做成每次同步自動檢查（ADR-009 待其他環境知道的事 #7）：那等於每一次
+ * 寫入都多讀一次表頭，而這件事一輩子只需要發生一次。比照 diagnoseLineUsers()
+ * 的操作方式，手動執行、看執行記錄。
+ *
+ * 分頁不存在就略過不建——這五張表會在第一次同步時自己長出來，這裡先建一張
+ * 只有表頭的空表，反而會讓下一次 replaceAll 的表頭對不上。
+ */
+function ensureAdr009Columns() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const summary = {};
+
+  Object.keys(ADR009_COLUMNS).forEach(name => {
+    const sheet = ss.getSheetByName(name);
+    if (!sheet) {
+      console.log('⏭️ 分頁「' + name + '」不存在，略過（它會在第一次同步時自己長出來）');
+      summary[name] = { added: [], existing: [], reason: 'sheet_missing' };
+      return;
+    }
+    const result = ensureColumnsOnSheet_(sheet, ADR009_COLUMNS[name]);
+    if (result.reason === 'no_header') {
+      console.log('⚠️ 分頁「' + name + '」連表頭都沒有，略過（先跑一次同步把表頭長出來再回來執行）');
+    } else if (result.added.length) {
+      console.log('✅ 分頁「' + name + '」補上欄位：' + result.added.join('、'));
+    } else {
+      console.log('✔ 分頁「' + name + '」欄位已齊備，未變動');
+    }
+    summary[name] = result;
+  });
+
+  console.log('—— ADR-009 欄位安裝完成。此函式可重複執行，已存在的欄位不會被動到。');
+  return summary;
 }
