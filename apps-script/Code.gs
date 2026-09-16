@@ -277,7 +277,20 @@ function doGet(e) {
   });
 
   if (String(params.only || '').trim() === 'tombstones') {
-    return jsonOut({ data: rows.filter(isTombstone_) });
+    var tombs = rows.filter(isTombstone_);
+    // 鍵由**後端**算好一起回傳，前端原樣送回來就好。
+    //
+    // 為什麼不讓前端自己算：doGet 走 JSON.stringify，Date 會被轉成 UTC ISO 字串，
+    // 前端 slice 出來的日期在 UTC+8 可能差一天（就是 DATA-05 那個根）。鍵一旦
+    // 對不上，archivePurge 會安靜地一筆都刪不掉——沒有錯誤訊息，只是沒有效果。
+    // 同一套規則只留一份實作，就沒有對不上的可能。
+    var keyField = String(params.key_field || 'id').split(',')
+      .map(function (k) { return k.trim(); }).filter(function (k) { return k; });
+    var keys = keyFieldsOf_(keyField.length > 1 ? keyField : (keyField[0] || 'id'));
+    return jsonOut({
+      data: tombs,
+      keys: tombs.map(function (r) { return recordKey_(r, keys); })
+    });
   }
   return jsonOut({ data: withoutTombstones_(rows) });
 }
