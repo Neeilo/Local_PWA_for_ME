@@ -31,6 +31,9 @@
 
 var LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
 
+/** 主動推播端點（ADR-009 §四 C5）。與 reply 同一把權杖、同一套權限範圍 */
+var LINE_PUSH_ENDPOINT = 'https://api.line.me/v2/bot/message/push';
+
 /** 交易記錄分頁。表頭：id | ts | source | status | input | result | detail | target_row | user_id */
 var LOG_SHEET_NAME = 'logs';
 
@@ -1115,6 +1118,110 @@ function lineReply_(replyToken, text) {
   } catch (err) {
     console.log('LINE 回覆連線失敗：' + err);
   }
+}
+
+/* ========================================================================== */
+/* LINE 主動推播（ADR-009 §四 C5，動工前置驗證）                                */
+/*                                                                            */
+/* ⚠️ 目前沒有任何呼叫端。ADR-009 把通知管道列為「條件式決策」：要先用下面的      */
+/* testLinePush() 實測 push 端點通不通，通了才接上到期檢查；不通就整塊移入未來票， */
+/* 而 C1-C4（到期日欄位、儀表板區塊視覺化）照常上線，不因為 push 卡住被連帶延後。 */
+/* ========================================================================== */
+
+/**
+ * 主動推一則文字訊息給某個 userId。
+ *
+ * 與 lineReply_ 的差別只有兩點：端點不同、以及 push 沒有 replyToken 的時效限制，
+ * 換來的是配額限制（免費方案每月有則數上限）。權杖共用同一把，所以權杖有沒有效
+ * 可以直接沿用 diagnoseLineToken() 的結論，不必另外查。
+ *
+ * 一樣不拋出：推播失敗不該讓觸發它的那筆流程跟著失敗。但一定要把回應碼記進
+ * 執行記錄——沒有它，「權杖沒設」「配額用完」「對方封鎖了官方帳號」從外面看
+ * 起來全都是同一種安靜的失敗。
+ */
+function linePush_(toUserId, text) {
+  if (!toUserId) {
+    console.log('推播略過：沒有指定對象 userId');
+    return { ok: false, code: 0, reason: 'no_target' };
+  }
+
+  var token = lineToken_();
+  if (!token) {
+    console.log('推播略過：指令碼屬性 LINE_CHANNEL_ACCESS_TOKEN 不存在或是空字串');
+    return { ok: false, code: 0, reason: 'no_token' };
+  }
+
+  try {
+    var res = UrlFetchApp.fetch(LINE_PUSH_ENDPOINT, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { Authorization: 'Bearer ' + token },
+      payload: JSON.stringify({
+        to: toUserId,
+        messages: [{ type: 'text', text: text }]
+      }),
+      muteHttpExceptions: true
+    });
+
+    var code = res.getResponseCode();
+    var body = res.getContentText();
+    if (code === 200) {
+      console.log('LINE 推播成功');
+      return { ok: true, code: code, reason: '' };
+    }
+    console.log('LINE 推播失敗 HTTP ' + code + '：' + body);
+    return { ok: false, code: code, reason: firstLine_(body) };
+  } catch (err) {
+    console.log('LINE 推播連線失敗：' + err);
+    return { ok: false, code: 0, reason: String(err) };
+  }
+}
+
+/**
+ * ADR-009 C5 的動工前置驗證——在編輯器裡選這個函式按「執行」，看執行記錄。
+ *
+ * 對象的挑法：優先讀指令碼屬性 PUSH_TEST_TO；沒設就從 line_users 抓第一位
+ * 啟用中的管理者。後者的用意是「不必為了跑一次測試先去設一個屬性」，而管理者
+ * 本來就是會被這件事吵到的人。
+ *
+ * 判讀：
+ *   HTTP 200 → push 可行，C5 通知功能照 ADR 實作
+ *   HTTP 400 → 多半是對象 userId 不對，或對方沒有加官方帳號為好友
+ *   HTTP 401 → 權杖問題，先跑 diagnoseLineToken()
+ *   HTTP 429 → 配額用完，這正是 ADR 說「若則數不敷使用再重新評估 Web Push」的訊號
+ */
+function testLinePush() {
+  var target = PropertiesService.getScriptProperties().getProperty('PUSH_TEST_TO');
+  target = target ? String(target).trim() : '';
+
+  if (!target) {
+    var roster = readLineUsers_();
+    if (!roster.ok) {
+      console.log('❌ 沒設指令碼屬性 PUSH_TEST_TO，且讀不到 line_users（' + roster.reason + '）');
+      return { ok: false, reason: 'no_target' };
+    }
+    Object.keys(roster.users).some(function (id) {
+      var u = roster.users[id];
+      if (truthy_(u.is_active) && truthy_(u.is_admin)) { target = id; return true; }
+      return false;
+    });
+  }
+
+  if (!target) {
+    console.log('❌ 找不到推播對象：line_users 裡沒有啟用中的管理者，也沒設 PUSH_TEST_TO');
+    return { ok: false, reason: 'no_target' };
+  }
+
+  console.log('推播對象：' + target.slice(0, 6) + '…（' + target.length + ' 字元）');
+  var result = linePush_(target, '【ADR-009 推播測試】看到這則訊息，代表 push 端點可用，週期提醒的通知管道確定走 LINE Push。');
+
+  if (result.ok) {
+    console.log('✅ push 可行。ADR-009 C5 條件式決策的條件成立，通知功能照規格實作。');
+  } else {
+    console.log('❌ push 不可行（' + (result.code || '連線失敗') + '）。依 ADR-009 C5：');
+    console.log('   通知這塊移入未來票，C1-C4 到期追蹤與區塊視覺化照常上線，不連帶延後。');
+  }
+  return result;
 }
 
 /* ========================================================================== */

@@ -275,6 +275,8 @@ sw.js           Service Worker（離線快取）
 icon-192.png    App icon 192x192
 icon-512.png    App icon 512x512
 apps-script/    Apps Script 端程式碼（Code.gs 同步 + line-router.gs LINE 路由）
+scripts/        本機與 CI 共用的閘門（密鑰掃描、clasp preflight）
+tests/          後端單元測試（`npm test`），跑的是 apps-script/Code.gs 本人
 ```
 
 ## 開發須知
@@ -286,6 +288,18 @@ apps-script/    Apps Script 端程式碼（Code.gs 同步 + line-router.gs LINE 
 設定方式：Repo → Settings → Secrets and variables → Actions，新增 `CLOUD_URL`、`CLOUD_SECRET` 兩個 Repository secret；並把 Settings → Pages → Build and deployment → Source 切成「GitHub Actions」（原本若是「Deploy from a branch」要一併關掉，避免兩邊搶著部署）。
 
 > 注意：即使密鑰不進 git，部署出去的頁面原始碼裡還是看得到（純前端架構無法真正隱藏密鑰），這個設計只解決「密鑰留在 git history 裡」的問題，不是解決「密鑰對外不可見」——真正解法是密鑰一旦外流就要重新產生。
+
+### 後端單元測試
+
+```bash
+npm test        # node --test，內建，不需要任何相依套件
+```
+
+`tests/fake-apps-script.mjs` 把 `apps-script/Code.gs` **整份**載進一個假的 Apps Script 環境再測——Sheet 是二維陣列，列號語意（1-based、含表頭偏移、刪列會把下面的列往上位移）與真的一致。刻意不把邏輯抄一份出來測：兩份實作遲早會漂移，那時候測到的就不是上線那份了。
+
+這道閘門同時掛在 CI 的 Apps Script job 上，擋在 `clasp push` **前面**——「測試失敗不部署」，部署成功不能拿來當驗收。
+
+假環境有一個非直覺處，動它之前先知道：`vm` 開的是另一個 realm，裡面造出來的陣列跟外面的 `Array.prototype` 不是同一個，結構一樣的兩個陣列 `deepStrictEqual` 仍會判定不相等。所以 `call()` 與 `read()` 在邊界上做了一次結構複製（`toHost`），而且複製陣列要用外面這一側的 `Array.from`——對面陣列的 `.map()` 依 species 造出來的還是對面的陣列。
 
 ### Apps Script 的部署管道（ADR-007 Part B）
 
@@ -358,3 +372,10 @@ Apps Script 與 Pages 分成兩個 job：認證與 scriptId 完全不會進到 P
   - ⏳ 未來票：功能矩陣欄位若持續增加，是否改為正規化的多對多關聯表
   - ⏳ 未來票：任何白名單內的人繞過前端就能改 `line_users`（管理頁只靠前端 `is_admin` 隱藏）——與 E-2 同一套安全深淺，前提一變就是第一個要補後端驗證的地方
   - ⏳ 未來票：`doGet` 讀取層的驗證強化（與 ADR-007 未來票同一個根，本次刻意不處理）
+- **ADR-009**（依 [ADR-009]，2026-09-16）：🚧 Phase 0 完成，等 Neil 確認測試報告後才動工
+  - ✅ Phase 0：`upsertRow_` 擴充複合鍵（`review_date`＋`line_id`，reviews 沒有 `id` 欄）、墓碑過濾 `withoutTombstones_`、兩段式封存 `tombstoneRows_`／`purgeTombstoneRows_`、欄位安裝 `ensureAdr009Columns()`、LINE Push 前置驗證 `testLinePush()`
+  - ✅ Phase 0：後端單元測試 27 項（含兩次突變測試，確認測試真的抓得到回歸），並接進 CI 擋在 `clasp push` 前面。報告見 [`tests/ADR-009-phase0-test-report.md`](tests/ADR-009-phase0-test-report.md)
+  - ⚠️ **新函式目前全部沒有呼叫端，是刻意的**。ADR-009「待其他環境知道的事 #1」要求測試先行、報告經確認才准接手既有模組的讀寫路徑，不可以先動工、測試事後補。唯二會執行的是 `ensureAdr009Columns()` 與 `testLinePush()`，兩支都要在 Apps Script 編輯器手動跑（比照 `diagnoseLineUsers()`）
+  - 📌 實作時發現、ADR 沒寫到的：Sheet 讀回來的 `review_date` 是 Date 物件、前端送的是 `YYYY-MM-DD` 字串，不正規化的話複合鍵永遠對不上，每次 upsert 都退化成 append——與安全性改善計畫的 DATA-05 同一個根。取本地年月日而非 `toISOString()`（UTC 在 UTC+8 會算成前一天）
+  - ⏳ Phase 2（待確認後施工）：`doGet` 過濾 `del=true`、五個模組改即時單筆 upsert、15 秒輪詢＋手動刷新、共用白板、週期提醒、`ScriptApp.newTrigger()` 安裝函式
+  - ⚠️ 待裁決：與 `codex/security-sync-hardening-20260916` 分支的 DATA-01／DATA-03／tombstone 範圍重疊，Phase 2 動工前要先決定兩條線怎麼合
