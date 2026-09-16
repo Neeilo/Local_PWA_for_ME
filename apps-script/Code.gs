@@ -249,8 +249,19 @@ function diagnoseLineUsers() {
 }
 
 // ===== 讀取：GET /exec?sheet=tasks =====
+/**
+ * 墓碑由**後端**濾掉，不指望前端自己 filter（ADR-009 待其他環境知道的事 #4）。
+ *
+ * 為什麼是後端的責任：前端有好幾條讀取路徑（輪詢、手動刷新、啟動載入），
+ * 每條都記得濾一次才會對，漏掉任何一條，已刪除的項目就會從那條路徑跑回畫面上。
+ * 擋在唯一的出口，就不需要任何人記得。
+ *
+ * ?only=tombstones 反過來只回墓碑，那是封存第一段要匯出的東西——它們被預設
+ * 過濾掉之後，前端再也看不到，所以得留一扇專門的門。
+ */
 function doGet(e) {
-  const sheetName = e.parameter.sheet;
+  const params = (e && e.parameter) || {};
+  const sheetName = params.sheet;
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(sheetName);
   if (!sheet) return jsonOut({ error: 'sheet_not_found', sheet: sheetName });
@@ -264,7 +275,11 @@ function doGet(e) {
     headers.forEach((h, i) => obj[h] = row[i]);
     return obj;
   });
-  return jsonOut({ data: rows });
+
+  if (String(params.only || '').trim() === 'tombstones') {
+    return jsonOut({ data: rows.filter(isTombstone_) });
+  }
+  return jsonOut({ data: withoutTombstones_(rows) });
 }
 
 // ===== 寫入：POST body = { secret, sheet, action, ... } =====
@@ -289,12 +304,35 @@ function handlePwaSync_(e) {
   const sheet = ss.getSheetByName(body.sheet);
   if (!sheet) return jsonOut({ error: 'sheet_not_found' });
 
-  if (body.action === 'append') {
+  // 'upsert' 是 ADR-009 之後的正名，'append' 是 ADR-007／008 留下的舊名。
+  // 兩個都收：PWA 是快取在使用者裝置上的，舊版前端會存活到他下次開啟 App 為止，
+  // 這段期間送上來的仍然是 'append'。改名不該讓那些人的同步安靜地壞掉。
+  if (body.action === 'upsert' || body.action === 'append') {
     const headers = sheetHeaders_(sheet);
-    // key_field 讓 line_users 這種以 line_id 為鍵的分頁也能走同一套 upsert
+    // key_field 可以是字串或陣列：line_users 用 'line_id'，reviews 用
+    // ['review_date','line_id']（那張表沒有 id 欄，ADR-009 §一.5）
     const out = upsertRow_(sheet, headers, body.record || {}, body.sheet, body.key_field);
     if (body.sheet === LINE_USERS_SHEET) invalidateLineUsersCache_();
     return jsonOut(out);
+  }
+
+  /**
+   * 封存第二段（ADR-009 §一.4）：前端回報「已成功下載」之後，才真的刪。
+   *
+   * 送上來的 keys 是第一段（?only=tombstones）匯出的那一批。後端不信任這份清單
+   * 本身——purgeTombstoneRows_ 會再確認每一列此刻仍然是墓碑才動手。清單空的
+   * 就什麼都不刪。
+   */
+  if (body.action === 'archivePurge') {
+    if (NO_REPLACE_ALL.indexOf(body.sheet) !== -1) {
+      console.log('🚫 拒絕對分頁「' + body.sheet + '」做 archivePurge：它不歸前端管');
+      return jsonOut({ error: 'sheet_not_purgeable', sheet: body.sheet });
+    }
+    const headers = sheetHeaders_(sheet);
+    const out = purgeTombstoneRows_(sheet, headers, body.sheet, body.key_field, body.keys || []);
+    return jsonOut({
+      success: true, deleted: out.deleted, rows: out.rows, skipped: out.skipped
+    });
   }
 
   if (body.action === 'replaceAll') {
