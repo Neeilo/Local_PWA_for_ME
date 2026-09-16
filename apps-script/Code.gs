@@ -680,3 +680,165 @@ function ensureAdr009Columns() {
   console.log('—— ADR-009 欄位安裝完成。此函式可重複執行，已存在的欄位不會被動到。');
   return summary;
 }
+
+/* ========================================================================== */
+/* ADR-009 §四 — 週期提醒的日期算法（Phase 2 純邏輯，仍未接線）                 */
+/*                                                                            */
+/* 一樣沒有呼叫端。這一段是「不會跟 security 分支對撞」的那一半：全新程式碼、    */
+/* 純函式、不碰任何既有讀寫路徑。同步層的重寫等那條分支進來再做。                */
+/*                                                                            */
+/* 算法歸後端而不是前端，理由同「待其他環境知道的事 #4」：同一套規則有兩份實作， */
+/* 遲早漂移，而漂移的那天沒有人會收到通知——它只會安靜地算錯日期。              */
+/* ========================================================================== */
+
+/** 週期單位。刻意不開放秒／分鐘／小時（ADR-009 §四），沒有真實需求撐著 */
+var RECUR_UNITS = {
+  '天': 'day',   'day': 'day',     'days': 'day',
+  '週': 'week',  'week': 'week',   'weeks': 'week',
+  '月': 'month', 'month': 'month', 'months': 'month',
+  '年': 'year',  'year': 'year',   'years': 'year'
+};
+
+/** 防呆上限。正常資料跑不到這個數，跑到了代表輸入有問題，寧可回空也不要無窮迴圈 */
+var RECUR_MAX_STEPS = 5000;
+
+/**
+ * 把 'YYYY-MM-DD' 轉成 Date。
+ *
+ * 取當地中午而不是午夜：午夜是日界線，任何一點時區或日光節約的偏移都會讓日期
+ * 掉到前一天。台北沒有日光節約，但這支函式不該只在台北才是對的。
+ */
+function parseDateKey_(key) {
+  var s = keyValue_(key);
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  var d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0, 0);
+  // new Date(2026, 1, 31) 會自己滾成 3/3。滾掉了就代表原本那個日期不存在。
+  if (d.getFullYear() !== Number(m[1]) || d.getMonth() !== Number(m[2]) - 1 ||
+      d.getDate() !== Number(m[3])) return null;
+  return d;
+}
+
+/** 那個月有幾天。用「下個月的第 0 天」問，比自己記閏年規則可靠 */
+function daysInMonth_(year, monthIndex) {
+  return new Date(year, monthIndex + 1, 0).getDate();
+}
+
+/**
+ * 加一個週期。
+ *
+ * ⚠️ 月與年要夾住月底，否則 1/31 + 1 個月會變成 3/3——JavaScript 的 Date 會把
+ * 不存在的 2/31 自己往後滾，而那是靜默的：使用者只會看到「我的月底提醒跑到
+ * 三月初了」，不會有任何錯誤訊息。夾到 2/28（閏年 2/29）才是月結提醒該有的樣子。
+ */
+function addPeriod_(date, interval, unit) {
+  var y = date.getFullYear(), m = date.getMonth(), d = date.getDate();
+
+  if (unit === 'day')  return new Date(y, m, d + interval, 12, 0, 0, 0);
+  if (unit === 'week') return new Date(y, m, d + interval * 7, 12, 0, 0, 0);
+
+  var months = (unit === 'year') ? interval * 12 : interval;
+  var total = y * 12 + m + months;
+  var ny = Math.floor(total / 12), nm = total % 12;
+  return new Date(ny, nm, Math.min(d, daysInMonth_(ny, nm)), 12, 0, 0, 0);
+}
+
+/**
+ * 下一期的到期日（ADR-009 §四）。
+ *
+ * 規則是「**原訂到期日** + 週期」，不是「完成當下 + 週期」——每月 5 號繳費的人
+ * 拖到 20 號才打勾，下一期仍然是下個月 5 號，不會被拖成 20 號。這是刻意的：
+ * 週期提醒追的是那件事本身的節奏，不是使用者的手速。
+ *
+ * 算出來仍在過去就持續累加，直到落在今天或之後（擱置很久的項目一次追回來，
+ * 不會生出一串已經過期的新列）。
+ *
+ * ⚠️ 已知限制：月底的錨點會漂移。1/31 的下一期被夾成 2/28 之後，再下一期是
+ * 3/28 而不是 3/31——因為每一期只把「上一期的 due_date」傳下去，ADR 說的那個
+ * 「原訂到期日」在第一次夾值之後就遺失了。修法需要一個記住原始錨點的欄位，
+ * 而那是 ADR 欄位清單之外的 schema 決策，未經裁決前不自行擴充。
+ *
+ * 回空字串代表「沒有下一期」：沒設週期、週期不合法、或單位不認得。呼叫端看到
+ * 空字串就當一次性項目處理，不要自己補預設值。
+ */
+function nextDueDate_(baseDue, interval, unit, todayKey) {
+  var base = parseDateKey_(baseDue);
+  if (!base) return '';
+
+  var n = Number(interval);
+  if (!isFinite(n) || n <= 0 || Math.floor(n) !== n) return '';
+
+  var u = RECUR_UNITS[keyValue_(unit)];
+  if (!u) return '';
+
+  var today = parseDateKey_(todayKey) || new Date();
+  var next = addPeriod_(base, n, u);
+  var steps = 0;
+  while (next < today && steps < RECUR_MAX_STEPS) {
+    next = addPeriod_(next, n, u);
+    steps++;
+  }
+  if (steps >= RECUR_MAX_STEPS) {
+    console.log('nextDueDate_ 累加超過上限就停手了：base=' + baseDue +
+                ' interval=' + interval + ' unit=' + unit);
+    return '';
+  }
+  return keyValue_(next);
+}
+
+/**
+ * 到期區塊（ADR-009 §四）。
+ *
+ * 做區塊分類而不是對逐筆項目疊顏色燈號，是為了不跟既有 priority 的紅黃綠燈
+ * 撞語意——同一列同時有兩種顏色，使用者只會困惑哪個才算數。
+ *
+ * ⚠️ ADR 寫的是「1 天／3 天／5 天／7 天以上四個門檻」，但 1/3/5 之後的第四塊
+ * 若是「7 天以上」，第 6 天就沒有歸屬。這裡採唯一能整除這四塊的讀法：
+ * ≤1／≤3／≤5／其餘。已過期也沒寫，另外回 'overdue' 讓呼叫端自己決定要獨立
+ * 一塊還是併進最急那塊——把它塞進「1 天內」會是假話。兩點都已列進報告請 Neil 裁。
+ */
+var DUE_THRESHOLDS = [
+  { key: 'd1', maxDays: 1 },
+  { key: 'd3', maxDays: 3 },
+  { key: 'd5', maxDays: 5 }
+];
+var DUE_BUCKET_LATER = 'later';
+
+/** 兩個日期相差幾天（負數代表已過期）。以當地中午相減，不受時區小數影響 */
+function daysUntil_(dueKey, todayKey) {
+  var due = parseDateKey_(dueKey), today = parseDateKey_(todayKey);
+  if (!due || !today) return null;
+  return Math.round((due - today) / 86400000);
+}
+
+function dueBucket_(dueKey, todayKey) {
+  var days = daysUntil_(dueKey, todayKey);
+  if (days === null) return '';          // 沒設到期日的一般任務，不落入任何區塊
+  if (days < 0) return 'overdue';
+  for (var i = 0; i < DUE_THRESHOLDS.length; i++) {
+    if (days <= DUE_THRESHOLDS[i].maxDays) return DUE_THRESHOLDS[i].key;
+  }
+  return DUE_BUCKET_LATER;
+}
+
+/** 會觸發通知的區塊：跨進「3 天內」這條紅燈門檻（含已過期） */
+var NOTIFY_BUCKETS = { overdue: true, d1: true, d3: true };
+
+/**
+ * 這一列現在該不該推通知（ADR-009 C5）。
+ *
+ * 只推一次：跨進 3 天門檻的當下發送，之後靠 notified 旗標擋掉重複。新一期是
+ * 新增的一列，旗標天生為空，所以不需要任何重置邏輯——這是「完成後新增一列」
+ * 而不是「原地改 due_date」換來的好處。
+ *
+ * 已完成、已軟刪除的一律不推。沒有 line_id 也不推：ADR 說通知送給該筆任務的
+ * owner，沒有 owner 就沒有收件人，硬推會推給錯的人。
+ */
+function shouldNotify_(record, todayKey) {
+  if (!record) return false;
+  if (truthy_(record.is_completed)) return false;
+  if (isTombstone_(record)) return false;
+  if (truthy_(record.notified)) return false;
+  if (!keyValue_(record.line_id)) return false;
+  return !!NOTIFY_BUCKETS[dueBucket_(record.due_date, todayKey)];
+}
