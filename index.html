@@ -450,6 +450,14 @@
   .adm-sec{font-size:12px; color:var(--muted); margin:10px 0 6px;}
 
   @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important;} }
+.sync-badge{
+  margin-top:6px; display:inline-block; padding:3px 10px; border-radius:999px;
+  font-size:12px; background:rgba(255,176,32,.16); color:#b26b00;
+  border:1px solid rgba(255,176,32,.35);
+}
+@media (prefers-color-scheme: dark){
+  .sync-badge{ background:rgba(255,176,32,.14); color:#ffc766; }
+}
 </style>
 </head>
 <body>
@@ -467,6 +475,9 @@
 <header>
   <div class="eyebrow" id="todayLabel"></div>
   <h1 id="viewTitle">首頁</h1>
+  <!-- 送不出去的東西要看得見。改版前整包 replaceAll 天生有重試，失敗是無感的；
+       改成單筆之後，沒有這一行就沒有人知道有東西卡著（DATA-02）。 -->
+  <div class="sync-badge" id="syncBadge" hidden></div>
   <div class="pulse" id="pulse"></div>
   <div class="pulse-label" id="pulseLabel">近 14 天心情脈搏</div>
 </header>
@@ -643,7 +654,7 @@
   </section>
 
   <!-- LOG：LINE 快速輸入的交易記錄（ADR-006 §C／§D）
-       資料唯讀、進頁即時抓，刻意不進 state、不進 localStorage、不進 pushAllToCloud——
+       資料唯讀、進頁即時抓，刻意不進 state、不進 localStorage、不進待送佇列——
        前端存檔是整包 replaceAll，一旦回推就會把 Apps Script 寫的記錄整包洗掉。 -->
   <section class="view" id="view-logs">
     <div id="logSummary"></div>
@@ -685,8 +696,7 @@ const MOOD_EMOJI = ['😞','😕','😐','🙂','😄'];
    同一側的排列順序依 NAV_ITEMS 的定義順序，不另外提供拖曳排序：手機上的拖曳
    很難做得好用，而這裡要解決的是「慣用手拿不拿得到」，左右歸屬就足夠了。
 
-   狀態存獨立的 localStorage key，刻意不放進 state——state 會被 pushAllToCloud
-   整包推上雲端，而這是介面偏好，不需跨裝置一致。 */
+   狀態存獨立的 localStorage key，刻意不放進 state——state 的每一列都會被送上雲端，而這是介面偏好，不需跨裝置一致。 */
 const NAV_PLACEMENT_KEY = 'personal-os-nav-placement';
 const NAV_SLOT_KEY_LEGACY = 'personal-os-nav-slot';   // 舊的單選版位，僅供一次性遷移
 const NAV_SIDE_LIMIT = 3;
@@ -905,7 +915,7 @@ function pickIdentity(i){
   toast('哈囉，'+rosterName(u));
   // 身份定了才推得上去。先 pull 補齊再 push，否則整包 replaceAll 會蓋掉
   // 這支手機還沒收到的雲端資料——跟 save() 等 pull 是同一個理由。
-  syncFromCloud().then(pushAllToCloud);
+  syncFromCloud().then(pushAllRows);
 }
 function switchIdentity(){
   openIdentityGate('');
@@ -965,15 +975,22 @@ function claimOrphans(){
   const n=orphanCount();
   if(!n) return;
   if(!confirm(`把這支手機上 ${n} 筆沒有歸屬的舊資料標記成你的？\n只會影響「只看我的」的篩選結果，不會動到內容。`)) return;
+  const pushers={tasks:pushTask, moods:pushMood, notes:pushNote, expenses:pushExpense};
   ['tasks','moods','notes','expenses'].forEach(k=>{
-    (state[k]||[]).forEach(r=>{ if(!String(r.line_id||'').trim()) r.line_id=myLineId; });
+    (state[k]||[]).forEach(r=>{
+      if(String(r.line_id||'').trim()) return;
+      r.line_id=myLineId;
+      pushers[k](r);                       // 認領改的是資料，不送上去就只有這支手機知道
+    });
   });
   // 日誌要連鍵一起搬，不能只改欄位
   claimableReviewKeys().forEach(k=>{
     const r=state.reviews[k];
     r.line_id=myLineId;
     delete state.reviews[k];
-    state.reviews[reviewKey(reviewDateOf(k), myLineId)]=r;
+    const nk=reviewKey(reviewDateOf(k), myLineId);
+    state.reviews[nk]=r;
+    pushReview(nk);
   });
   save(); applyIdentity(); toast(`已認領 ${n} 筆`);
 }
@@ -1098,7 +1115,7 @@ function cloudUpsert(sheet, record, keyField){
   return fetch(CLOUD_URL,{
     method:'POST',
     headers:{'Content-Type':'text/plain'},
-    body:JSON.stringify({secret:CLOUD_SECRET, line_id:myLineId, sheet, action:'append', key_field:keyField, record})
+    body:JSON.stringify({secret:CLOUD_SECRET, line_id:myLineId, sheet, action:'upsert', key_field:keyField, record})
   }).then(r=>r.json()).then(j=>!!(j&&j.success)).catch(()=>false);
 }
 
@@ -1112,7 +1129,7 @@ let selectedNoteTag = null;
 /* ---------- LOG 頁（ADR-006 §C／§D） ---------- */
 const LOG_SOURCES = ['任務','記帳','收入','查詢','註冊'];
 const LOG_WINDOW_DAYS = 7;
-// 抓回來的記錄只活在記憶體裡：不進 state、不寫 localStorage、不進 pushAllToCloud
+// 抓回來的記錄只活在記憶體裡：不進 state、不寫 localStorage、不進待送佇列
 let logsCache = null;
 let logsLoading = false;
 let logsFailed = false;
@@ -1270,14 +1287,14 @@ function migrate(){
   }
 }
 let saveTimer=null;
+/* 只寫本機了——雲端那一半改由各模組自己送單筆 upsert（ADR-009 §一.2）。
+   localStorage 從「權威來源」降級成「還沒送出去的東西的落腳處」：畫面的真相
+   在雲端，但你剛打的字在送出去之前只存在這支手機上，那一段不能沒有地方放。 */
 function save(){
   clearTimeout(saveTimer);
   saveTimer=setTimeout(()=>{
     try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); }
     catch(e){ toast('⚠️ 儲存失敗，空間可能已滿'); }
-    // pushAllToCloud 是整包 replaceAll，若在 pull 補齊前送出，
-    // 會用尚未含雲端新資料的本機 state 覆寫雲端。等 pull 收工再推。
-    Promise.resolve(pullPromise).then(pushAllToCloud);
   },250);
 }
 
@@ -1287,16 +1304,93 @@ function save(){
 function cloudGet(sheet){
   return fetch(`${CLOUD_URL}?sheet=${sheet}`).then(r=>r.json()).then(j=>j.data||[]).catch(()=>[]);
 }
-function cloudReplaceAll(sheet,headers,records){
-  // line_id 一起送：密鑰只證明「這是我們家的 App」，證明不了「這是誰」，
-  // 後端的 writeGate_ 要靠它查白名單（ADR-008 D-2）。
+/* ---------- 待送佇列（ADR-009 §一.2 的落地方式） ----------
+   即時單筆 upsert 解掉了 DATA-01（多裝置整包覆蓋互相抹除），但它自己帶來一個
+   新問題：送不出去的時候怎麼辦。舊架構是整包 replaceAll，下一次存檔會把先前
+   沒送成的一起帶上去，等於天生有重試；改成單筆之後，一次失敗就是那一筆永遠
+   不見——在捷運上打的那則雜記，回到地面也不會自己補上。
+
+   所以寫入一律先進這個佇列、再送。佇列本身存 localStorage，關掉 App 也還在。
+   這不是 ADR 寫的東西，是不加就會**比改版前更糟**的東西：改版前至少 localStorage
+   那份還在，下次存檔會重送。 */
+const OUTBOX_KEY='personal-os-outbox-v1';
+const OUTBOX_MAX=1000;          // 滿了丟最舊的。真的塞到這個數，問題不在佇列大小
+let outbox=loadOutbox(), outboxSeq=0, outboxFlushing=false;
+
+/** 一筆待送工作的身分。同一張表、同一個鍵，佇列裡只該有一筆 */
+function outboxJobKey(job){
+  const keys=Array.isArray(job.key_field)?job.key_field:[job.key_field||'id'];
+  const rec=job.record||{};
+  return job.sheet+'::'+keys.map(k=>String(rec[k]==null?'':rec[k]).trim()).join('|');
+}
+
+/** 排進佇列：同鍵的舊工作直接被取代，位置不動。
+    連按五次的那五筆不該送五次——最後一次編輯才是真相，前四次送上去只是浪費配額。 */
+function outboxAdd(list, job){
+  const key=outboxJobKey(job);
+  const out=list.slice();
+  const at=out.findIndex(j=>outboxJobKey(j)===key);
+  if(at>=0) out[at]=job; else out.push(job);
+  return out.length>OUTBOX_MAX ? out.slice(out.length-OUTBOX_MAX) : out;
+}
+
+/** 送成功後移除。比對 seq 而不只比對鍵：送出去的期間使用者可能又改了同一筆，
+    那筆新的已經把舊的換掉了，這時候把它一起刪掉會讓最新的編輯消失。 */
+function outboxRemove(list, job){
+  return list.filter(j=>!(outboxJobKey(j)===outboxJobKey(job) && j.seq===job.seq));
+}
+
+function loadOutbox(){
+  try{ const raw=localStorage.getItem(OUTBOX_KEY); const v=raw?JSON.parse(raw):[];
+       return Array.isArray(v)?v:[]; }catch(e){ return []; }
+}
+function persistOutbox(){
+  try{ localStorage.setItem(OUTBOX_KEY, JSON.stringify(outbox)); }catch(e){}
+}
+
+/** 排一筆寫入，然後試著送。沒有身份就只排不送——後端本來也會擋，
+    但先擋在這裡，logs 才不會被一整排「被拒絕」淹掉（同 ADR-008 的既有考量）。 */
+function queueUpsert(sheet, record, keyField){
+  outbox=outboxAdd(outbox, {sheet, record, key_field:keyField||'id', seq:++outboxSeq, at:Date.now()});
+  persistOutbox();
+  return flushOutbox();
+}
+
+function sendJob(job){
   return fetch(CLOUD_URL,{
     method:'POST',
     headers:{'Content-Type':'text/plain'},
-    body:JSON.stringify({secret:CLOUD_SECRET, line_id:myLineId||'', sheet, action:'replaceAll', headers, records})
-  }).then(r=>r.json());
+    body:JSON.stringify({secret:CLOUD_SECRET, line_id:myLineId||'', sheet:job.sheet,
+                         action:'upsert', key_field:job.key_field, record:job.record})
+  }).then(r=>r.json()).then(j=>!!(j&&j.success)).catch(()=>false);
 }
-function taskToCloud(t){ return {id:String(t.id), text:t.txt, is_completed:!!t.done, created_at:new Date(t.ts).toISOString(), priority:t.priority||DEFAULT_PRIORITY, line_id:t.line_id||''}; }
+
+/** 一次送一筆、依序送。刻意不併發：同一張 Sheet 併發寫入正是這次要根治的那類問題。 */
+function flushOutbox(){
+  if(outboxFlushing || !outbox.length || !myLineId || localOnly) return Promise.resolve(false);
+  outboxFlushing=true;
+  const job=outbox[0];
+  return sendJob(job).then(ok=>{
+    outboxFlushing=false;
+    if(!ok){ renderSyncBadge(); return false; }
+    outbox=outboxRemove(outbox, job);
+    persistOutbox();
+    renderSyncBadge();
+    return outbox.length ? flushOutbox() : true;
+  });
+}
+
+/** 還有幾筆沒送出去。給畫面用，也給「關掉前先等一下」的判斷用 */
+function pendingCount(){ return outbox.length; }
+
+function renderSyncBadge(){
+  const el=document.getElementById('syncBadge');
+  if(!el) return;
+  const n=pendingCount();
+  el.hidden=!n;
+  el.textContent=n?('⏳ '+n+' 筆待同步'):'';
+}
+function taskToCloud(t){ return {id:String(t.id), text:t.txt, is_completed:!!t.done, created_at:new Date(t.ts).toISOString(), priority:t.priority||DEFAULT_PRIORITY, line_id:t.line_id||'', del:t.del?'TRUE':''}; }
 function taskFromCloud(r){
   const p=String(r.priority||'').toUpperCase();
   return {id:Number(r.id)||Date.now(), txt:r.text||'', done:r.is_completed===true||r.is_completed==='TRUE'||r.is_completed==='true',
@@ -1307,7 +1401,7 @@ function taskFromCloud(r){
 function expenseToCloud(e){
   return {id:String(e.id), expense_date:e.date, type:e.type, category:e.category,
           amount:e.amount, note:e.note||'', created_at:new Date(e.ts).toISOString(),
-          line_id:e.line_id||''};
+          line_id:e.line_id||'', del:e.del?'TRUE':''};
 }
 function expenseFromCloud(r){
   return {id:Number(r.id)||Date.now(),
@@ -1318,33 +1412,48 @@ function expenseFromCloud(r){
           ts:r.created_at?new Date(r.created_at).getTime():Date.now(),
           line_id:String(r.line_id||'').trim()};
 }
-function moodToCloud(m){ return {id:String(m.id), mood_date:todayKey(new Date(m.ts)), level:m.level, note:m.note||'', line_id:m.line_id||''}; }
+function moodToCloud(m){ return {id:String(m.id), mood_date:todayKey(new Date(m.ts)), level:m.level, note:m.note||'', line_id:m.line_id||'', del:m.del?'TRUE':''}; }
 function moodFromCloud(r){ return {id:Number(r.id)||Date.now(), level:Number(r.level), note:r.note||'', ts:r.mood_date?new Date(r.mood_date).getTime():Date.now(), line_id:String(r.line_id||'').trim()}; }
-function noteToCloud(n){ return {id:String(n.id), text:n.txt, created_at:new Date(n.ts).toISOString(), line_id:n.line_id||''}; }
+function noteToCloud(n){ return {id:String(n.id), text:n.txt, created_at:new Date(n.ts).toISOString(), line_id:n.line_id||'', del:n.del?'TRUE':''}; }
 function noteFromCloud(r){ return {id:Number(r.id)||Date.now(), txt:r.text||'', ts:r.created_at?new Date(r.created_at).getTime():Date.now(), line_id:String(r.line_id||'').trim()}; }
 
-function pushAllToCloud(){
-  // 沒有身份就不推。後端本來就會擋（ADR-008 D-2），先在這裡擋一層是為了不要每次
-  // 存檔都在 logs 留五列「被拒絕」——那會把真正該看的記錄淹掉。本機那份已經存好了，
-  // 選完身份後 pickIdentity() 會補推一次，資料不會掉。
-  if(!myLineId) return;
+/* ---------- 各模組的單筆送出（取代整包 replaceAll） ----------
+   每個變動點改成只送自己那一筆。整張表不再有「被某支手機的快照覆蓋」這個動作，
+   DATA-01 因此不是被防住，是不存在了。 */
+function pushTask(t){ return queueUpsert('tasks', taskToCloud(t)); }
+function pushMood(m){ return queueUpsert('moods', moodToCloud(m)); }
+function pushNote(n){ return queueUpsert('notes', noteToCloud(n)); }
+function pushExpense(e){ return queueUpsert('expenses', expenseToCloud(e)); }
 
-  // 這裡永遠不該出現 'logs' 或 'line_users'：前者是 Apps Script 單向寫入的記錄，
-  // 後者是白名單本身——任一被整包 replaceAll 推回去都會被洗掉（ADR-006 §C／ADR-008）。
-  // 欄序即表頭：replaceAll 會用這份 headers 重寫表頭列，所以 line_id 一律補在最後一欄。
-  const p1=cloudReplaceAll('tasks',['id','text','is_completed','created_at','priority','line_id'], state.tasks.map(taskToCloud));
-  const p2=cloudReplaceAll('reviews',['review_date','good','stuck','most_important','line_id'],
-    Object.keys(state.reviews).map(k=>({
-      review_date:reviewDateOf(k),                 // 分頁存的是純日期，組合鍵只活在本機
-      good:state.reviews[k].good||'', stuck:state.reviews[k].stuck||'',
-      most_important:state.reviews[k].next||'',
-      line_id:state.reviews[k].line_id||reviewOwnerOf(k)
-    })));
-  const p3=cloudReplaceAll('moods',['id','mood_date','level','note','line_id'], state.moods.map(moodToCloud));
-  const p4=cloudReplaceAll('notes',['id','text','created_at','line_id'], state.notes.map(noteToCloud));
-  const p5=cloudReplaceAll('expenses',['id','expense_date','type','category','amount','note','created_at','line_id'],
-    state.expenses.map(expenseToCloud));
-  Promise.all([p1,p2,p3,p4,p5]).catch(()=>{});
+/* reviews 沒有 id 欄，鍵是「日期＋寫的人」的複合鍵（ADR-009 §一.5）。
+   分頁存的是純日期，組合鍵只活在本機——這是 ADR-008 延伸就定下的分工。 */
+function pushReview(key){
+  const r=state.reviews[key]; if(!r) return Promise.resolve(false);
+  return queueUpsert('reviews', {
+    review_date:reviewDateOf(key),
+    good:r.good||'', stuck:r.stuck||'', most_important:r.next||'',
+    line_id:r.line_id||reviewOwnerOf(key),
+    del:r.del?'TRUE':''
+  }, ['review_date','line_id']);
+}
+
+/* 選完身份後的補推：身份確定之前寫的東西一筆都沒送出去過。
+   逐筆排進佇列，依序送。比 replaceAll 慢得多——但慢的是這一次性的補推，
+   換掉的是「每次存檔都整包覆蓋」這個天天都在發生的風險，划算。 */
+function pushAllRows(){
+  if(!myLineId) return Promise.resolve(false);
+  state.tasks.forEach(t=>{ outbox=outboxAdd(outbox,{sheet:'tasks',record:taskToCloud(t),key_field:'id',seq:++outboxSeq,at:Date.now()}); });
+  state.moods.forEach(m=>{ outbox=outboxAdd(outbox,{sheet:'moods',record:moodToCloud(m),key_field:'id',seq:++outboxSeq,at:Date.now()}); });
+  state.notes.forEach(n=>{ outbox=outboxAdd(outbox,{sheet:'notes',record:noteToCloud(n),key_field:'id',seq:++outboxSeq,at:Date.now()}); });
+  state.expenses.forEach(e=>{ outbox=outboxAdd(outbox,{sheet:'expenses',record:expenseToCloud(e),key_field:'id',seq:++outboxSeq,at:Date.now()}); });
+  Object.keys(state.reviews||{}).forEach(k=>{
+    const r=state.reviews[k];
+    outbox=outboxAdd(outbox,{sheet:'reviews',key_field:['review_date','line_id'],seq:++outboxSeq,at:Date.now(),
+      record:{review_date:reviewDateOf(k), good:r.good||'', stuck:r.stuck||'', most_important:r.next||'',
+              line_id:r.line_id||reviewOwnerOf(k), del:r.del?'TRUE':''}});
+  });
+  persistOutbox(); renderSyncBadge();
+  return flushOutbox();
 }
 
 /* 統一的 pull 入口：同一時間只允許一個 pull 在跑，並記下完成時間，
@@ -1446,13 +1555,14 @@ function addTask(){
   const inp=document.getElementById('taskInput');
   const txt=inp.value.trim();
   if(!txt) return;
-  state.tasks.unshift({id:Date.now(),txt,done:false,ts:Date.now(),priority:newTaskPriority,line_id:myLineId||''});
+  const t={id:Date.now(),txt,done:false,ts:Date.now(),priority:newTaskPriority,line_id:myLineId||''};
+  state.tasks.unshift(t);
   inp.value='';
-  save(); renderTasks(); toast('已加入任務');
+  save(); pushTask(t); renderTasks(); toast('已加入任務');
 }
 function toggleTask(id){
   const t=state.tasks.find(t=>t.id===id);
-  if(t){t.done=!t.done; save(); renderTasks();}
+  if(t){t.done=!t.done; save(); pushTask(t); renderTasks();}
 }
 /* 直接點燈號循環 高→中→低 */
 function cyclePriority(id){
@@ -1460,11 +1570,18 @@ function cyclePriority(id){
   if(!t) return;
   const i=PRIORITIES.indexOf(t.priority||DEFAULT_PRIORITY);
   t.priority=PRIORITIES[(i+1)%PRIORITIES.length];
-  save(); renderTasks();
+  save(); pushTask(t); renderTasks();
   toast('優先度：'+PRIORITY_LABEL[t.priority]);
 }
+/* 軟刪除（ADR-009 §一.3）：先標記 del 送上去，再從本機陣列移除。
+   硬刪除做不到「把刪除這件事同步給其他裝置」——那支手機的快照裡它還在，
+   下次同步又會長回來。這正是改版前刪不掉的東西會自己回來的原因。 */
 function delTask(id){
-  state.tasks=state.tasks.filter(t=>t.id!==id);
+  const t=state.tasks.find(t=>t.id===id);
+  if(!t) return;
+  t.del=true;
+  pushTask(t);
+  state.tasks=state.tasks.filter(x=>x.id!==id);
   save(); renderTasks();
 }
 /* 紅→黃→綠；同色內 created_at 舊者優先（ADR-004 §2） */
@@ -1510,7 +1627,7 @@ function saveReview(){
   if(!compass&&!good&&!stuck&&!next){toast('先寫點什麼吧 ✍️'); return;}
   const k=myReviewKey();
   state.reviews[k]={compass,good,stuck,next,line_id:(state.reviews[k]||{}).line_id||myLineId||'',ts:Date.now()};
-  save(); renderReviews(); loadTodayReview(); toast('今日日誌已儲存');
+  save(); pushReview(k); renderReviews(); loadTodayReview(); toast('今日日誌已儲存');
 }
 function renderReviews(){
   // 只濾掉「自己今天那筆」——它正在上面的表單裡編輯，列出來會像有兩份。
@@ -1544,13 +1661,18 @@ function pickMood(l){selectedMood=l; renderMoodBtns();}
 function addMood(){
   if(!selectedMood){toast('先選一個心情吧'); return;}
   const note=document.getElementById('moodNote').value.trim();
-  state.moods.unshift({id:Date.now(),level:selectedMood,note,ts:Date.now(),line_id:myLineId||''});
+  const m={id:Date.now(),level:selectedMood,note,ts:Date.now(),line_id:myLineId||''};
+  state.moods.unshift(m);
   document.getElementById('moodNote').value='';
   selectedMood=null;
-  save(); renderMoodBtns(); renderMoods(); renderPulse(); toast('心情已記錄');
+  save(); pushMood(m); renderMoodBtns(); renderMoods(); renderPulse(); toast('心情已記錄');
 }
 function delMood(id){
-  state.moods=state.moods.filter(m=>m.id!==id);
+  const m=state.moods.find(x=>x.id===id);
+  if(!m) return;
+  m.del=true;
+  pushMood(m);
+  state.moods=state.moods.filter(x=>x.id!==id);
   save(); renderMoods(); renderPulse();
 }
 function renderMoods(){
@@ -1600,14 +1722,19 @@ function addNote(){
   if(!txt) return;
   // 類別存成內容前綴，notes 分頁的欄位一個字都不用改
   const tag=selectedNoteTag;
-  state.notes.unshift({id:Date.now(), txt: tag ? '['+tag+'] '+txt : txt, ts:Date.now(), line_id:myLineId||''});
+  const n={id:Date.now(), txt: tag ? '['+tag+'] '+txt : txt, ts:Date.now(), line_id:myLineId||''};
+  state.notes.unshift(n);
   inp.value='';
   selectedNoteTag=null;
   renderNoteTagRow();
-  save(); renderNotes(); toast(tag ? '已記下這個'+tag : '已存入雜記');
+  save(); pushNote(n); renderNotes(); toast(tag ? '已記下這個'+tag : '已存入雜記');
 }
 function delNote(id){
-  state.notes=state.notes.filter(n=>n.id!==id);
+  const n=state.notes.find(x=>x.id===id);
+  if(!n) return;
+  n.del=true;
+  pushNote(n);
+  state.notes=state.notes.filter(x=>x.id!==id);
   save(); renderNotes();
 }
 function renderNotes(){
@@ -1680,6 +1807,7 @@ function resetExpenseForm(){
   pickExpType('expense'); renderCatRow();
 }
 function submitExpense(){
+  let touched=null;   // 這次動到的那一筆，送出去用
   const amount=Number(document.getElementById('expAmount').value);
   const date=document.getElementById('expDate').value||todayKey();
   const note=document.getElementById('expNote').value.trim();
@@ -1688,15 +1816,19 @@ function submitExpense(){
   if(expEditingId){
     const e=state.expenses.find(x=>x.id===expEditingId);
     if(e) Object.assign(e,{date,type:expType,category:expCategory,amount,note});
+    touched=e;
     toast('已更新這筆');
   }else{
-    state.expenses.unshift({id:Date.now(),date,type:expType,category:expCategory,amount,note,ts:Date.now(),line_id:myLineId||''});
+    touched={id:Date.now(),date,type:expType,category:expCategory,amount,note,ts:Date.now(),line_id:myLineId||''};
+    state.expenses.unshift(touched);
     toast('已記一筆');
   }
   sortExpenses();
   expMonth=date.slice(0,7); // 跳到這筆所屬月份，才看得到剛記的紀錄
   resetExpenseForm();
-  save(); renderExpenseView();
+  save();
+  if(touched) pushExpense(touched);
+  renderExpenseView();
 }
 function editExpense(id){
   const e=state.expenses.find(x=>x.id===id);
@@ -1715,7 +1847,11 @@ function editExpense(id){
 function cancelEditExpense(){ resetExpenseForm(); }
 function delExpense(id){
   if(expEditingId===id) resetExpenseForm();
-  state.expenses=state.expenses.filter(e=>e.id!==id);
+  const e=state.expenses.find(x=>x.id===id);
+  if(!e) return;
+  e.del=true;
+  pushExpense(e);
+  state.expenses=state.expenses.filter(x=>x.id!==id);
   save(); renderExpenseView(); toast('已刪除');
 }
 function shiftMonth(n){
@@ -1937,7 +2073,7 @@ function renderPlacementCard(){
 
    為什麼一定要這樣：前端存檔是整包 replaceAll。logs 只要進了 state，
    下一次 save() 就會把本機那份推回雲端，Apps Script 寫的記錄全部被洗掉。
-   同理，pushAllToCloud 永遠不該出現 'logs'。 */
+   同理，待送佇列裡永遠不該出現 'logs'。 */
 function logFromCloud(r){
   return {
     ts: r.ts ? new Date(r.ts).getTime() : 0,
@@ -2086,7 +2222,7 @@ function renderAll(){
   renderScopeBars();
   load();
 
-  /* 先讀白名單，再開始同步。順序是有意義的：pushAllToCloud 需要 line_id 才推得動，
+  /* 先讀白名單，再開始同步。順序是有意義的：待送佇列需要 line_id 才送得動，
      而 refreshRoster() 也是「還沒選身份」時把選身份蓋版叫出來的地方。
      讀不到名單不會擋住本機使用——localStorage 那條路從頭到尾都沒被碰過。 */
   refreshRoster().then(syncFromCloud);

@@ -276,7 +276,8 @@ icon-192.png    App icon 192x192
 icon-512.png    App icon 512x512
 apps-script/    Apps Script 端程式碼（Code.gs 同步 + line-router.gs LINE 路由）
 scripts/        本機與 CI 共用的閘門（密鑰掃描、clasp preflight）
-tests/          後端單元測試（`npm test`），跑的是 apps-script/Code.gs 本人
+tests/          單元測試（`npm test`）。後端跑的是 apps-script/Code.gs 本人，
+                前端跑的是 index.html 的 <script> 本人，兩邊都不測副本
 ```
 
 ## 開發須知
@@ -387,5 +388,9 @@ Apps Script 與 Pages 分成兩個 job：認證與 scriptId 完全不會進到 P
   - ⚠️ **已知限制（需 schema 裁決）**：月底錨點會漂移。`1/31` 的下一期被夾成 `2/28` 後，再下一期是 `3/28` 而非 `3/31`——每一期只把上一期的 `due_date` 傳下去，ADR 說的「**原訂**到期日」在第一次夾值後就遺失了。修法需要一個記住原始錨點的欄位（ADR 欄位清單沒有），未經裁決不自行擴充 schema。測試已把這個行為釘住，不假裝它不存在
   - ⚠️ **ADR 沒寫到的兩個缺口**：到期區塊寫的是「1／3／5／7 天以上四個門檻」，但第 6 天沒有歸屬（現採唯一能整除的讀法 ≤1／≤3／≤5／其餘）；「已過期」也沒寫，現另回 `overdue` 由呼叫端決定要獨立一塊還是併進最急那塊
   - ✅ Phase 2-b（後端接線）：`doGet` 一律過濾 `del=true`，另開 `?only=tombstones` 供封存第一段匯出；`doPost` 加 `upsert`（`append` 保留為別名）與 `archivePurge` 兩個 action。16 項端點測試
-  - ⏳ Phase 2-c（前端）：五個模組改即時單筆 upsert、軟刪除與離線呈現、15 秒輪詢＋手動刷新、兩段式封存接 `exportData()`、共用白板、週期提醒 UI、`ScriptApp.newTrigger()` 安裝函式
+  - ✅ Phase 2-c（前端寫入路徑）：五個模組全部改成即時單筆 upsert，`pushAllToCloud`／`cloudReplaceAll` 退場；刪除改為軟刪除（標 `del` 送出後才從本機移除）。SW v14→v15
+  - ✅ 前端測試環境 `tests/fake-browser.mjs`：把 `index.html` 的 `<script>` 整段載進假瀏覽器，測的是上線那份而非副本（與 `fake-apps-script.mjs` 同一套理由）。14 項前端測試
+  - 📌 **待送佇列是 ADR 之外的追加**，但不加會**比改版前更糟**：舊架構整包 `replaceAll` 天生有重試（下次存檔會把沒送成的一起帶上去），改成單筆之後一次失敗就是那一筆永遠不見。佇列存 localStorage、關掉 App 仍在、同鍵只留最後一次編輯、送出期間的新編輯不會被連坐移除；標題下方的徽章顯示待送筆數（DATA-02「推送失敗完全無感知」）
+  - 📌 一次性補推（選完身份後）改成逐筆排隊送，比 `replaceAll` 慢得多。換掉的是「每次存檔都整包覆蓋」這個天天發生的風險，划算
+  - ⏳ Phase 2-d（前端其餘）：離線時不顯示本機資料改呈現連線異常、15 秒輪詢＋手動刷新、兩段式封存接 `exportData()`、共用白板、週期提醒 UI、`ScriptApp.newTrigger()` 安裝函式
   - 📌 分支裁決（2026-09-16，已變更）：原訂與 `codex/security-sync-hardening-20260916` 併成同一條線，但該分支始終沒推上遠端（Notion 記載建立遠端分支時回傳 403），**2026-09-16 決定不再等待**，ADR-009 單獨走完
