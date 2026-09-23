@@ -22,6 +22,7 @@
 |---|---|
 | `Code.gs` | PWA ↔ Sheets 同步（`doGet` 讀取、`handlePwaSync_` 寫入） |
 | `line-router.gs` | LINE 快速輸入 → Sheets 路由，並持有統一入口 `doPost` |
+| `sheet-guide.gs` | `_guide` 導覽分頁：分頁登記表＋每天自動重新產生（`refreshGuide()`） |
 
 ⚠️ **兩個密鑰一律讀指令碼屬性，不可寫回原始碼**（見下）。線上版原本把
 `CLOUD_SECRET` 與 LINE userId 白名單寫死在裡面——這個 repo 是公開的，寫死等於
@@ -155,6 +156,34 @@ LINE 的 Webhook URL 也指著同一條 exec 網址。
 `clasp login` 的憑證（OAuth refresh token）會寫進家目錄的 `~/.clasprc.json`。
 本 repo 的 `.gitignore` 已擋掉 `.clasprc.json` 與 `.clasp.json`——**不要移除這兩條**。
 這個 repo 會整包發布到 GitHub Pages，任何進版控的檔案都等同公開。
+
+## 分頁命名規則與 `_guide` 導覽分頁
+
+所有分頁都在同一個試算表裡。每張分頁是做什麼的，登記在 `sheet-guide.gs` 的
+`guideRegistry_()`；`refreshGuide()` 依登記表把 `_guide` **整張重新產生**，
+每天約 6 點自動跑一次。
+
+- **說明改 repo，不改 Sheet**：`_guide` 上只有「備註」欄會被保留（以分頁名稱對應），
+  其他欄位在 Sheet 上改了，下次更新會被蓋回登記表的內容
+- **自動偵測落差**：Sheet 上有、登記表沒有 → ⚠️ 未登記；登記表有、Sheet 上沒有 → ⚠️ 找不到分頁
+- **只寫表頭與筆數**，不寫任何資料內容；也不做「各分頁最後更新時間」（`SpreadsheetApp` 拿不到，推測只會誤導）
+- **PWA 寫不進 `_guide`**：任何 action 都回 `sheet_not_writable`（`Code.gs` 的 `NO_PWA_WRITE`）
+- ⚠️ `doGet` 讀取不需要驗證，所以 `_guide` 也讀得到。它不含資料內容，但會透露整體結構——這件事歸讀取驗證那一題處理
+
+**命名規則：**
+
+| 類別 | 規則 | 例子 |
+|---|---|---|
+| 資料 | 直接用名稱 | `tasks`、`expenses` |
+| 系統 | 新分頁加底線前綴 | `_guide`（既有的 `logs`、`line_users` **不改名**：前端、LINE 路由、測試全要跟著改，不值得） |
+| 功能模組 | 功能前綴＋底線 | `gmail_etag`、`gmail_bills` |
+
+**硬性規定：任何新增分頁的 PR，都必須同時更新 `guideRegistry_()`。** 漏了也不會壞，`_guide` 會標 ⚠️ 未登記。
+
+**安裝（一次性）：** CI 只部署程式碼、不執行函式。merge 後在 Apps Script 編輯器選
+`installGuideTrigger` 執行一次——它會建立每日觸發器並立刻產生一次 `_guide`。
+可重複執行，不會累積出多個觸發器，也不會動到到期提醒（`installAdr009Triggers`）那一個。
+不想用了就執行 `uninstallGuideTrigger`（`_guide` 分頁留著，只是不再更新）。
 
 ## line-router.gs 安裝
 

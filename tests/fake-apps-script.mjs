@@ -157,6 +157,11 @@ class FakeSpreadsheet {
     return this.sheets[name] || null;
   }
 
+  /** 依建立順序回傳所有分頁，與真的 Sheet 分頁列的順序一致 */
+  getSheets() {
+    return Object.values(this.sheets);
+  }
+
   insertSheet(name) {
     this.sheets[name] = new FakeSheet(name);
     return this.sheets[name];
@@ -169,7 +174,7 @@ class FakeSpreadsheet {
  * 回傳的 call() 直接呼叫原始碼裡的函式，read() 讀得到頂層的 const
  * （vm 的頂層 const 不會變成全域屬性，但同一個 context 裡的後續運算看得見）。
  */
-export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null } = {}) {
+export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [] } = {}) {
   const logs = [];              // console.log 的內容
   const transactions = [];      // logTransaction_ 收到的參數
   const pushes = [];            // linePush_ 收到的 (userId, text)
@@ -226,6 +231,9 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null } = {
     logTransaction_: (...args) => transactions.push(args),
     linePush_,
     ScriptApp,
+    // 時間戳只要固定格式就好：要驗的是「有寫」，不是 Google 的時區換算
+    Session: { getScriptTimeZone: () => 'Asia/Taipei' },
+    Utilities: { formatDate: () => '2026-09-23 06:00' },
     Date,
     Array,
     Object,
@@ -236,6 +244,10 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null } = {
   });
 
   runInContext(readFileSync(join(ROOT, 'apps-script', 'Code.gs'), 'utf8'), context, { filename: 'Code.gs' });
+  // 同一個 Apps Script 專案的其他檔案：線上是共用全域，這裡就載進同一個 context
+  extraFiles.forEach((name) => {
+    runInContext(readFileSync(join(ROOT, 'apps-script', name), 'utf8'), context, { filename: name });
+  });
 
   return {
     ss,

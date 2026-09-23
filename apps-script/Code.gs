@@ -43,6 +43,16 @@ var LINE_USERS_CACHE_TTL = 300;          // 5 分鐘（ADR-008 D-3）
 var NO_REPLACE_ALL = [LINE_USERS_SHEET, 'logs'];
 
 /**
+ * PWA 連一筆都不准寫的分頁（任何 action 都一樣，包括 upsert）。
+ *
+ * _guide 是 refreshGuide() 依 repo 登記表產生出來的（sheet-guide.gs），沒有任何
+ * 前端功能需要寫它；寫進去的東西下次更新也會被蓋掉，放行只會製造「明明存了卻
+ * 不見」的假象。它比 NO_REPLACE_ALL 更嚴，所以擋在所有 action 之前，不另外列進去。
+ */
+var GUIDE_SHEET = '_guide';
+var NO_PWA_WRITE = [GUIDE_SHEET];
+
+/**
  * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
  * 這裡只在「建表」與「註冊」時用到——閘門不看 feat_*（ADR-008 E-2）。
  */
@@ -312,6 +322,11 @@ function handlePwaSync_(e) {
   // line_id 才回答後者。兩道門串聯，過不了任一道就不寫。
   const gate = writeGate_(body.line_id, 'PWA ' + (body.action || '?') + ' → ' + (body.sheet || '?'));
   if (!gate.allowed) return jsonOut({ error: gate.error, reason: gate.reason });
+
+  if (NO_PWA_WRITE.indexOf(body.sheet) !== -1) {
+    console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');
+    return jsonOut({ error: 'sheet_not_writable', sheet: body.sheet });
+  }
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(body.sheet);
