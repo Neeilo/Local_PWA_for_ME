@@ -173,6 +173,8 @@ LINE 的 Webhook URL 也指著同一條 exec 網址。
 
 ```
 whoami                      → 回覆你自己的 LINE userId（用來填白名單）
+                              在群組／多人聊天室裡傳，會多回 groupId／roomId
+（bot 被邀進群組時會自動回報 groupId，並在 logs 記一筆「加入群組」）
 
 任務/內容[/優先度]
 任務/買牛奶                 → 🟡 M（預設）

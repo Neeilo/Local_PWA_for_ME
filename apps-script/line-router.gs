@@ -209,7 +209,17 @@ function handleLineWebhook_(body) {
 }
 
 function handleLineEvent_(event) {
-  if (!event || event.type !== 'message') return;
+  if (!event) return;
+
+  // bot 被邀進群組／多人聊天室：記下 ID 並在群組裡回報。
+  // 之後要「依群組開不同功能」或「推播到群組」，第一步都是知道那個群組的 ID——
+  // 靠人手動去翻 webhook 記錄不實際，被邀進去的當下就是唯一不費力的時機。
+  if (event.type === 'join') {
+    handleJoin_(event);
+    return;
+  }
+
+  if (event.type !== 'message') return;
   if (!event.message || event.message.type !== 'text') return;
 
   var userId = (event.source && event.source.userId) || '';
@@ -218,10 +228,11 @@ function handleLineEvent_(event) {
   var text = String(event.message.text || '').trim();
 
   // whoami 刻意排在白名單檢查之前：它就是用來取得要填進 line_users 的值，
-  // 也是萬一填錯、把自己擋在門外時唯一的救援途徑。只回傳發話者自己的 ID，
-  // 問不到別人的，所以放在白名單前面不會擴大攻擊面。
+  // 也是萬一填錯、把自己擋在門外時唯一的救援途徑。回傳的只有發話者自己的 ID
+  // 與「這則訊息所在的聊天室」ID——後者在群組裡本來就人人可問，放在白名單前面
+  // 不會擴大攻擊面。
   if (text.toLowerCase() === 'whoami') {
-    lineReply_(event.replyToken, '你的 userId：\n' + (userId || '(取不到，訊息可能來自群組)'));
+    lineReply_(event.replyToken, whoamiMessage_(event.source));
     return;
   }
 
@@ -245,6 +256,69 @@ function handleLineEvent_(event) {
 
   var reply = routeLineMessage_(text, userId);
   lineReply_(event.replyToken, reply);
+}
+
+/* ========================================================================== */
+/* 訊息來源：一對一／群組／多人聊天室                                              */
+/* ========================================================================== */
+
+var SOURCE_LABELS = { user: '一對一聊天', group: '群組', room: '多人聊天室' };
+var JOIN_LOG_SOURCE = '加入群組';
+
+/** 聊天室本身的 ID：群組回 groupId、多人聊天室回 roomId，一對一沒有這一層 */
+function chatIdOf_(source) {
+  if (!source) return '';
+  if (source.type === 'group') return source.groupId || '';
+  if (source.type === 'room') return source.roomId || '';
+  return '';
+}
+
+/**
+ * whoami 的回覆。純函式，方便測。
+ *
+ * 一對一聊天維持原本的格式一字不改：註冊流程教人「先傳 whoami，再把 ID 整串
+ * 貼回來」，格式一變，照舊說明操作的人就會貼錯東西。
+ *
+ * 群組裡取不到 userId 時要講清楚是「這個裝置沒給」而不是「群組一律沒有」——
+ * LINE 只保證手機版會附上發話者的 userId，電腦版可能沒有。測的就是這件事。
+ */
+function whoamiMessage_(source) {
+  var src = source || {};
+  var userId = src.userId || '';
+  var type = src.type || '';
+
+  if (type !== 'group' && type !== 'room') {
+    return '你的 userId：\n' + (userId || '(取不到，訊息可能來自群組)');
+  }
+
+  var idLabel = type === 'group' ? 'groupId' : 'roomId';
+  return [
+    '來源：' + SOURCE_LABELS[type] + '（' + type + '）',
+    idLabel + '：\n' + (chatIdOf_(src) || '(取不到)'),
+    '你的 userId：\n' + (userId || '(取不到，可能是從電腦版 LINE 發的，請改用手機再試一次)')
+  ].join('\n');
+}
+
+/**
+ * join 事件：寫一列 logs，並在群組裡回報 ID。
+ * join 事件沒有發話者，所以 logs 的 user_id 留白。
+ */
+function handleJoin_(event) {
+  var src = event.source || {};
+  var type = src.type || '';
+  var chatId = chatIdOf_(src);
+  console.log('LINE join: ' + type + ' ' + chatId);
+
+  logTransaction_(JOIN_LOG_SOURCE, chatId ? '成功' : '失敗',
+    type + '/' + (chatId || '(沒有 ID)'),
+    chatId ? ('已加入' + (SOURCE_LABELS[type] || type)) : 'join 事件沒有帶聊天室 ID',
+    chatId, '', '');
+
+  if (chatId) {
+    lineReply_(event.replyToken,
+      '👋 已加入' + (SOURCE_LABELS[type] || '') + '\n' +
+      (type === 'group' ? 'groupId' : 'roomId') + '：\n' + chatId);
+  }
 }
 
 /* ========================================================================== */
