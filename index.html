@@ -17,7 +17,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Neil OS">
 <style>
-/* 晨曦配色：以下 PART A–D 逐字取自 neilos-theme-v1.css（sha256 60732ab41757…，Notion 2026-09-24 交棒頁附件），不要手改色碼 */
+/* 晨曦配色：以下 PART A–D 取自 neilos-theme-v1.css（sha256 60732ab41757…，Notion 2026-09-24 交棒頁附件），不要手改色碼。
+   與原檔唯一的差別：PART D 裡只服務已移除成長頁的選擇器（.toggle-btn／.d-btn／.detector-*／.tag-*）已刪。 */
 /* PART A — light (default) */
 :root{
   --bg:#fbf3e8;
@@ -239,45 +240,7 @@
   .note-txt{white-space:pre-wrap; word-break:break-word;}
   .note-meta{display:flex; justify-content:space-between; align-items:center; margin-top:4px;}
 
-  /* 週回顧 */
-  .toggle-row{display:flex; gap:8px; margin-top:6px;}
-  .toggle-btn{
-    flex:1; background:var(--field); border:1.5px solid var(--line);
-    border-radius:10px; padding:8px 4px; font-size:13px; font-weight:600; color:var(--muted);
-    text-align:center;
-  }
-  .toggle-btn.sel-fear{border-color:var(--m2); background:#FDF3E3; color:#A0620A;}
-  .toggle-btn.sel-value{border-color:var(--m5); background:var(--accent-soft); color:var(--accent);}
-  .toggle-btn.sel-mix{border-color:var(--compass); background:var(--compass-soft); color:var(--compass);}
-
-  .detector-box{
-    background:#FFFBF0; border:1.5px solid #EDD98A;
-    border-radius:12px; padding:12px; margin-top:10px;
-  }
-  .detector-label{font-size:13px; font-weight:700; color:#8A6A00; margin-bottom:8px;}
-  .detector-toggle{display:flex; gap:8px;}
-  .d-btn{
-    flex:1; background:var(--card); border:1.5px solid #EDD98A;
-    border-radius:9px; padding:8px 4px; font-size:13px; font-weight:600;
-    color:#8A6A00; text-align:center;
-  }
-  .d-btn.sel{background:#EDD98A; color:#5A4000;}
-
-  .weekly-item{padding:12px 4px; border-bottom:1px solid var(--line);}
-  .weekly-item:last-child{border-bottom:none;}
-  .weekly-date{font-weight:600; font-size:13px; color:var(--compass);}
-  .weekly-body{font-size:14px; color:var(--ink); white-space:pre-wrap; margin-top:4px;}
-  .weekly-tag{
-    display:inline-block; font-size:11px; font-weight:700; border-radius:6px;
-    padding:2px 8px; margin-top:6px;
-  }
-  .tag-fear{background:#FDF3E3; color:#A0620A;}
-  .tag-value{background:var(--accent-soft); color:var(--accent);}
-  .tag-mix{background:var(--compass-soft); color:var(--compass);}
-  .tag-serve{background:#F0EBF8; color:#6A3FA0;}
-  .tag-delay{background:#FDE8E8; color:#A02020;}
-
-  /* 輸出追蹤 */
+  /* 雜記類別按鈕（原成長頁「輸出追蹤」的類型鈕，2026-09-10 併入雜記） */
   .output-type-row{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;}
   .type-btn{
     background:var(--field); border:1.5px solid var(--line); border-radius:20px;
@@ -285,20 +248,6 @@
   }
   .type-btn.sel{border-color:var(--output); background:var(--output-soft); color:var(--output);}
 
-  .output-item{display:flex; align-items:flex-start; gap:10px; padding:10px 4px; border-bottom:1px solid var(--line);}
-  .output-item:last-child{border-bottom:none;}
-  .output-type-badge{
-    font-size:11px; font-weight:700; padding:2px 8px; border-radius:6px;
-    background:var(--output-soft); color:var(--output); white-space:nowrap; flex:none; margin-top:2px;
-  }
-  .output-txt{flex:1; word-break:break-word;}
-  .output-meta{font-size:12px; color:var(--muted); margin-top:2px;}
-
-  /* 成長 tab 區塊標題 */
-  .section-title{
-    font-size:12px; font-weight:700; letter-spacing:.1em; text-transform:uppercase;
-    color:var(--muted); margin:4px 0 10px;
-  }
 
   /* 任務優先度燈號 */
   .prio-dot{
@@ -410,7 +359,7 @@
 
   .toast{
     position:fixed; left:50%; bottom:96px; transform:translateX(-50%);
-    background:var(--ink); color:#fff; padding:8px 16px; border-radius:20px;
+    background:var(--ink); color:var(--bg); padding:8px 16px; border-radius:20px;
     font-size:14px; opacity:0; transition:opacity .2s; pointer-events:none; z-index:20;
     white-space:nowrap;
   }
@@ -596,21 +545,14 @@
   border:1px solid rgba(255,176,32,.35);
 }
 /* PART D — literals the source hard-codes → tokens */
-input[type=text],input[type=number],input[type=date],textarea,select,.mood-btn,.toggle-btn,.type-btn,.prio-opt,.cat-btn,.seg button,.month-bar button{background:var(--field);}
+input[type=text],input[type=number],input[type=date],textarea,select,.mood-btn,.type-btn,.prio-opt,.cat-btn,.seg button,.month-bar button{background:var(--field);}
 .btn{color:var(--on-accent);}
 nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shadow-home);}
-.prio-opt.sel,.cat-btn.sel,.compass-card textarea,.d-btn{background:var(--card);}
+.prio-opt.sel,.cat-btn.sel,.compass-card textarea{background:var(--card);}
 .edit-banner{border-color:var(--peach);}
 .me-card.offline,.id-gate .gate-err,.adm-grid button.danger.on{background:var(--danger-soft);}
 .exp-cat{background:var(--bg);}
 [data-theme="dark"] .compass-card{border-color:#34496b;}
-[data-theme="dark"] .detector-box{background:#2a2415; border-color:#5c4a1a;}
-[data-theme="dark"] .detector-label,[data-theme="dark"] .d-btn{color:#e8c860;}
-[data-theme="dark"] .d-btn{border-color:#5c4a1a; background:var(--field);}
-[data-theme="dark"] .d-btn.sel{background:#e8c860; color:#1a1305;}
-[data-theme="dark"] .toggle-btn.sel-fear,[data-theme="dark"] .tag-fear{background:#33260f; color:#f0b45a;}
-[data-theme="dark"] .tag-serve{background:#2a2339; color:#c3a8f0;}
-[data-theme="dark"] .tag-delay{background:#3a1a1a; color:#f29a9a;}
 [data-theme="dark"] .edit-banner{border-color:#5a3a20;}
 [data-theme="dark"] .adm-pending{background:#33260f; color:#f0c070;}
 [data-theme="dark"] .toast{color:var(--bg);}
@@ -620,13 +562,6 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
 /* PART D (cont.) — same dark overrides for 自動 mode */
 @media (prefers-color-scheme: dark){
   :root:not([data-theme]) .compass-card{border-color:#34496b;}
-  :root:not([data-theme]) .detector-box{background:#2a2415; border-color:#5c4a1a;}
-  :root:not([data-theme]) .detector-label,:root:not([data-theme]) .d-btn{color:#e8c860;}
-  :root:not([data-theme]) .d-btn{border-color:#5c4a1a; background:var(--field);}
-  :root:not([data-theme]) .d-btn.sel{background:#e8c860; color:#1a1305;}
-  :root:not([data-theme]) .toggle-btn.sel-fear,:root:not([data-theme]) .tag-fear{background:#33260f; color:#f0b45a;}
-  :root:not([data-theme]) .tag-serve{background:#2a2339; color:#c3a8f0;}
-  :root:not([data-theme]) .tag-delay{background:#3a1a1a; color:#f29a9a;}
   :root:not([data-theme]) .edit-banner{border-color:#5a3a20;}
   :root:not([data-theme]) .adm-pending{background:#33260f; color:#f0c070;}
   :root:not([data-theme]) .toast{color:var(--bg);}

@@ -257,8 +257,9 @@ describe('晨曦配色：舊的寫死色碼不能回來', () => {
     assert.doesNotMatch(css, /rgba\(\s*47\s*,\s*109\s*,\s*95/, '舊品牌綠的陰影還在');
   });
 
-  test('不再用 #fff 當底色；燒橘底上的字一律 on-accent', () => {
+  test('不再用 #fff 當底色或文字；燒橘底上的字一律 on-accent', () => {
     assert.doesNotMatch(css, /background:\s*#fff\b/i);
+    assert.doesNotMatch(css, /[^-]color:\s*#fff\b/i, '文字也不能寫死白色（提示框亮色用 --bg，Neil 2026-09-24 選 B）');
     assert.match(css, /\.btn\{[^}]*color:var\(--on-accent\)/);
     assert.match(css, /nav \.home-btn\.active\{color:var\(--on-accent\);\}/);
   });
