@@ -1,6 +1,6 @@
 # Neil OS — 個人小系統
 
-安裝在手機主畫面的個人小系統 PWA，資料主要存在本機（localStorage），並會同步備份到 Google Sheets。
+安裝在手機主畫面的個人小系統 PWA，資料存在 Google Sheets（雲端是唯一真相，ADR-009）；本機只放待送佇列與個人設定。
 
 🔗 **Live**: https://neeilo.github.io/Local_PWA_for_ME/
 

@@ -34,20 +34,22 @@ var LINE_USERS_CACHE_KEY = 'adr008_line_users_v1';
 var LINE_USERS_CACHE_TTL = 300;          // 5 分鐘（ADR-008 D-3）
 
 /**
- * 整包 replaceAll 打不得的分頁。
+ * 不歸前端 state 管的分頁：archivePurge 動不得。
  *
  * logs 是 Apps Script 單向寫入的記錄，line_users 是白名單本身——兩者都不屬於
- * 前端那份 state，被整包覆蓋等於資料消失（line_users 的話還會順便把所有人
- * 鎖在門外，包含改壞它的那個人）。管理頁一律走 append + upsert 改單列。
+ * 前端那份 state，被批次刪列等於資料消失（line_users 的話還會順便把所有人
+ * 鎖在門外，包含改壞它的那個人）。管理頁一律走 upsert 改單列。
+ *
+ * 原名 NO_REPLACE_ALL；replaceAll 於 ADR-009 退場後改名，規則不變。
  */
-var NO_REPLACE_ALL = [LINE_USERS_SHEET, 'logs'];
+var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs'];
 
 /**
  * PWA 連一筆都不准寫的分頁（任何 action 都一樣，包括 upsert）。
  *
  * _guide 是 refreshGuide() 依 repo 登記表產生出來的（sheet-guide.gs），沒有任何
  * 前端功能需要寫它；寫進去的東西下次更新也會被蓋掉，放行只會製造「明明存了卻
- * 不見」的假象。它比 NO_REPLACE_ALL 更嚴，所以擋在所有 action 之前，不另外列進去。
+ * 不見」的假象。它比 NOT_FRONTEND_SHEETS 更嚴，所以擋在所有 action 之前，不另外列進去。
  */
 var GUIDE_SHEET = '_guide';
 var NO_PWA_WRITE = [GUIDE_SHEET];
@@ -399,7 +401,7 @@ function handlePwaSync_(e) {
    * 就什麼都不刪。
    */
   if (body.action === 'archivePurge') {
-    if (NO_REPLACE_ALL.indexOf(body.sheet) !== -1) {
+    if (NOT_FRONTEND_SHEETS.indexOf(body.sheet) !== -1) {
       console.log('🚫 拒絕對分頁「' + body.sheet + '」做 archivePurge：它不歸前端管');
       return jsonOut({ error: 'sheet_not_purgeable', sheet: body.sheet });
     }
@@ -410,70 +412,26 @@ function handlePwaSync_(e) {
     });
   }
 
+  /**
+   * replaceAll 已退場（ADR-009 §一.2）：前端改送單筆 upsert 之後，沒有任何呼叫端。
+   *
+   * 不只是刪掉它，而是明確拒絕並記一筆 logs：它是整個系統破壞力最大的一個動作
+   * （一個請求清空整張表），而 CLOUD_SECRET 公開在部署出去的 index.html 裡、
+   * doGet 讀得到 line_users。留著它等於留一個「一次清空」的按鈕給拿到網址的人。
+   * 萬一真有舊前端送上來，logs 裡看得到，不會安靜地什麼都沒發生。
+   */
   if (body.action === 'replaceAll') {
-    // 這兩張表不歸前端那份 state 管，整包覆蓋等於把它們清空（ADR-008 Part D）
-    if (NO_REPLACE_ALL.indexOf(body.sheet) !== -1) {
-      console.log('🚫 拒絕對分頁「' + body.sheet + '」做 replaceAll：它不屬於前端 state');
-      return jsonOut({ error: 'sheet_not_replaceable', sheet: body.sheet });
+    console.log('🚫 拒絕 replaceAll → ' + body.sheet + '：已於 ADR-009 退場');
+    try {
+      logTransaction_('同步', '失敗', 'replaceAll ' + body.sheet,
+        '已退場的動作，拒絕執行', 'ADR-009 後前端只送 upsert；若這筆來自舊版 App，請重開 App', '', body.line_id || '');
+    } catch (err) {
+      console.log('寫 logs 失敗（主流程不受影響）：' + err);
     }
-
-    const records = body.records || [];
-    const deduped = dedupeById_(records);
-
-    sheet.clearContents();
-    sheet.appendRow(body.headers);
-    deduped.kept.forEach(r => sheet.appendRow(body.headers.map(h => r[h] ?? '')));
-
-    if (deduped.dropped.length) {
-      logCleanup_(
-        'replaceAll ' + body.sheet,
-        '去重：' + records.length + ' 筆收斂為 ' + deduped.kept.length + ' 筆',
-        '丟棄的重複 id：' + summarizeIds_(deduped.dropped)
-      );
-    }
-    return jsonOut({
-      success: true,
-      count: deduped.kept.length,
-      dropped: deduped.dropped.length
-    });
+    return jsonOut({ error: 'action_retired', action: 'replaceAll' });
   }
 
   return jsonOut({ error: 'unknown_action' });
-}
-
-/* ========================================================================== */
-/* 同 id 去重閘門（ADR-007 票 A，位置依 Part G-2 修正）                        */
-/* ========================================================================== */
-
-/**
- * ADR 原本把閘門設計在「更新流程的無條件 append」上，但實讀程式碼後發現前端
- * 從未使用 append —— 它只送 replaceAll，而 replaceAll 是整張表砍掉重寫。
- * 所以後端並沒有製造重複，它只是忠實地把 state 裡的重複寫出來。閘門因此改放
- * 在 replaceAll：寫入前收斂，髒資料在下次同步時自動消失。
- *
- * ⚠️ 這仍然不是根治。「本機為何先生出兩筆同 id」未解（ADR-007 Part F 未來票），
- * 前端的 dedupeState() 與這裡都是在攔截症狀，只是攔在不同層。
- *
- * 規則與前端 dedupeById() 一字不差：同 id 留「後者」（視為較新的編輯）、位置
- * 維持、沒有 id 的資料原樣保留——把它們當成同一筆併掉會是真正的資料遺失。
- * 兩邊規則若不一致，同一批資料在前後端會收斂成不同結果，那種 bug 最難查。
- */
-function dedupeById_(records) {
-  const lastIndexById = {};
-  const idOf = r => (r && r.id != null && r.id !== '') ? String(r.id) : '';
-
-  records.forEach((r, i) => {
-    const id = idOf(r);
-    if (id) lastIndexById[id] = i;
-  });
-
-  const kept = [], dropped = [];
-  records.forEach((r, i) => {
-    const id = idOf(r);
-    if (!id || lastIndexById[id] === i) kept.push(r);
-    else dropped.push(id);
-  });
-  return { kept: kept, dropped: dropped };
 }
 
 /* ========================================================================== */
@@ -629,14 +587,6 @@ function logCleanup_(input, result, detail) {
   }
 }
 
-/** id 太多時只列前幾個，避免 logs 的 detail 欄爆掉 */
-function summarizeIds_(ids) {
-  const MAX = 10;
-  return ids.length <= MAX
-    ? ids.join(', ')
-    : ids.slice(0, MAX).join(', ') + ' …（共 ' + ids.length + ' 筆）';
-}
-
 function jsonOut(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
@@ -645,14 +595,13 @@ function jsonOut(obj) {
 /* ========================================================================== */
 /* ADR-009 Phase 0 — 軟刪除、兩段式封存、欄位安裝                              */
 /*                                                                            */
-/* ⚠️ 這一段目前沒有任何呼叫端，是刻意的。ADR-009「待其他環境知道的事 #1」寫明： */
-/* 三個新函式的最小自動化測試要先跑過、報告經 Neil 確認，才准接手既有模組的      */
-/* 讀寫路徑。所以這裡先把函式與測試做完，doGet 的過濾與前端的即時 upsert 改寫    */
-/* 留到下一階段——不可以先動工、測試事後補。                                     */
+/* 已接線（2026-09-16 起）：doGet 的墓碑過濾、兩段式封存、前端的即時 upsert    */
+/* 都走這一段。Phase 0 時先寫函式與測試、報告經 Neil 確認才接手既有模組的讀寫   */
+/* 路徑，是 ADR-009「待其他環境知道的事 #1」要求的施工順序。                    */
 /*                                                                            */
-/* 唯一會真的執行的是 ensureAdr009Columns()，那是給 Neil 在 Apps Script 編輯器 */
-/* 手動執行一次的安裝函式（操作方式比照 diagnoseLineUsers）。它不會自己跑，也    */
-/* 不在任何同步路徑上。                                                        */
+/* 例外是 ensureAdr009Columns()：那是給 Neil 在 Apps Script 編輯器手動執行一次 */
+/* 的安裝函式（操作方式比照 diagnoseLineUsers）。它不會自己跑，也不在任何同步   */
+/* 路徑上。                                                                    */
 /* ========================================================================== */
 
 /** 軟刪除旗標欄（ADR-009 §一.3）。空白＝沒刪，判斷規則沿用 truthy_ */
