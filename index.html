@@ -2,29 +2,140 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
+<!-- 防閃白：CSS 載入前先把手動選的主題掛上 <html>。「自動」不掛屬性，交給 CSS 的 prefers-color-scheme。
+     charset 必須留在第一行（瀏覽器只在前 1024 bytes 找它），這段緊接在後，仍早於所有 CSS。
+     刻意寫成一行：tests/fake-browser.mjs 以「整行只有 <script>」找主程式，這段不能被誤認。 -->
+<script>(function(){try{var t=localStorage.getItem('personal-os-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Neil OS — 個人小系統</title>
-<meta name="theme-color" content="#2F6D5F">
+<meta name="theme-color" content="#FBF3E8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0F1C18" media="(prefers-color-scheme: dark)">
 <link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/svg+xml" href="neilos-icon.svg">
+<link rel="apple-touch-icon" href="neilos-icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Neil OS">
 <style>
-  :root{
-    --bg:#F3F5F4; --card:#FFFFFF; --ink:#1E2B28; --muted:#6E7D78;
-    --line:#E2E8E5; --accent:#2F6D5F; --accent-soft:#E4EFEA;
-    --danger:#C24A3A;
-    --m1:#C24A3A; --m2:#D98E32; --m3:#9AA79F; --m4:#5FA985; --m5:#2F6D5F;
-    --compass:#4A6FA5; --compass-soft:#E8EEF7;
-    --output:#7B5EA7; --output-soft:#F0EBF8;
-    /* 優先度燈號 */
-    --p-h:#D03B3B; --p-m:#EDA100; --p-l:#0CA30C;
-    /* 記帳分類（categorical，固定配色，不隨排名變動） */
-    --c1:#2a78d6; --c2:#eb6834; --c3:#1baf7a; --c4:#eda100;
-    --c5:#e87ba4; --c6:#008300; --c7:#4a3aa7;
-    --muted-ink:#898781;
+/* 晨曦配色：以下 PART A–D 取自 neilos-theme-v1.css（sha256 60732ab41757…，Notion 2026-09-24 交棒頁附件），不要手改色碼。
+   與原檔唯一的差別：PART D 裡只服務已移除成長頁的選擇器（.toggle-btn／.d-btn／.detector-*／.tag-*）已刪。 */
+/* PART A — light (default) */
+:root{
+  --bg:#fbf3e8;
+  --card:#fffdf9;
+  --field:#fffaf3;
+  --on-accent:#ffffff;
+  --ink:#1e2b28;
+  --muted:#6b6158;
+  --line:#ede2d2;
+  --accent:#a8561c;
+  --accent-soft:#fbeee0;
+  --peach:#f0c9a0;
+  --danger:#b83c2e;
+  --danger-soft:#fbe9e5;
+  --m1:#c24a3a;
+  --m2:#d98e32;
+  --m3:#9aa79f;
+  --m4:#5fa985;
+  --m5:#2f6d5f;
+  --compass:#4a6fa5;
+  --compass-soft:#eef3fa;
+  --output:#7b5ea7;
+  --output-soft:#f0ebf8;
+  --p-h:#d03b3b;
+  --p-m:#eda100;
+  --p-l:#0ca30c;
+  --c1:#2a78d6;
+  --c2:#eb6834;
+  --c3:#1baf7a;
+  --c4:#eda100;
+  --c5:#e87ba4;
+  --c6:#008300;
+  --c7:#4a3aa7;
+  --muted-ink:#898781;
+  --shadow-home:0 3px 10px rgba(168,86,28,.32);
+}
+
+/* forced light: keep native controls light even when the phone is dark */
+:root[data-theme="light"]{ color-scheme:light; }
+
+/* PART B — dark, manual */
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0f1c18;
+  --card:#172822;
+  --field:#12211c;
+  --on-accent:#2a1606;
+  --ink:#eef1ea;
+  --muted:#a8b7af;
+  --line:#2a3f37;
+  --accent:#e8a266;
+  --accent-soft:#3a2c1c;
+  --peach:#6b4a30;
+  --danger:#f07c6c;
+  --danger-soft:#3a201c;
+  --m1:#e0705f;
+  --m2:#e3a14f;
+  --m3:#7f8c85;
+  --m4:#6fbf97;
+  --m5:#5fb89f;
+  --compass:#8fb0e3;
+  --compass-soft:#1b2b36;
+  --output:#b8a2e6;
+  --output-soft:#2a2339;
+  --p-h:#f06a6a;
+  --p-m:#f2b632;
+  --p-l:#45c945;
+  --c1:#5d9ef0;
+  --c2:#f08a5a;
+  --c3:#35c796;
+  --c4:#f2b632;
+  --c5:#f29abd;
+  --c6:#44b544;
+  --c7:#9486e6;
+  --muted-ink:#93a199;
+  --shadow-home:0 3px 10px rgba(0,0,0,.45);
+}
+
+/* PART C — dark, 自動 (no data-theme attribute) */
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme]){
+    color-scheme:dark;
+    --bg:#0f1c18;
+    --card:#172822;
+    --field:#12211c;
+    --on-accent:#2a1606;
+    --ink:#eef1ea;
+    --muted:#a8b7af;
+    --line:#2a3f37;
+    --accent:#e8a266;
+    --accent-soft:#3a2c1c;
+    --peach:#6b4a30;
+    --danger:#f07c6c;
+    --danger-soft:#3a201c;
+    --m1:#e0705f;
+    --m2:#e3a14f;
+    --m3:#7f8c85;
+    --m4:#6fbf97;
+    --m5:#5fb89f;
+    --compass:#8fb0e3;
+    --compass-soft:#1b2b36;
+    --output:#b8a2e6;
+    --output-soft:#2a2339;
+    --p-h:#f06a6a;
+    --p-m:#f2b632;
+    --p-l:#45c945;
+    --c1:#5d9ef0;
+    --c2:#f08a5a;
+    --c3:#35c796;
+    --c4:#f2b632;
+    --c5:#f29abd;
+    --c6:#44b544;
+    --c7:#9486e6;
+    --muted-ink:#93a199;
+    --shadow-home:0 3px 10px rgba(0,0,0,.45);
   }
+}
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   html,body{margin:0; padding:0;}
   body{
@@ -62,13 +173,13 @@
 
   input[type=text], input[type=number], input[type=date], textarea, select{
     width:100%; border:1px solid var(--line); border-radius:10px;
-    padding:10px 12px; font:inherit; background:#FBFCFB; color:var(--ink);
+    padding:10px 12px; font:inherit; background:var(--field); color:var(--ink);
   }
   textarea{resize:vertical; min-height:64px;}
   input:focus, textarea:focus, select:focus{outline:2px solid var(--accent); outline-offset:0; border-color:transparent;}
   button{font:inherit; cursor:pointer;}
   .btn{
-    background:var(--accent); color:#fff; border:none; border-radius:10px;
+    background:var(--accent); color:var(--on-accent); border:none; border-radius:10px;
     padding:10px 16px; font-weight:600; width:100%;
   }
   .btn:active{opacity:.85;}
@@ -93,7 +204,7 @@
   /* 心情 */
   .moods{display:flex; gap:6px; justify-content:space-between; margin-bottom:10px;}
   .mood-btn{
-    flex:1; background:#FBFCFB; border:1px solid var(--line); border-radius:12px;
+    flex:1; background:var(--field); border:1px solid var(--line); border-radius:12px;
     font-size:24px; padding:10px 0;
   }
   .mood-btn.sel{border-color:var(--accent); background:var(--accent-soft);}
@@ -120,7 +231,7 @@
     font-size:13px; font-weight:700; color:var(--compass);
     letter-spacing:.04em; margin-bottom:6px; display:flex; align-items:center; gap:6px;
   }
-  .compass-card textarea{background:#fff;}
+  .compass-card textarea{background:var(--card);}
   .compass-card textarea:focus{outline-color:var(--compass);}
 
   /* 雜記 */
@@ -129,66 +240,14 @@
   .note-txt{white-space:pre-wrap; word-break:break-word;}
   .note-meta{display:flex; justify-content:space-between; align-items:center; margin-top:4px;}
 
-  /* 週回顧 */
-  .toggle-row{display:flex; gap:8px; margin-top:6px;}
-  .toggle-btn{
-    flex:1; background:#FBFCFB; border:1.5px solid var(--line);
-    border-radius:10px; padding:8px 4px; font-size:13px; font-weight:600; color:var(--muted);
-    text-align:center;
-  }
-  .toggle-btn.sel-fear{border-color:var(--m2); background:#FDF3E3; color:#A0620A;}
-  .toggle-btn.sel-value{border-color:var(--m5); background:var(--accent-soft); color:var(--accent);}
-  .toggle-btn.sel-mix{border-color:var(--compass); background:var(--compass-soft); color:var(--compass);}
-
-  .detector-box{
-    background:#FFFBF0; border:1.5px solid #EDD98A;
-    border-radius:12px; padding:12px; margin-top:10px;
-  }
-  .detector-label{font-size:13px; font-weight:700; color:#8A6A00; margin-bottom:8px;}
-  .detector-toggle{display:flex; gap:8px;}
-  .d-btn{
-    flex:1; background:#fff; border:1.5px solid #EDD98A;
-    border-radius:9px; padding:8px 4px; font-size:13px; font-weight:600;
-    color:#8A6A00; text-align:center;
-  }
-  .d-btn.sel{background:#EDD98A; color:#5A4000;}
-
-  .weekly-item{padding:12px 4px; border-bottom:1px solid var(--line);}
-  .weekly-item:last-child{border-bottom:none;}
-  .weekly-date{font-weight:600; font-size:13px; color:var(--compass);}
-  .weekly-body{font-size:14px; color:var(--ink); white-space:pre-wrap; margin-top:4px;}
-  .weekly-tag{
-    display:inline-block; font-size:11px; font-weight:700; border-radius:6px;
-    padding:2px 8px; margin-top:6px;
-  }
-  .tag-fear{background:#FDF3E3; color:#A0620A;}
-  .tag-value{background:var(--accent-soft); color:var(--accent);}
-  .tag-mix{background:var(--compass-soft); color:var(--compass);}
-  .tag-serve{background:#F0EBF8; color:#6A3FA0;}
-  .tag-delay{background:#FDE8E8; color:#A02020;}
-
-  /* 輸出追蹤 */
+  /* 雜記類別按鈕（原成長頁「輸出追蹤」的類型鈕，2026-09-10 併入雜記） */
   .output-type-row{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;}
   .type-btn{
-    background:#FBFCFB; border:1.5px solid var(--line); border-radius:20px;
+    background:var(--field); border:1.5px solid var(--line); border-radius:20px;
     padding:5px 12px; font-size:13px; color:var(--muted); font-weight:600;
   }
   .type-btn.sel{border-color:var(--output); background:var(--output-soft); color:var(--output);}
 
-  .output-item{display:flex; align-items:flex-start; gap:10px; padding:10px 4px; border-bottom:1px solid var(--line);}
-  .output-item:last-child{border-bottom:none;}
-  .output-type-badge{
-    font-size:11px; font-weight:700; padding:2px 8px; border-radius:6px;
-    background:var(--output-soft); color:var(--output); white-space:nowrap; flex:none; margin-top:2px;
-  }
-  .output-txt{flex:1; word-break:break-word;}
-  .output-meta{font-size:12px; color:var(--muted); margin-top:2px;}
-
-  /* 成長 tab 區塊標題 */
-  .section-title{
-    font-size:12px; font-weight:700; letter-spacing:.1em; text-transform:uppercase;
-    color:var(--muted); margin:4px 0 10px;
-  }
 
   /* 任務優先度燈號 */
   .prio-dot{
@@ -201,12 +260,12 @@
   .prio-pick{display:flex; gap:8px; align-items:center; margin-top:10px;}
   .prio-pick .lbl{font-size:13px; color:var(--muted); margin-right:2px;}
   .prio-opt{
-    background:#FBFCFB; border:1.5px solid var(--line); border-radius:20px;
+    background:var(--field); border:1.5px solid var(--line); border-radius:20px;
     padding:5px 12px; font-size:13px; font-weight:600; color:var(--muted);
     display:flex; align-items:center; gap:6px;
   }
   .prio-opt .prio-dot{width:11px; height:11px;}
-  .prio-opt.sel{border-color:var(--ink); color:var(--ink); background:#fff;}
+  .prio-opt.sel{border-color:var(--ink); color:var(--ink); background:var(--card);}
 
   /* 首頁 Dashboard */
   .dash-hero{font-size:32px; font-weight:700; letter-spacing:-0.02em; line-height:1.1;}
@@ -236,21 +295,21 @@
   .amount-input{font-size:26px !important; font-weight:700; text-align:right;}
   .cat-row{display:flex; gap:6px; flex-wrap:wrap; margin:4px 0 2px;}
   .cat-btn{
-    background:#FBFCFB; border:1.5px solid var(--line); border-radius:20px;
+    background:var(--field); border:1.5px solid var(--line); border-radius:20px;
     padding:6px 13px; font-size:13px; color:var(--muted); font-weight:600;
     display:flex; align-items:center; gap:6px;
   }
   .cat-btn .lg-dot{width:9px; height:9px; border-radius:50%;}
-  .cat-btn.sel{border-color:var(--ink); color:var(--ink); background:#fff;}
+  .cat-btn.sel{border-color:var(--ink); color:var(--ink); background:var(--card);}
   .seg{display:flex; gap:6px; margin-bottom:10px;}
   .seg button{
-    flex:1; background:#FBFCFB; border:1.5px solid var(--line); border-radius:10px;
+    flex:1; background:var(--field); border:1.5px solid var(--line); border-radius:10px;
     padding:8px 4px; font-size:14px; font-weight:600; color:var(--muted);
   }
   .seg button.sel{border-color:var(--accent); background:var(--accent-soft); color:var(--accent);}
   .month-bar{display:flex; align-items:center; justify-content:space-between; gap:8px;}
   .month-bar button{
-    background:#FBFCFB; border:1px solid var(--line); border-radius:9px;
+    background:var(--field); border:1px solid var(--line); border-radius:9px;
     padding:6px 14px; font-size:16px; color:var(--ink); line-height:1;
   }
   .month-label{font-size:15px; font-weight:700;}
@@ -259,7 +318,7 @@
   /* 分類以「色點 + 深色文字」呈現：文字用文字色階，識別靠色點，避免淺色底配白字的對比不足 */
   .exp-cat{
     font-size:12px; font-weight:600; padding:4px 9px; border-radius:7px;
-    background:#F4F6F5; color:var(--ink); white-space:nowrap; flex:none;
+    background:var(--bg); color:var(--ink); white-space:nowrap; flex:none;
     display:flex; align-items:center; gap:5px; min-width:74px;
   }
   .exp-cat .lg-dot{width:8px; height:8px; border-radius:50%; flex:none;}
@@ -269,7 +328,7 @@
   .exp-amt{font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; flex:none;}
   .exp-amt.income{color:var(--accent);}
   .edit-banner{
-    background:var(--accent-soft); border:1px solid #BCD8CC; border-radius:10px;
+    background:var(--accent-soft); border:1px solid var(--peach); border-radius:10px;
     padding:8px 12px; font-size:13px; color:var(--accent); font-weight:600;
     display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;
   }
@@ -290,17 +349,17 @@
   nav button[hidden]{display:none;} /* 需明寫，否則 nav button 的 display:flex 會蓋掉 [hidden] */
   nav .home-btn{
     flex:none; width:58px; height:58px; margin:0 6px; border-radius:50%;
-    background:var(--accent); color:#fff; box-shadow:0 3px 10px rgba(47,109,95,.32);
+    background:var(--accent); color:var(--on-accent); box-shadow:var(--shadow-home);
     align-self:center; transform:translateY(-14px); padding:0; gap:0;
     justify-content:center; font-size:10px; font-weight:600;
   }
   nav .home-btn .ico{font-size:22px;}
-  nav .home-btn.active{color:#fff;}
+  nav .home-btn.active{color:var(--on-accent);}
   nav .home-btn:active{opacity:.9;}
 
   .toast{
     position:fixed; left:50%; bottom:96px; transform:translateX(-50%);
-    background:var(--ink); color:#fff; padding:8px 16px; border-radius:20px;
+    background:var(--ink); color:var(--bg); padding:8px 16px; border-radius:20px;
     font-size:14px; opacity:0; transition:opacity .2s; pointer-events:none; z-index:20;
     white-space:nowrap;
   }
@@ -474,7 +533,6 @@
   margin-top:6px; padding:6px 12px; border-radius:10px; font-size:13px; line-height:1.5;
   background:rgba(255,92,92,.14); color:#b03030; border:1px solid rgba(255,92,92,.3);
 }
-@media (prefers-color-scheme: dark){ .conn-banner{ background:rgba(255,92,92,.12); color:#ff9b9b; } }
 .refresh-btn{
   position:absolute; top:14px; right:14px; width:36px; height:36px; border-radius:50%;
   border:1px solid rgba(128,128,128,.3); background:transparent; font-size:17px; cursor:pointer;
@@ -486,8 +544,29 @@
   font-size:12px; background:rgba(255,176,32,.16); color:#b26b00;
   border:1px solid rgba(255,176,32,.35);
 }
+/* PART D — literals the source hard-codes → tokens */
+input[type=text],input[type=number],input[type=date],textarea,select,.mood-btn,.type-btn,.prio-opt,.cat-btn,.seg button,.month-bar button{background:var(--field);}
+.btn{color:var(--on-accent);}
+nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shadow-home);}
+.prio-opt.sel,.cat-btn.sel,.compass-card textarea{background:var(--card);}
+.edit-banner{border-color:var(--peach);}
+.me-card.offline,.id-gate .gate-err,.adm-grid button.danger.on{background:var(--danger-soft);}
+.exp-cat{background:var(--bg);}
+[data-theme="dark"] .compass-card{border-color:#34496b;}
+[data-theme="dark"] .edit-banner{border-color:#5a3a20;}
+[data-theme="dark"] .adm-pending{background:#33260f; color:#f0c070;}
+[data-theme="dark"] .toast{color:var(--bg);}
+[data-theme="dark"] .conn-banner{background:rgba(255,92,92,.12); color:#ff9b9b;}
+[data-theme="dark"] .sync-badge{background:rgba(255,176,32,.14); color:#ffc766;}
+
+/* PART D (cont.) — same dark overrides for 自動 mode */
 @media (prefers-color-scheme: dark){
-  .sync-badge{ background:rgba(255,176,32,.14); color:#ffc766; }
+  :root:not([data-theme]) .compass-card{border-color:#34496b;}
+  :root:not([data-theme]) .edit-banner{border-color:#5a3a20;}
+  :root:not([data-theme]) .adm-pending{background:#33260f; color:#f0c070;}
+  :root:not([data-theme]) .toast{color:var(--bg);}
+  :root:not([data-theme]) .conn-banner{background:rgba(255,92,92,.12); color:#ff9b9b;}
+  :root:not([data-theme]) .sync-badge{background:rgba(255,176,32,.14); color:#ffc766;}
 }
 </style>
 </head>
@@ -567,6 +646,18 @@
       <div class="slot-fixed">🧭 首頁固定在圓心，其餘自由排左右</div>
       <div id="placeRows"></div>
       <p class="slot-hint">每側最多 3 個。點了就換，不用儲存；只存這支手機，不同步雲端。</p>
+    </div>
+
+    <!-- ④-2 顯示設定：亮／暗／自動，點了即時反映 -->
+    <div class="slot-card">
+      <div class="place-head">
+        <h2>🎨 顯示設定</h2>
+      </div>
+      <div class="place-row">
+        <span class="place-name">主題</span>
+        <div class="place-btns" id="themeBtns"></div>
+      </div>
+      <p class="slot-hint">「自動」跟著手機的深淺色設定。只存這支手機，不同步雲端。</p>
     </div>
 
     <!-- ⑤ 白名單管理（僅 is_admin 可見，ADR-008 D-4）
@@ -715,8 +806,6 @@
     </div>
     <div class="card">
       <h2>資料備份</h2>
-      <p style="font-size:14px;color:var(--muted);margin:0 0 10px">資料存在這支手機的瀏覽器裡，建議定期匯出備份。</p>
-      <button class="btn" onclick="exportData()">匯出 JSON 備份</button>
       <!-- 月結算：把已刪除的資料匯出到裝置，確認之後才從雲端清掉（ADR-009 §一.4）。
            刻意做成手動觸發、且刪除前一定要人按確認——不設自動清理，也不先斬後奏。 -->
       <button class="btn" onclick="archiveTombstones()">封存已刪除的資料</button>
@@ -1217,9 +1306,12 @@ const DEFAULT_PRIORITY = 'M';
    顏色綁定「分類」本身，不隨金額排名變動；環上以固定分類順序繪製，
    相鄰配色已通過 CVD 檢驗，另加 2px 底色間隙與圖例直接標籤作為第二編碼。 */
 const EXPENSE_CATEGORIES = ['餐飲','交通','日常用品','家庭','醫療','娛樂','其他'];
+/* 指向 :root 的 --c1…--c7 而不是寫死色碼：暗色主題換的是變數值，這裡跟著走。
+   「自動」模式沒有 JS 監聽（手機切深淺色時不會重畫），所以不能在 JS 裡讀出色碼快照。
+   甜甜圈的 stroke 寫進 style：CSS 變數放在 SVG 屬性裡 Chromium 認得，但不是每個引擎都保證，style 最穩。 */
 const CATEGORY_COLOR = {
-  '餐飲':'#2a78d6', '交通':'#eb6834', '日常用品':'#1baf7a', '家庭':'#eda100',
-  '醫療':'#e87ba4', '娛樂':'#008300', '其他':'#4a3aa7'
+  '餐飲':'var(--c1)', '交通':'var(--c2)', '日常用品':'var(--c3)', '家庭':'var(--c4)',
+  '醫療':'var(--c5)', '娛樂':'var(--c6)', '其他':'var(--c7)'
 };
 const MAX_DONUT_SEGMENTS = 6; // 超過的尾端併入「其他」，維持一眼可讀
 
@@ -1689,11 +1781,6 @@ function downloadJson(filename, payload){
   a.download=filename;
   a.click();
   URL.revokeObjectURL(a.href);
-}
-
-function exportData(){
-  downloadJson('neil-os-backup-'+todayKey()+'.json', state);
-  toast('備份已下載');
 }
 
 /* ---------- 封存：兩段式（ADR-009 §一.4） ----------
@@ -2191,7 +2278,7 @@ function donutSVG(rows,total){
   let offset=0;
   const arcs=rows.map(r=>{
     const len=Math.max(C*(r.amount/total)-GAP, 1);
-    const seg=`<circle cx="70" cy="70" r="${R}" fill="none" stroke="${CATEGORY_COLOR[r.cat]}"
+    const seg=`<circle cx="70" cy="70" r="${R}" fill="none" style="stroke:${CATEGORY_COLOR[r.cat]}"
       stroke-width="${SW}" stroke-dasharray="${len.toFixed(2)} ${(C-len).toFixed(2)}"
       stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 70 70)"></circle>`;
     offset+=C*(r.amount/total);
@@ -2449,6 +2536,45 @@ function applyNavPlacement(){
   }
   renderPlacementCard();
 }
+/* ---------- 顯示設定：亮／暗／自動（2026-09-24 晨曦配色票 ①） ----------
+   亮／暗 → <html data-theme="…">；自動 → 移除屬性，交給 CSS 的 prefers-color-scheme，
+   所以手機切換深淺色時不需要 JS 監聽。<head> 最前面那段同步腳本做的是同一件事，
+   只是趕在 CSS 之前，避免重開 App 先閃白。
+   與導覽配置同一條規則：存獨立的 localStorage key，不放進 state（不上雲端）。 */
+const THEME_KEY = 'personal-os-theme';
+const THEME_LABEL = { light:'亮', dark:'暗', auto:'自動' };
+function loadTheme(){
+  var t=null;
+  try{ t=localStorage.getItem(THEME_KEY); }catch(e){}
+  return THEME_LABEL[t] ? t : 'auto';   // 存壞或沒存過一律退回自動
+}
+function setTheme(t){
+  if(!THEME_LABEL[t]) return;
+  try{ localStorage.setItem(THEME_KEY,t); }catch(e){}
+  applyTheme(t);
+  renderThemeCard();
+}
+function applyTheme(t){
+  const root=document.documentElement;
+  if(t==='light'||t==='dark') root.setAttribute('data-theme',t);
+  else root.removeAttribute('data-theme');
+  /* 狀態列顏色：兩條 theme-color 各帶 media，自動時就是它們原本的值；手動時
+     兩條都改成目前主題的 --bg。原值第一次進來時記在 data-auto，色碼只寫在 <head> 一處。 */
+  const bg=getComputedStyle(root).getPropertyValue('--bg').trim();
+  document.querySelectorAll('meta[name="theme-color"]').forEach(function(m){
+    if(!m.dataset.auto) m.dataset.auto=m.getAttribute('content');
+    m.setAttribute('content', t==='auto' ? m.dataset.auto : bg);
+  });
+}
+function renderThemeCard(){
+  const box=document.getElementById('themeBtns');
+  if(!box) return;
+  const cur=loadTheme();
+  box.innerHTML=['light','dark','auto'].map(function(t){
+    return '<button class="'+(cur===t?'sel':'')+'" onclick="setTheme(\''+t+'\')">'+THEME_LABEL[t]+'</button>';
+  }).join('');
+}
+
 function renderPlacementCard(){
   const box=document.getElementById('placeRows');
   if(!box) return;
@@ -2624,6 +2750,8 @@ function renderAll(){
   expMonth=monthKey();
   document.getElementById('expDate').value=todayKey();
   renderCatRow();
+  applyTheme(loadTheme());
+  renderThemeCard();
   loadNavPlacement();
   loadIdentity();
   applyNavPlacement();
