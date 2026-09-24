@@ -17,20 +17,124 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Neil OS">
 <style>
-  :root{
-    --bg:#F3F5F4; --card:#FFFFFF; --ink:#1E2B28; --muted:#6E7D78;
-    --line:#E2E8E5; --accent:#2F6D5F; --accent-soft:#E4EFEA;
-    --danger:#C24A3A;
-    --m1:#C24A3A; --m2:#D98E32; --m3:#9AA79F; --m4:#5FA985; --m5:#2F6D5F;
-    --compass:#4A6FA5; --compass-soft:#E8EEF7;
-    --output:#7B5EA7; --output-soft:#F0EBF8;
-    /* 優先度燈號 */
-    --p-h:#D03B3B; --p-m:#EDA100; --p-l:#0CA30C;
-    /* 記帳分類（categorical，固定配色，不隨排名變動） */
-    --c1:#2a78d6; --c2:#eb6834; --c3:#1baf7a; --c4:#eda100;
-    --c5:#e87ba4; --c6:#008300; --c7:#4a3aa7;
-    --muted-ink:#898781;
+/* 晨曦配色：以下 PART A–D 逐字取自 neilos-theme-v1.css（sha256 60732ab41757…，Notion 2026-09-24 交棒頁附件），不要手改色碼 */
+/* PART A — light (default) */
+:root{
+  --bg:#fbf3e8;
+  --card:#fffdf9;
+  --field:#fffaf3;
+  --on-accent:#ffffff;
+  --ink:#1e2b28;
+  --muted:#6b6158;
+  --line:#ede2d2;
+  --accent:#a8561c;
+  --accent-soft:#fbeee0;
+  --peach:#f0c9a0;
+  --danger:#b83c2e;
+  --danger-soft:#fbe9e5;
+  --m1:#c24a3a;
+  --m2:#d98e32;
+  --m3:#9aa79f;
+  --m4:#5fa985;
+  --m5:#2f6d5f;
+  --compass:#4a6fa5;
+  --compass-soft:#eef3fa;
+  --output:#7b5ea7;
+  --output-soft:#f0ebf8;
+  --p-h:#d03b3b;
+  --p-m:#eda100;
+  --p-l:#0ca30c;
+  --c1:#2a78d6;
+  --c2:#eb6834;
+  --c3:#1baf7a;
+  --c4:#eda100;
+  --c5:#e87ba4;
+  --c6:#008300;
+  --c7:#4a3aa7;
+  --muted-ink:#898781;
+  --shadow-home:0 3px 10px rgba(168,86,28,.32);
+}
+
+/* forced light: keep native controls light even when the phone is dark */
+:root[data-theme="light"]{ color-scheme:light; }
+
+/* PART B — dark, manual */
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0f1c18;
+  --card:#172822;
+  --field:#12211c;
+  --on-accent:#2a1606;
+  --ink:#eef1ea;
+  --muted:#a8b7af;
+  --line:#2a3f37;
+  --accent:#e8a266;
+  --accent-soft:#3a2c1c;
+  --peach:#6b4a30;
+  --danger:#f07c6c;
+  --danger-soft:#3a201c;
+  --m1:#e0705f;
+  --m2:#e3a14f;
+  --m3:#7f8c85;
+  --m4:#6fbf97;
+  --m5:#5fb89f;
+  --compass:#8fb0e3;
+  --compass-soft:#1b2b36;
+  --output:#b8a2e6;
+  --output-soft:#2a2339;
+  --p-h:#f06a6a;
+  --p-m:#f2b632;
+  --p-l:#45c945;
+  --c1:#5d9ef0;
+  --c2:#f08a5a;
+  --c3:#35c796;
+  --c4:#f2b632;
+  --c5:#f29abd;
+  --c6:#44b544;
+  --c7:#9486e6;
+  --muted-ink:#93a199;
+  --shadow-home:0 3px 10px rgba(0,0,0,.45);
+}
+
+/* PART C — dark, 自動 (no data-theme attribute) */
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme]){
+    color-scheme:dark;
+    --bg:#0f1c18;
+    --card:#172822;
+    --field:#12211c;
+    --on-accent:#2a1606;
+    --ink:#eef1ea;
+    --muted:#a8b7af;
+    --line:#2a3f37;
+    --accent:#e8a266;
+    --accent-soft:#3a2c1c;
+    --peach:#6b4a30;
+    --danger:#f07c6c;
+    --danger-soft:#3a201c;
+    --m1:#e0705f;
+    --m2:#e3a14f;
+    --m3:#7f8c85;
+    --m4:#6fbf97;
+    --m5:#5fb89f;
+    --compass:#8fb0e3;
+    --compass-soft:#1b2b36;
+    --output:#b8a2e6;
+    --output-soft:#2a2339;
+    --p-h:#f06a6a;
+    --p-m:#f2b632;
+    --p-l:#45c945;
+    --c1:#5d9ef0;
+    --c2:#f08a5a;
+    --c3:#35c796;
+    --c4:#f2b632;
+    --c5:#f29abd;
+    --c6:#44b544;
+    --c7:#9486e6;
+    --muted-ink:#93a199;
+    --shadow-home:0 3px 10px rgba(0,0,0,.45);
   }
+}
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   html,body{margin:0; padding:0;}
   body{
@@ -68,13 +172,13 @@
 
   input[type=text], input[type=number], input[type=date], textarea, select{
     width:100%; border:1px solid var(--line); border-radius:10px;
-    padding:10px 12px; font:inherit; background:#FBFCFB; color:var(--ink);
+    padding:10px 12px; font:inherit; background:var(--field); color:var(--ink);
   }
   textarea{resize:vertical; min-height:64px;}
   input:focus, textarea:focus, select:focus{outline:2px solid var(--accent); outline-offset:0; border-color:transparent;}
   button{font:inherit; cursor:pointer;}
   .btn{
-    background:var(--accent); color:#fff; border:none; border-radius:10px;
+    background:var(--accent); color:var(--on-accent); border:none; border-radius:10px;
     padding:10px 16px; font-weight:600; width:100%;
   }
   .btn:active{opacity:.85;}
@@ -99,7 +203,7 @@
   /* 心情 */
   .moods{display:flex; gap:6px; justify-content:space-between; margin-bottom:10px;}
   .mood-btn{
-    flex:1; background:#FBFCFB; border:1px solid var(--line); border-radius:12px;
+    flex:1; background:var(--field); border:1px solid var(--line); border-radius:12px;
     font-size:24px; padding:10px 0;
   }
   .mood-btn.sel{border-color:var(--accent); background:var(--accent-soft);}
@@ -126,7 +230,7 @@
     font-size:13px; font-weight:700; color:var(--compass);
     letter-spacing:.04em; margin-bottom:6px; display:flex; align-items:center; gap:6px;
   }
-  .compass-card textarea{background:#fff;}
+  .compass-card textarea{background:var(--card);}
   .compass-card textarea:focus{outline-color:var(--compass);}
 
   /* 雜記 */
@@ -138,7 +242,7 @@
   /* 週回顧 */
   .toggle-row{display:flex; gap:8px; margin-top:6px;}
   .toggle-btn{
-    flex:1; background:#FBFCFB; border:1.5px solid var(--line);
+    flex:1; background:var(--field); border:1.5px solid var(--line);
     border-radius:10px; padding:8px 4px; font-size:13px; font-weight:600; color:var(--muted);
     text-align:center;
   }
@@ -153,7 +257,7 @@
   .detector-label{font-size:13px; font-weight:700; color:#8A6A00; margin-bottom:8px;}
   .detector-toggle{display:flex; gap:8px;}
   .d-btn{
-    flex:1; background:#fff; border:1.5px solid #EDD98A;
+    flex:1; background:var(--card); border:1.5px solid #EDD98A;
     border-radius:9px; padding:8px 4px; font-size:13px; font-weight:600;
     color:#8A6A00; text-align:center;
   }
@@ -176,7 +280,7 @@
   /* 輸出追蹤 */
   .output-type-row{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;}
   .type-btn{
-    background:#FBFCFB; border:1.5px solid var(--line); border-radius:20px;
+    background:var(--field); border:1.5px solid var(--line); border-radius:20px;
     padding:5px 12px; font-size:13px; color:var(--muted); font-weight:600;
   }
   .type-btn.sel{border-color:var(--output); background:var(--output-soft); color:var(--output);}
@@ -207,12 +311,12 @@
   .prio-pick{display:flex; gap:8px; align-items:center; margin-top:10px;}
   .prio-pick .lbl{font-size:13px; color:var(--muted); margin-right:2px;}
   .prio-opt{
-    background:#FBFCFB; border:1.5px solid var(--line); border-radius:20px;
+    background:var(--field); border:1.5px solid var(--line); border-radius:20px;
     padding:5px 12px; font-size:13px; font-weight:600; color:var(--muted);
     display:flex; align-items:center; gap:6px;
   }
   .prio-opt .prio-dot{width:11px; height:11px;}
-  .prio-opt.sel{border-color:var(--ink); color:var(--ink); background:#fff;}
+  .prio-opt.sel{border-color:var(--ink); color:var(--ink); background:var(--card);}
 
   /* 首頁 Dashboard */
   .dash-hero{font-size:32px; font-weight:700; letter-spacing:-0.02em; line-height:1.1;}
@@ -242,21 +346,21 @@
   .amount-input{font-size:26px !important; font-weight:700; text-align:right;}
   .cat-row{display:flex; gap:6px; flex-wrap:wrap; margin:4px 0 2px;}
   .cat-btn{
-    background:#FBFCFB; border:1.5px solid var(--line); border-radius:20px;
+    background:var(--field); border:1.5px solid var(--line); border-radius:20px;
     padding:6px 13px; font-size:13px; color:var(--muted); font-weight:600;
     display:flex; align-items:center; gap:6px;
   }
   .cat-btn .lg-dot{width:9px; height:9px; border-radius:50%;}
-  .cat-btn.sel{border-color:var(--ink); color:var(--ink); background:#fff;}
+  .cat-btn.sel{border-color:var(--ink); color:var(--ink); background:var(--card);}
   .seg{display:flex; gap:6px; margin-bottom:10px;}
   .seg button{
-    flex:1; background:#FBFCFB; border:1.5px solid var(--line); border-radius:10px;
+    flex:1; background:var(--field); border:1.5px solid var(--line); border-radius:10px;
     padding:8px 4px; font-size:14px; font-weight:600; color:var(--muted);
   }
   .seg button.sel{border-color:var(--accent); background:var(--accent-soft); color:var(--accent);}
   .month-bar{display:flex; align-items:center; justify-content:space-between; gap:8px;}
   .month-bar button{
-    background:#FBFCFB; border:1px solid var(--line); border-radius:9px;
+    background:var(--field); border:1px solid var(--line); border-radius:9px;
     padding:6px 14px; font-size:16px; color:var(--ink); line-height:1;
   }
   .month-label{font-size:15px; font-weight:700;}
@@ -265,7 +369,7 @@
   /* 分類以「色點 + 深色文字」呈現：文字用文字色階，識別靠色點，避免淺色底配白字的對比不足 */
   .exp-cat{
     font-size:12px; font-weight:600; padding:4px 9px; border-radius:7px;
-    background:#F4F6F5; color:var(--ink); white-space:nowrap; flex:none;
+    background:var(--bg); color:var(--ink); white-space:nowrap; flex:none;
     display:flex; align-items:center; gap:5px; min-width:74px;
   }
   .exp-cat .lg-dot{width:8px; height:8px; border-radius:50%; flex:none;}
@@ -275,7 +379,7 @@
   .exp-amt{font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; flex:none;}
   .exp-amt.income{color:var(--accent);}
   .edit-banner{
-    background:var(--accent-soft); border:1px solid #BCD8CC; border-radius:10px;
+    background:var(--accent-soft); border:1px solid var(--peach); border-radius:10px;
     padding:8px 12px; font-size:13px; color:var(--accent); font-weight:600;
     display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;
   }
@@ -296,12 +400,12 @@
   nav button[hidden]{display:none;} /* 需明寫，否則 nav button 的 display:flex 會蓋掉 [hidden] */
   nav .home-btn{
     flex:none; width:58px; height:58px; margin:0 6px; border-radius:50%;
-    background:var(--accent); color:#fff; box-shadow:0 3px 10px rgba(47,109,95,.32);
+    background:var(--accent); color:var(--on-accent); box-shadow:var(--shadow-home);
     align-self:center; transform:translateY(-14px); padding:0; gap:0;
     justify-content:center; font-size:10px; font-weight:600;
   }
   nav .home-btn .ico{font-size:22px;}
-  nav .home-btn.active{color:#fff;}
+  nav .home-btn.active{color:var(--on-accent);}
   nav .home-btn:active{opacity:.9;}
 
   .toast{
@@ -480,7 +584,6 @@
   margin-top:6px; padding:6px 12px; border-radius:10px; font-size:13px; line-height:1.5;
   background:rgba(255,92,92,.14); color:#b03030; border:1px solid rgba(255,92,92,.3);
 }
-@media (prefers-color-scheme: dark){ .conn-banner{ background:rgba(255,92,92,.12); color:#ff9b9b; } }
 .refresh-btn{
   position:absolute; top:14px; right:14px; width:36px; height:36px; border-radius:50%;
   border:1px solid rgba(128,128,128,.3); background:transparent; font-size:17px; cursor:pointer;
@@ -492,8 +595,43 @@
   font-size:12px; background:rgba(255,176,32,.16); color:#b26b00;
   border:1px solid rgba(255,176,32,.35);
 }
+/* PART D — literals the source hard-codes → tokens */
+input[type=text],input[type=number],input[type=date],textarea,select,.mood-btn,.toggle-btn,.type-btn,.prio-opt,.cat-btn,.seg button,.month-bar button{background:var(--field);}
+.btn{color:var(--on-accent);}
+nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shadow-home);}
+.prio-opt.sel,.cat-btn.sel,.compass-card textarea,.d-btn{background:var(--card);}
+.edit-banner{border-color:var(--peach);}
+.me-card.offline,.id-gate .gate-err,.adm-grid button.danger.on{background:var(--danger-soft);}
+.exp-cat{background:var(--bg);}
+[data-theme="dark"] .compass-card{border-color:#34496b;}
+[data-theme="dark"] .detector-box{background:#2a2415; border-color:#5c4a1a;}
+[data-theme="dark"] .detector-label,[data-theme="dark"] .d-btn{color:#e8c860;}
+[data-theme="dark"] .d-btn{border-color:#5c4a1a; background:var(--field);}
+[data-theme="dark"] .d-btn.sel{background:#e8c860; color:#1a1305;}
+[data-theme="dark"] .toggle-btn.sel-fear,[data-theme="dark"] .tag-fear{background:#33260f; color:#f0b45a;}
+[data-theme="dark"] .tag-serve{background:#2a2339; color:#c3a8f0;}
+[data-theme="dark"] .tag-delay{background:#3a1a1a; color:#f29a9a;}
+[data-theme="dark"] .edit-banner{border-color:#5a3a20;}
+[data-theme="dark"] .adm-pending{background:#33260f; color:#f0c070;}
+[data-theme="dark"] .toast{color:var(--bg);}
+[data-theme="dark"] .conn-banner{background:rgba(255,92,92,.12); color:#ff9b9b;}
+[data-theme="dark"] .sync-badge{background:rgba(255,176,32,.14); color:#ffc766;}
+
+/* PART D (cont.) — same dark overrides for 自動 mode */
 @media (prefers-color-scheme: dark){
-  .sync-badge{ background:rgba(255,176,32,.14); color:#ffc766; }
+  :root:not([data-theme]) .compass-card{border-color:#34496b;}
+  :root:not([data-theme]) .detector-box{background:#2a2415; border-color:#5c4a1a;}
+  :root:not([data-theme]) .detector-label,:root:not([data-theme]) .d-btn{color:#e8c860;}
+  :root:not([data-theme]) .d-btn{border-color:#5c4a1a; background:var(--field);}
+  :root:not([data-theme]) .d-btn.sel{background:#e8c860; color:#1a1305;}
+  :root:not([data-theme]) .toggle-btn.sel-fear,:root:not([data-theme]) .tag-fear{background:#33260f; color:#f0b45a;}
+  :root:not([data-theme]) .tag-serve{background:#2a2339; color:#c3a8f0;}
+  :root:not([data-theme]) .tag-delay{background:#3a1a1a; color:#f29a9a;}
+  :root:not([data-theme]) .edit-banner{border-color:#5a3a20;}
+  :root:not([data-theme]) .adm-pending{background:#33260f; color:#f0c070;}
+  :root:not([data-theme]) .toast{color:var(--bg);}
+  :root:not([data-theme]) .conn-banner{background:rgba(255,92,92,.12); color:#ff9b9b;}
+  :root:not([data-theme]) .sync-badge{background:rgba(255,176,32,.14); color:#ffc766;}
 }
 </style>
 </head>

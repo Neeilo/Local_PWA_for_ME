@@ -244,3 +244,33 @@ describe('新 icon（票 ③）', () => {
     assert.ok(!assets.includes('./icon-192.png'), '舊 icon 不再預先快取');
   });
 });
+
+/* ========================================================================== */
+describe('晨曦配色：舊的寫死色碼不能回來', () => {
+  // 只看 <style>：規格的驗收是「CSS 裡不再寫死」，註解與腳本裡提到色碼不算
+  const css = HTML.slice(HTML.indexOf('<style>'), HTML.indexOf('</style>'));
+
+  test('規格點名的舊綠色系全部消失', () => {
+    for (const old of ['#FBFCFB', '#BCD8CC', '#F4F6F5']) {
+      assert.equal(css.toLowerCase().includes(old.toLowerCase()), false, old + ' 還在');
+    }
+    assert.doesNotMatch(css, /rgba\(\s*47\s*,\s*109\s*,\s*95/, '舊品牌綠的陰影還在');
+  });
+
+  test('不再用 #fff 當底色；燒橘底上的字一律 on-accent', () => {
+    assert.doesNotMatch(css, /background:\s*#fff\b/i);
+    assert.match(css, /\.btn\{[^}]*color:var\(--on-accent\)/);
+    assert.match(css, /nav \.home-btn\.active\{color:var\(--on-accent\);\}/);
+  });
+
+  test('暗色有手動與自動兩條路，而且自動只在沒有 data-theme 時生效', () => {
+    assert.match(css, /:root\[data-theme="dark"\]\{[^}]*--bg:#0f1c18/);
+    assert.match(css, /@media \(prefers-color-scheme: dark\)\{\s*:root:not\(\[data-theme\]\)\{[^}]*--bg:#0f1c18/);
+    assert.match(css, /:root\[data-theme="light"\]\{ color-scheme:light; \}/, '強制亮色要把原生控制項也鎖成亮的');
+  });
+
+  test('舊的兩條 prefers-color-scheme 規則已刪（它們在「強制亮」時仍會跟著手機變暗）', () => {
+    assert.doesNotMatch(css, /@media \(prefers-color-scheme: dark\)\{\s*\.conn-banner/);
+    assert.doesNotMatch(css, /@media \(prefers-color-scheme: dark\)\{\s*\.sync-badge/);
+  });
+});
