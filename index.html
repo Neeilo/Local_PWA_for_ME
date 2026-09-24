@@ -1363,40 +1363,6 @@ function load(){
   migrate();
   renderConnState(); renderAll();
 }
-/* ---------- state 讀取層去重（ADR-007 票 B） ----------
-   同一個 id 在 state 裡躺兩筆，畫面就會跟著出現兩列。這裡以 id 為 key 去重，
-   同 id 只留「後者」——後面那筆視為較新的編輯。
-
-   放在 state 的共用出口（load 與 pullFromCloud），不放在各 render 函式：
-   一次涵蓋全模組，日後新增分頁不需要記得補一行。
-
-   pullFromCloud 的合併是「id 不在本機就 push」，而那份 id 集合是進迴圈前
-   算一次的——雲端同一個 id 的兩列會兩筆都被收進來。這裡是那條路徑的終點閘門。
-
-   ⚠️ 技術債，明講：這是遮蔽症狀，不是根除成因。根因在後端 doPost 無條件
-   append（票 A，待 Code.gs 進 repo 後施工），以及「本機為何先生出兩筆同 id」
-   （ADR-007 未來票，未解）。日後若納悶「資料明明兩筆為什麼只顯示一筆」，
-   答案在這裡。 */
-function dedupeById(list){
-  if(!Array.isArray(list)) return list;
-  const lastIndexById=new Map();
-  const idOf=item=>(item && item.id!=null) ? String(item.id) : '';
-  list.forEach((item,i)=>{ const id=idOf(item); if(id) lastIndexById.set(id,i); });
-  // 沒有 id 的資料原樣留著：把它們當成同一筆併掉會是真正的資料遺失
-  return list.filter((item,i)=>{ const id=idOf(item); return !id || lastIndexById.get(id)===i; });
-}
-function dedupeState(){
-  let removed=0;
-  ['tasks','moods','notes','expenses'].forEach(k=>{
-    const before=Array.isArray(state[k])?state[k].length:0;
-    state[k]=dedupeById(state[k]);
-    removed+=before-(Array.isArray(state[k])?state[k].length:0);
-  });
-  // reviews 的鍵含 line_id，天生不會有兩筆同鍵，不需處理（見 reviewKey）
-  // 靜默的修復跟靜默的失敗一樣難查：留一行 console 讓「還在重複」與「已被去掉」分得出來
-  if(removed) console.log(`[ADR-007 票 B] state 去重：移除 ${removed} 筆重複 id`);
-  return removed;
-}
 /* ---------- 日誌的鍵：日期 ＋ 寫的人 ----------
    改版前 state.reviews 的鍵只有日期，這在單人時代沒問題，多人之後會出事：
    你和家人同一天各寫一篇複盤，在資料模型裡是同一筆——pull 的合併規則是
@@ -1421,26 +1387,9 @@ function reviewOwnerOf(key){
   const i=String(key).indexOf(REVIEW_KEY_SEP);
   return i===-1 ? '' : String(key).slice(i+1);
 }
-/* 舊的純日期鍵 → 組合鍵。**不自動認領成自己的**：沒有 line_id 的舊資料鍵尾留空，
-   跟其他模組「不自動蓋章」的處理一致（要認是「認領舊資料」那顆按鈕的事）。
-   舊鍵各自唯一，換算後也各自唯一，不會互相覆蓋。 */
-function migrateReviewKeys(){
-  const src=state.reviews||{};
-  const keys=Object.keys(src);
-  if(!keys.some(k=>String(k).indexOf(REVIEW_KEY_SEP)===-1)) return false;
-
-  const next={};
-  keys.forEach(k=>{
-    const r=src[k]||{};
-    next[String(k).indexOf(REVIEW_KEY_SEP)===-1 ? reviewKey(k, r.line_id||'') : k]=r;
-  });
-  state.reviews=next;
-  console.log('[ADR-008] 日誌的鍵已改為「日期＋寫的人」，換算 '+keys.length+' 筆');
-  return true;
-}
 /* 既有任務首次載入補上預設優先度 M（ADR-004 §3） */
 function migrate(){
-  let changed=migrateReviewKeys();
+  let changed=false;
   state.tasks.forEach(t=>{
     if(!PRIORITIES.includes(t.priority)){ t.priority=DEFAULT_PRIORITY; changed=true; }
   });
