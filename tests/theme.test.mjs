@@ -155,7 +155,7 @@ describe('applyTheme — 狀態列 theme-color', () => {
 /* ========================================================================== */
 describe('<head> 防閃白腳本', () => {
   // 取出 <head> 裡那一行 inline script（主程式的 <script> 是獨立一行，不會被抓到）
-  const m = HTML.match(/<script>(try\{[^\n]*?)<\/script>/);
+  const m = HTML.match(/<script>(\(function\(\)\{try\{[^\n]*?)<\/script>/);
 
   function runHead(storage) {
     const root = makeRoot();
@@ -179,6 +179,12 @@ describe('<head> 防閃白腳本', () => {
       e.call('applyTheme', e.call('loadTheme'));
       assert.equal(runHead(storage), root.attrs['data-theme'], '儲存值：' + stored);
     }
+  });
+
+  test('不在全域留下變數（主程式日後若在頂層宣告同名 let／const，整支腳本會語法錯誤）', () => {
+    const ctx = createContext({ document: { documentElement: makeRoot() }, localStorage: { getItem: () => 'dark' } });
+    runInContext(m[1], ctx);
+    assert.equal('t' in ctx, false);
   });
 
   test('localStorage 讀不到（私密瀏覽）：不丟例外，維持自動', () => {

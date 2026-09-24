@@ -5,7 +5,7 @@
 <!-- 防閃白：CSS 載入前先把手動選的主題掛上 <html>。「自動」不掛屬性，交給 CSS 的 prefers-color-scheme。
      charset 必須留在第一行（瀏覽器只在前 1024 bytes 找它），這段緊接在後，仍早於所有 CSS。
      刻意寫成一行：tests/fake-browser.mjs 以「整行只有 <script>」找主程式，這段不能被誤認。 -->
-<script>try{var t=localStorage.getItem('personal-os-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
+<script>(function(){try{var t=localStorage.getItem('personal-os-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Neil OS — 個人小系統</title>
 <meta name="theme-color" content="#FBF3E8" media="(prefers-color-scheme: light)">
