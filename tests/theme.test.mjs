@@ -18,11 +18,40 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
+import { inflateSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { loadFrontend } from './fake-browser.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+/** 最小 PNG 解碼：只支援 8-bit RGB／RGBA、非交錯（resvg 產出的就是這種） */
+function decodePng(buf) {
+  let p = 8, w, h, ct; const idat = [];
+  while (p < buf.length) {
+    const len = buf.readUInt32BE(p), type = buf.toString('ascii', p + 4, p + 8), d = buf.subarray(p + 8, p + 8 + len);
+    if (type === 'IHDR') { w = d.readUInt32BE(0); h = d.readUInt32BE(4); ct = d[9]; assert.equal(d[8], 8, '只支援 8-bit'); }
+    if (type === 'IDAT') idat.push(d);
+    p += 12 + len;
+  }
+  const bpp = { 6: 4, 2: 3 }[ct]; assert.ok(bpp, '只支援 RGB／RGBA');
+  const raw = inflateSync(Buffer.concat(idat)), stride = w * bpp, px = Buffer.alloc(w * h * 4);
+  let prev = Buffer.alloc(stride), opaque = true;
+  for (let y = 0; y < h; y++) {
+    const f = raw[y * (stride + 1)], line = Buffer.from(raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)));
+    for (let x = 0; x < stride; x++) {
+      const a = x >= bpp ? line[x - bpp] : 0, b = prev[x], c = x >= bpp ? prev[x - bpp] : 0;
+      const pr = a + b - c, pa = Math.abs(pr - a), pb = Math.abs(pr - b), pc = Math.abs(pr - c);
+      line[x] = (line[x] + [0, a, b, (a + b) >> 1, (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c)][f]) & 255;
+    }
+    for (let x = 0; x < w; x++) for (let k = 0; k < 4; k++) {
+      const v = k < bpp ? line[x * bpp + k] : 255; px[(y * w + x) * 4 + k] = v;
+      if (k === 3 && v !== 255) opaque = false;
+    }
+    prev = line;
+  }
+  return { w, h, px, opaque };
+}
 const HTML = readFileSync(join(ROOT, 'index.html'), 'utf8');
 const THEME_KEY = 'personal-os-theme';
 
@@ -234,10 +263,34 @@ describe('新 icon（票 ③）', () => {
     for (const i of manifest.icons) readFileSync(join(ROOT, i.src));   // 不存在會丟例外
   });
 
-  test('iOS 用 180，瀏覽器分頁用 SVG 母稿', () => {
-    assert.match(HTML, /<link rel="apple-touch-icon" href="neilos-icon-180\.png">/);
+  test('iOS 用 180 滿版圖，瀏覽器分頁用 SVG 母稿', () => {
+    assert.match(HTML, /<link rel="apple-touch-icon" href="neilos-icon-ios-180\.png">/);
     assert.match(HTML, /<link rel="icon" type="image\/svg\+xml" href="neilos-icon\.svg">/);
-    readFileSync(join(ROOT, 'neilos-icon-180.png'));
+  });
+
+  /* iOS 不裁切，而是把整張正方形套上自己的圓角。母稿為了 Android maskable 的安全圓，
+     拼塊只佔中間 56%、四周是暖米底——直接拿去給 iOS，主畫面就會是「暖米外框裡
+     又一個圓角方塊」（Neil 2026-09-24 實機回報）。所以 iOS 那張必須滿版：
+     四個角與四邊中點都要落在拼塊顏色上，不能是暖米底。 */
+  test('iOS 圖示是滿版：四角與四邊都是拼塊，不是暖米底', () => {
+    const png = decodePng(readFileSync(join(ROOT, 'neilos-icon-ios-180.png')));
+    assert.equal(png.w, 180); assert.equal(png.h, 180);
+    const at = (x, y) => { const i = (y * png.w + x) * 4; return '#' + [0, 1, 2].map(k => png.px[i + k].toString(16).padStart(2, '0')).join(''); };
+    const cream = '#fbf3e8';
+    const expect = { '左上': [[1, 1], '#1e2b28'], '右上': [[178, 1], '#f0c9a0'], '左下': [[1, 178], '#c24a3a'], '右下': [[178, 178], '#4a6fa5'] };
+    for (const [name, [[x, y], color]] of Object.entries(expect)) {
+      assert.equal(at(x, y), color, name + '角要是拼塊色');
+    }
+    for (const [x, y] of [[90, 0], [0, 90], [179, 90], [90, 179]]) {
+      assert.notEqual(at(x, y), cream, `(${x},${y}) 不能是暖米底`);
+    }
+    assert.ok(png.opaque, 'iOS 圖示不能有透明像素（iOS 會把透明補成黑色）');
+  });
+
+  test('Android 512 維持 maskable 版型：拼塊在中間、四周留暖米安全邊', () => {
+    const png = decodePng(readFileSync(join(ROOT, 'neilos-icon-512.png')));
+    const i = (5 * png.w + 5) * 4;
+    assert.deepEqual([png.px[i], png.px[i + 1], png.px[i + 2]], [0xfb, 0xf3, 0xe8]);
   });
 
   test('Service Worker 預先快取的每個檔案都存在（少一個整個 install 就失敗）', () => {
