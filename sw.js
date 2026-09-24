@@ -1,6 +1,6 @@
-/* Neil OS Service Worker v19 — HTML network-first，其餘資產 cache-first */
-const CACHE = 'neil-os-v19';
-const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
+/* Neil OS Service Worker v20 — HTML network-first，其餘資產 cache-first */
+const CACHE = 'neil-os-v20';
+const ASSETS = ['./', './index.html', './manifest.json', './neilos-icon.svg', './neilos-icon-192.png', './neilos-icon-512.png', './neilos-icon-180.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));

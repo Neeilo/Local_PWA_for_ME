@@ -2,11 +2,17 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
+<!-- 防閃白：CSS 載入前先把手動選的主題掛上 <html>。「自動」不掛屬性，交給 CSS 的 prefers-color-scheme。
+     charset 必須留在第一行（瀏覽器只在前 1024 bytes 找它），這段緊接在後，仍早於所有 CSS。
+     刻意寫成一行：tests/fake-browser.mjs 以「整行只有 <script>」找主程式，這段不能被誤認。 -->
+<script>try{var t=localStorage.getItem('personal-os-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Neil OS — 個人小系統</title>
-<meta name="theme-color" content="#2F6D5F">
+<meta name="theme-color" content="#FBF3E8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0F1C18" media="(prefers-color-scheme: dark)">
 <link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/svg+xml" href="neilos-icon.svg">
+<link rel="apple-touch-icon" href="neilos-icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Neil OS">
@@ -567,6 +573,18 @@
       <div class="slot-fixed">🧭 首頁固定在圓心，其餘自由排左右</div>
       <div id="placeRows"></div>
       <p class="slot-hint">每側最多 3 個。點了就換，不用儲存；只存這支手機，不同步雲端。</p>
+    </div>
+
+    <!-- ④-2 顯示設定：亮／暗／自動，點了即時反映 -->
+    <div class="slot-card">
+      <div class="place-head">
+        <h2>🎨 顯示設定</h2>
+      </div>
+      <div class="place-row">
+        <span class="place-name">主題</span>
+        <div class="place-btns" id="themeBtns"></div>
+      </div>
+      <p class="slot-hint">「自動」跟著手機的深淺色設定。只存這支手機，不同步雲端。</p>
     </div>
 
     <!-- ⑤ 白名單管理（僅 is_admin 可見，ADR-008 D-4）
@@ -1217,9 +1235,12 @@ const DEFAULT_PRIORITY = 'M';
    顏色綁定「分類」本身，不隨金額排名變動；環上以固定分類順序繪製，
    相鄰配色已通過 CVD 檢驗，另加 2px 底色間隙與圖例直接標籤作為第二編碼。 */
 const EXPENSE_CATEGORIES = ['餐飲','交通','日常用品','家庭','醫療','娛樂','其他'];
+/* 指向 :root 的 --c1…--c7 而不是寫死色碼：暗色主題換的是變數值，這裡跟著走。
+   「自動」模式沒有 JS 監聽（手機切深淺色時不會重畫），所以不能在 JS 裡讀出色碼快照。
+   甜甜圈的 stroke 寫進 style：CSS 變數放在 SVG 屬性裡 Chromium 認得，但不是每個引擎都保證，style 最穩。 */
 const CATEGORY_COLOR = {
-  '餐飲':'#2a78d6', '交通':'#eb6834', '日常用品':'#1baf7a', '家庭':'#eda100',
-  '醫療':'#e87ba4', '娛樂':'#008300', '其他':'#4a3aa7'
+  '餐飲':'var(--c1)', '交通':'var(--c2)', '日常用品':'var(--c3)', '家庭':'var(--c4)',
+  '醫療':'var(--c5)', '娛樂':'var(--c6)', '其他':'var(--c7)'
 };
 const MAX_DONUT_SEGMENTS = 6; // 超過的尾端併入「其他」，維持一眼可讀
 
@@ -2191,7 +2212,7 @@ function donutSVG(rows,total){
   let offset=0;
   const arcs=rows.map(r=>{
     const len=Math.max(C*(r.amount/total)-GAP, 1);
-    const seg=`<circle cx="70" cy="70" r="${R}" fill="none" stroke="${CATEGORY_COLOR[r.cat]}"
+    const seg=`<circle cx="70" cy="70" r="${R}" fill="none" style="stroke:${CATEGORY_COLOR[r.cat]}"
       stroke-width="${SW}" stroke-dasharray="${len.toFixed(2)} ${(C-len).toFixed(2)}"
       stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 70 70)"></circle>`;
     offset+=C*(r.amount/total);
@@ -2449,6 +2470,45 @@ function applyNavPlacement(){
   }
   renderPlacementCard();
 }
+/* ---------- 顯示設定：亮／暗／自動（2026-09-24 晨曦配色票 ①） ----------
+   亮／暗 → <html data-theme="…">；自動 → 移除屬性，交給 CSS 的 prefers-color-scheme，
+   所以手機切換深淺色時不需要 JS 監聽。<head> 最前面那段同步腳本做的是同一件事，
+   只是趕在 CSS 之前，避免重開 App 先閃白。
+   與導覽配置同一條規則：存獨立的 localStorage key，不放進 state（不上雲端）。 */
+const THEME_KEY = 'personal-os-theme';
+const THEME_LABEL = { light:'亮', dark:'暗', auto:'自動' };
+function loadTheme(){
+  var t=null;
+  try{ t=localStorage.getItem(THEME_KEY); }catch(e){}
+  return THEME_LABEL[t] ? t : 'auto';   // 存壞或沒存過一律退回自動
+}
+function setTheme(t){
+  if(!THEME_LABEL[t]) return;
+  try{ localStorage.setItem(THEME_KEY,t); }catch(e){}
+  applyTheme(t);
+  renderThemeCard();
+}
+function applyTheme(t){
+  const root=document.documentElement;
+  if(t==='light'||t==='dark') root.setAttribute('data-theme',t);
+  else root.removeAttribute('data-theme');
+  /* 狀態列顏色：兩條 theme-color 各帶 media，自動時就是它們原本的值；手動時
+     兩條都改成目前主題的 --bg。原值第一次進來時記在 data-auto，色碼只寫在 <head> 一處。 */
+  const bg=getComputedStyle(root).getPropertyValue('--bg').trim();
+  document.querySelectorAll('meta[name="theme-color"]').forEach(function(m){
+    if(!m.dataset.auto) m.dataset.auto=m.getAttribute('content');
+    m.setAttribute('content', t==='auto' ? m.dataset.auto : bg);
+  });
+}
+function renderThemeCard(){
+  const box=document.getElementById('themeBtns');
+  if(!box) return;
+  const cur=loadTheme();
+  box.innerHTML=['light','dark','auto'].map(function(t){
+    return '<button class="'+(cur===t?'sel':'')+'" onclick="setTheme(\''+t+'\')">'+THEME_LABEL[t]+'</button>';
+  }).join('');
+}
+
 function renderPlacementCard(){
   const box=document.getElementById('placeRows');
   if(!box) return;
@@ -2624,6 +2684,8 @@ function renderAll(){
   expMonth=monthKey();
   document.getElementById('expDate').value=todayKey();
   renderCatRow();
+  applyTheme(loadTheme());
+  renderThemeCard();
   loadNavPlacement();
   loadIdentity();
   applyNavPlacement();
