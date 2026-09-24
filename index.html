@@ -871,8 +871,6 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
     </div>
     <div class="card">
       <h2>資料備份</h2>
-      <p style="font-size:14px;color:var(--muted);margin:0 0 10px">資料存在這支手機的瀏覽器裡，建議定期匯出備份。</p>
-      <button class="btn" onclick="exportData()">匯出 JSON 備份</button>
       <!-- 月結算：把已刪除的資料匯出到裝置，確認之後才從雲端清掉（ADR-009 §一.4）。
            刻意做成手動觸發、且刪除前一定要人按確認——不設自動清理，也不先斬後奏。 -->
       <button class="btn" onclick="archiveTombstones()">封存已刪除的資料</button>
@@ -1848,11 +1846,6 @@ function downloadJson(filename, payload){
   a.download=filename;
   a.click();
   URL.revokeObjectURL(a.href);
-}
-
-function exportData(){
-  downloadJson('neil-os-backup-'+todayKey()+'.json', state);
-  toast('備份已下載');
 }
 
 /* ---------- 封存：兩段式（ADR-009 §一.4） ----------
