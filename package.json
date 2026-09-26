@@ -2,7 +2,7 @@
   "name": "local-pwa-for-me",
   "version": "1.0.0",
   "private": true,
-  "description": "Neil OS — 本地優先 PWA；Apps Script 後端由 GitHub Actions 單向部署，本機 clasp 只讀不寫",
+  "description": "Neil OS — 雲端為真相的 PWA（Google Sheets）；Apps Script 後端由 GitHub Actions 單向部署，本機 clasp 只讀不寫",
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
