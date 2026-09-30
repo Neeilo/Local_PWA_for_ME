@@ -23,6 +23,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 白名單漏登記（新資產沒加進 scripts/site-files.mjs）會讓線上少一個檔，
+      # 那個檢查寫在測試裡，所以 Pages 這邊也先跑一次，不靠另一個 job 擋。
+      - name: Run the tests before publishing
+        run: npm test
+
       - name: Inject cloud sync secrets into index.html
         env:
           CLOUD_URL: ${{ secrets.CLOUD_URL }}
@@ -31,14 +36,15 @@ jobs:
           sed -i "s|__CLOUD_URL__|${CLOUD_URL}|g" index.html
           sed -i "s|__CLOUD_SECRET__|${CLOUD_SECRET}|g" index.html
 
-      # 上傳用的是 path: .（整個 repo），所以 apps-script/ 本來會跟著發布到
-      # Pages 上被公開讀取。這裡刪的是 runner 上的暫存副本，不動 repo。
-      - name: Keep Apps Script sources out of the published site
-        run: rm -rf apps-script
+      # 白名單發布：只上傳 scripts/site-files.mjs 列出的檔案。
+      # 原本是整包上傳、只排除 apps-script/ 的黑名單制，新增的檔案預設公開——
+      # 交接.md 就是這樣被公開了約 3 天。改成白名單後，新檔案預設不公開。
+      - name: Collect only the files the app needs
+        run: node scripts/site-files.mjs _site
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: .
+          path: _site
 
       - id: deployment
         uses: actions/deploy-pages@v4
@@ -155,6 +161,17 @@ jobs:
               exit 1
               ;;
           esac
+
+      # 發行號：LINE 回「沒有這個前綴」時會附在最後一行，用來確認線上是哪一版。
+      # 只在這裡產生、不進 git（.gitignore）——它每次部署都不同，進版控只會製造 diff。
+      # 放在 preflight 之前，讓 preflight 列出的「將送出的檔案」包含它。
+      - name: Stamp the build number into the Apps Script sources
+        if: steps.mirror.outputs.ready == 'true'
+        run: |
+          built_at="$(TZ=Asia/Taipei date '+%m-%d %H:%M')"
+          printf "var BUILD_INFO = { run: '%s', sha: '%s', builtAt: '%s' };\n" \
+            "$GITHUB_RUN_NUMBER" "${GITHUB_SHA:0:7}" "$built_at" > apps-script/build-info.gs
+          cat apps-script/build-info.gs
 
       # 與本機同一道閘門（scripts/clasp-preflight.mjs）：
       # 同一個判斷只有一份實作，兩邊不會各自漂移。

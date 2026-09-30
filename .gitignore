@@ -10,3 +10,6 @@
 # Node
 node_modules/
 npm-debug.log*
+
+# CI 每次部署時產生的發行號（見 deploy.yml），npm run pull 也會把它帶回來
+apps-script/build-info.gs

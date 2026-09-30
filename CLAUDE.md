@@ -5,10 +5,9 @@
 
 ## 專案速覽
 - Stack：純 HTML/CSS/JS + Google Apps Script（Web App，唯一的「後端」）+ Google Sheet（唯一的「資料庫」）+ Service Worker + GitHub Pages 靜態託管
-- 沒有傳統帳密系統，身份驗證靠 LINE `ALLOWED_USER_IDS` 白名單
-- 單人維護，沒有 CI 強制檢查——這份檔案就是唯一的品質關卡
+- 沒有傳統帳密系統，寫入由 `line_users` 白名單把關（後端 `writeGate_`，ADR-008）；**讀取（`doGet`）目前不需驗證**，見 Notion grill-me ②
+- 單人維護。push 到 `main` 後 CI 會跑密鑰掃描與 `npm test`，失敗就不部署；但 **PR 本身不跑 CI**，合併前的品質關卡仍是這份檔案與本機 `npm test`
 - Notion 是決策的 single source of truth，架構決策一律先有 ADR 才實作
-- 目前已知未解衝突：`codex/security-sync-hardening-20260916` 分支（尚未 merge、未 rebase 到 ADR-009；兩者都動到 sync/離線邏輯）
 
 ---
 
@@ -35,7 +34,7 @@ Neil OS 本身沒有 runtime AI 決策元件（分類、路由都是純邏輯）
 一次對話：接近預算就主動總結「已做/已驗證/剩下什麼」，建議重開對話或交給 grill-me 收斂，而不是默默繼續燒。
 
 ## Rule 7 — 衝突要攤開講，不要兩邊都照顧
-**這條直接對應目前的真實狀況**：`codex/security-sync-hardening-20260916` 分支與已 merge 的 ADR-009 都改到 sync/離線邏輯。如果你同時看到兩套寫法，不准自己「融合」出一個兩邊都滿足的版本——那是最難維護的程式碼。
+當兩個分支、兩份文件或兩套寫法對同一件事（尤其是 sync／離線邏輯）有不同做法時，不准自己「融合」出一個兩邊都滿足的版本——那是最難維護的程式碼。
 選一個（通常是較新、測試較完整的那個），說明理由，把另一個標記為待清理，交給我決定。
 
 ## Rule 8 — 寫之前先讀

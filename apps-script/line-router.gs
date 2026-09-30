@@ -351,7 +351,7 @@ function routeLineMessage_(rawText, userId) {
   var route = ROUTE_TABLE[prefix];
 
   if (!route) {
-    return '沒有這個前綴喔。\n' + supportedPrefixesMessage_();
+    return '沒有這個前綴喔。\n' + supportedPrefixesMessage_() + '\n' + versionLine_();
   }
   if (slash === -1) {
     var missing = '「' + prefix + '」後面要接內容喔。\n格式：' + route.usage;
@@ -1113,6 +1113,21 @@ function supportedPrefixesMessage_() {
   lines.push('・' + REGISTER_USAGE);
   lines.push('（輸入 whoami 可查自己的 userId）');
   return lines.join('\n');
+}
+
+/**
+ * 線上後端的發行號，附在「沒有這個前綴」回覆的最後一行，用來確認部署的是哪一版。
+ *
+ * BUILD_INFO 由 CI 在 clasp push 前寫進 build-info.gs（不進 git）。GAS 各檔共用
+ * 全域，這裡在「呼叫時」才讀，所以跟檔案載入順序無關。讀不到就明講未知：
+ * 代表這份程式不是 CI 部署的（例如在編輯器手改過），那正是要被看見的事。
+ *
+ * 只加在「沒有這個前綴」：它排在白名單之後，陌生人看不到版本資訊。
+ */
+function versionLine_() {
+  var info = typeof BUILD_INFO === 'undefined' ? null : BUILD_INFO;
+  if (!info || !info.sha) return '目前版本：未知（不是由 CI 部署的程式）';
+  return '目前版本：#' + info.run + ' · main@' + info.sha + '（' + info.builtAt + '）';
 }
 
 function categoryListMessage_() {

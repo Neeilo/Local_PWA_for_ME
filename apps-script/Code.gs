@@ -692,7 +692,9 @@ var ADR009_COLUMNS = {
 
 /**
  * 把 wanted 裡缺的欄名 append 到表頭最右邊，回傳這次補了什麼。
- * 一律往右加、不插入中間：欄序一變，正在跑的 replaceAll 就會把資料寫進錯誤的欄。
+ * 一律往右加、不插入中間：寫入端（upsert、LINE 的 appendToSheet_）都依表頭名稱
+ * 對位，欄序不影響正確性；往右加只是讓既有欄位的位置不變，方便人工對照。
+ * （原本的理由是 replaceAll 依位置整張重寫，已於 ADR-009 退場。）
  */
 function ensureColumnsOnSheet_(sheet, wanted) {
   const headers = sheetHeaders_(sheet);
@@ -714,8 +716,8 @@ function ensureColumnsOnSheet_(sheet, wanted) {
  * 寫入都多讀一次表頭，而這件事一輩子只需要發生一次。比照 diagnoseLineUsers()
  * 的操作方式，手動執行、看執行記錄。
  *
- * 分頁不存在就略過不建——這五張表會在第一次同步時自己長出來，這裡先建一張
- * 只有表頭的空表，反而會讓下一次 replaceAll 的表頭對不上。
+ * 分頁不存在就略過不建：ADR-009 之後 upsert 找不到分頁會回 sheet_not_found，
+ * 不會自動建表。缺分頁代表環境有問題，要人去看，不在這裡默默補一張。
  */
 function ensureAdr009Columns() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -724,7 +726,7 @@ function ensureAdr009Columns() {
   Object.keys(ADR009_COLUMNS).forEach(name => {
     const sheet = ss.getSheetByName(name);
     if (!sheet) {
-      console.log('⏭️ 分頁「' + name + '」不存在，略過（它會在第一次同步時自己長出來）');
+      console.log('⏭️ 分頁「' + name + '」不存在，略過（upsert 不會自動建表，請先確認試算表是否正確）');
       summary[name] = { added: [], existing: [], reason: 'sheet_missing' };
       return;
     }
