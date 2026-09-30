@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -148,6 +149,46 @@ export class FakeSheet {
   }
 }
 
+/**
+ * CacheService 的假物件（ADR-010）。
+ *
+ * 配對碼只活在快取裡，所以這裡要假得比「呼叫不會爆」多一點：TTL 真的會到期
+ * （時鐘由測試推進，不綁系統時間），而且可以把任何一個鍵**提早踢掉**——
+ * 真的 CacheService 不保證存到 TTL，ADR-010 把「提早逐出」列為 Assumption，
+ * 測試要能演出那個情境。
+ */
+export class FakeCache {
+  constructor(clock) {
+    this.clock = clock;
+    this.map = new Map();
+  }
+
+  get(k) {
+    const hit = this.map.get(k);
+    if (!hit) return null;
+    if (hit.until <= this.clock.now()) { this.map.delete(k); return null; }
+    return hit.v;
+  }
+
+  put(k, v, ttl = 600) {
+    this.map.set(k, { v: String(v), until: this.clock.now() + ttl * 1000 });
+  }
+
+  remove(k) {
+    this.map.delete(k);
+  }
+
+  /** 測試用：模擬 Google 提早逐出（不等 TTL） */
+  evict(prefix = '') {
+    [...this.map.keys()].filter((k) => k.startsWith(prefix)).forEach((k) => this.map.delete(k));
+  }
+
+  /** 測試用：列出目前還活著的鍵 */
+  keys(prefix = '') {
+    return [...this.map.keys()].filter((k) => k.startsWith(prefix) && this.get(k) !== null);
+  }
+}
+
 class FakeSpreadsheet {
   constructor(sheets) {
     this.sheets = sheets;
@@ -174,12 +215,17 @@ class FakeSpreadsheet {
  * 回傳的 call() 直接呼叫原始碼裡的函式，read() 讀得到頂層的 const
  * （vm 的頂層 const 不會變成全域屬性，但同一個 context 裡的後續運算看得見）。
  */
-export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [] } = {}) {
+export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [], cache = false, overrides = {} } = {}) {
   const logs = [];              // console.log 的內容
   const transactions = [];      // logTransaction_ 收到的參數
   const pushes = [];            // linePush_ 收到的 (userId, text)
   const triggers = [];          // ScriptApp 建出來的觸發器
   const ss = new FakeSpreadsheet(sheets);
+
+  // 快取預設關著（getScriptCache 丟例外），既有測試的行為一個字都不變。
+  // 要測配對的才打開：配對碼只存在快取裡，沒有快取就沒有配對。
+  const clock = { t: Date.UTC(2026, 8, 30, 1, 0, 0), now() { return this.t; }, advance(sec) { this.t += sec * 1000; } };
+  const fakeCache = cache ? new FakeCache(clock) : null;
 
   /** line-router.gs 裡的推播函式。Code.gs 靠全域範圍看見它，這裡假一個 */
   const linePush_ = (to, text) => {
@@ -220,7 +266,7 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
       getScriptProperties: () => ({ getProperty: (k) => (k in properties ? properties[k] : null) })
     },
     CacheService: {
-      getScriptCache: () => { throw new Error('測試不碰快取'); }
+      getScriptCache: () => { if (fakeCache) return fakeCache; throw new Error('測試不碰快取'); }
     },
     ContentService: {
       createTextOutput: (s) => ({ setMimeType: () => ({ body: s }) }),
@@ -233,7 +279,16 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
     ScriptApp,
     // 時間戳只要固定格式就好：要驗的是「有寫」，不是 Google 的時區換算
     Session: { getScriptTimeZone: () => 'Asia/Taipei' },
-    Utilities: { formatDate: () => '2026-09-23 06:00' },
+    Utilities: {
+      formatDate: () => '2026-09-23 06:00',
+      getUuid: () => randomUUID(),
+      // 真的 computeDigest 回的是 Java 的有號位元組（-128～127），照樣假，
+      // 否則 tokenHash_ 裡「轉回 0～255」那一步就測不到
+      computeDigest: (_alg, text) => Array.from(createHash('sha256').update(String(text), 'utf8').digest(),
+        (b) => (b > 127 ? b - 256 : b)),
+      DigestAlgorithm: { SHA_256: 'SHA_256' },
+      Charset: { UTF_8: 'UTF_8' }
+    },
     Date,
     Array,
     Object,
@@ -248,6 +303,12 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
   extraFiles.forEach((name) => {
     runInContext(readFileSync(join(ROOT, 'apps-script', name), 'utf8'), context, { filename: name });
   });
+  // line-router.gs 被載進來時會用真的 logTransaction_／linePush_ 蓋掉上面的記錄器。
+  // 裝回去：測試要看的是「有沒有記」，不是記進 Sheet 的格式。其餘出口（例如
+  // lineReply_）由 overrides 換成記錄器——函式呼叫在執行時才查全域，換掉的就是實際被呼叫的那個。
+  context.logTransaction_ = (...args) => transactions.push(args);
+  context.linePush_ = linePush_;
+  Object.assign(context, overrides);
 
   return {
     ss,
@@ -256,6 +317,8 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
     transactions,
     pushes,
     triggers,
+    cache: fakeCache,
+    clock,
     /** 呼叫 Code.gs 裡的函式，回傳值搬回這一側的 realm */
     call: (name, ...args) => toHost(context[name].apply(null, args)),
     /** 讀 Code.gs 裡的頂層宣告（含 const） */

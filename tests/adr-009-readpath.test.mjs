@@ -16,12 +16,11 @@ import { loadFrontend } from './fake-browser.mjs';
 
 const ME = 'Uneil';
 
-/** 依分頁餵資料的假雲端。sheets 沒列到的分頁回空陣列 */
+/** 依分頁餵資料的假雲端。sheets 沒列到的分頁回空陣列（ADR-010 起讀取走 POST action=read） */
 function cloudWith(sheets, { failOn = null } = {}) {
-  return ({ url }) => {
-    const m = /[?&]sheet=([^&]+)/.exec(url);
-    if (!m) return null;                       // 不是 GET，交給預設（寫入一律成功）
-    const sheet = decodeURIComponent(m[1]);
+  return ({ body }) => {
+    if (!body || body.action !== 'read') return null;   // 不是讀取，交給預設（寫入一律成功）
+    const sheet = body.sheet;
     if (failOn && (failOn === true || failOn === sheet)) {
       return { json: () => Promise.reject(new Error('network down')) };
     }
@@ -61,7 +60,7 @@ describe('⚠️ 讀取失敗不可以偽裝成空表', () => {
     // notes 掛掉，其餘正常——不可以只更新一半
     const half = cloudWith({ tasks: [] }, { failOn: 'notes' });
     e.set('fetch', (url, options) => {
-      const r = half({ url: String(url), options });
+      const r = half({ url: String(url), body: JSON.parse(options.body), options });
       return Promise.resolve(r || { json: () => Promise.resolve({ success: true }) });
     });
     await e.callRaw('pullFromCloud');
@@ -71,8 +70,8 @@ describe('⚠️ 讀取失敗不可以偽裝成空表', () => {
   });
 
   test('sheet_not_found 是「真的空」，不是失敗', async () => {
-    const e = env(({ url }) => {
-      if (!/sheet=/.test(url)) return null;
+    const e = env(({ body }) => {
+      if (!body || body.action !== 'read') return null;
       return { json: () => Promise.resolve({ error: 'sheet_not_found', sheet: 'x' }) };
     });
 
@@ -86,8 +85,8 @@ describe('⚠️ 讀取失敗不可以偽裝成空表', () => {
     const e = env(cloudWith({ tasks: [TASK('1', '原有的')] }));
     await e.callRaw('pullFromCloud');
 
-    e.set('fetch', (url) => Promise.resolve(
-      /sheet=/.test(String(url))
+    e.set('fetch', (url, options) => Promise.resolve(
+      JSON.parse(options.body).action === 'read'
         ? { json: () => Promise.resolve({ error: 'server_misconfigured' }) }
         : { json: () => Promise.resolve({ success: true }) }
     ));
@@ -106,9 +105,9 @@ describe('雲端是真相：pull 是覆蓋不是合併', () => {
     await e.callRaw('pullFromCloud');
     assert.equal(e.read('state.tasks.length'), 2);
 
-    // 另一支手機把「乙」軟刪除了，後端 doGet 從此不再回傳它
-    e.set('fetch', (url) => Promise.resolve(
-      /sheet=tasks/.test(String(url))
+    // 另一支手機把「乙」軟刪除了，後端的讀取從此不再回傳它
+    e.set('fetch', (url, options) => Promise.resolve(
+      JSON.parse(options.body).sheet === 'tasks'
         ? { json: () => Promise.resolve({ data: [TASK('1', '甲')] }) }
         : { json: () => Promise.resolve({ data: [] }) }
     ));

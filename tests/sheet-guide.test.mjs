@@ -82,7 +82,7 @@ describe('refreshGuide — 產生而不是累加', () => {
     assert.deepEqual(g.headers,
       ['分頁', '類別', '用途', '誰寫入', '誰讀取', '主鍵', '相關 ADR', '欄位', '筆數', '狀態', '備註']);
     assert.deepEqual(g.records.map((r) => r['分頁']),
-      ['tasks', 'expenses', 'reviews', 'moods', 'notes', 'logs', 'line_users', '_guide']);
+      ['tasks', 'expenses', 'reviews', 'moods', 'notes', 'logs', 'line_users', 'line_devices', '_guide']);
   });
 
   test('重複執行三次：還是只有一張 _guide、列數不變', () => {

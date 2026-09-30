@@ -425,7 +425,7 @@
   }
   .log-note{font-size:12px; color:var(--muted); text-align:center; padding:8px 0 0;}
 
-  /* ---------- 選身份／白名單／功能矩陣（ADR-008） ---------- */
+  /* ---------- 配對／白名單／功能矩陣（ADR-008 → ADR-010） ---------- */
   /* 全螢幕蓋版：這是「你是誰」，不是一張可以滑過去的卡片 */
   .id-gate{
     position:fixed; inset:0; z-index:40; background:var(--bg);
@@ -459,6 +459,18 @@
     background:var(--card); border:1px solid var(--line); border-radius:10px; color:var(--ink);
   }
   .gate-actions button.ghost{color:var(--muted); font-weight:400;}
+  /* 配對碼輸入與續期指令（ADR-010）：大字、等寬，照著念或照著打都不會看錯 */
+  .id-gate ol{font-size:13px; color:var(--muted); padding-left:20px; margin:0 0 16px; line-height:1.6;}
+  .pair-input{
+    width:100%; box-sizing:border-box; font-size:28px; letter-spacing:8px; text-align:center;
+    padding:12px; border:1px solid var(--line); border-radius:12px;
+    background:var(--card); color:var(--ink); font-variant-numeric:tabular-nums;
+  }
+  .pair-cmd{
+    font-size:22px; font-weight:700; text-align:center; padding:16px 12px;
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    font-variant-numeric:tabular-nums; user-select:all; -webkit-user-select:all; overflow-wrap:anywhere;
+  }
 
   /* 身份卡（首頁） */
   .me-card{
@@ -507,6 +519,17 @@
   .adm-grid button.on{border-color:var(--accent); background:var(--accent-soft); color:var(--accent); font-weight:600;}
   .adm-grid button.danger.on{border-color:var(--danger); background:#FBEDEA; color:var(--danger);}
   .adm-sec{font-size:12px; color:var(--muted); margin:10px 0 6px;}
+  /* 已配對的裝置（ADR-010 D-7） */
+  .adm-dev{display:flex; align-items:center; gap:8px; padding:6px 0; font-size:13px;}
+  .adm-dev .who{flex:1; min-width:0; overflow-wrap:anywhere;}
+  .adm-dev .who small{display:block; color:var(--muted); font-size:11px;}
+  .adm-dev .state{font-size:12px; color:var(--muted); flex:none;}
+  .adm-dev .state.on{color:var(--accent); font-weight:600;}
+  .adm-dev button,.adm-dev-all{
+    flex:none; padding:5px 9px; font-size:12px; background:var(--bg);
+    border:1px solid var(--line); border-radius:8px; color:var(--danger);
+  }
+  .adm-dev-all{margin-top:6px;}
 
   @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important;} }
 /* 固定高度＋橫向 scroll-snap：兩個視圖各佔滿一頁，滑到哪就停在哪 */
@@ -572,13 +595,12 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
 </head>
 <body>
 
-<!-- 選身份（ADR-008 B-2）
-     這是「身份宣告」，不是「身份驗證」——真正的把關在 Apps Script 的 writeGate_，
-     它會拿這個 line_id 去查 line_users 白名單。這裡選錯不會讓你拿到別人的權限，
-     只會讓你的寫入被後端擋下來。 -->
+<!-- 配對／續期（ADR-010 D-2、D-3）
+     取代 ADR-008 的「選名字」。身份由 LINE 證明：配對碼只有本人在自己的 LINE 上
+     拿得到，碼換成這台裝置的 token，之後每個請求都帶著它。內容由 renderAuthGate() 依狀態畫。 -->
 <div class="id-gate" id="idGate" hidden>
-  <h2>你是誰？</h2>
-  <p class="sub">選一次就好，之後這支手機會記得。</p>
+  <h2 id="idGateTitle">配對這台裝置</h2>
+  <p class="sub" id="idGateSub"></p>
   <div id="idGateBody"></div>
 </div>
 
@@ -845,7 +867,6 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
 <script>
 const STORAGE_KEY = 'personal-os-state-v1'; // 保持相同 key，向下相容
 const CLOUD_URL = '__CLOUD_URL__';
-const CLOUD_SECRET = '__CLOUD_SECRET__';
 const MOOD_EMOJI = ['😞','😕','😐','🙂','😄'];
 
 /* ---------- 導覽配置（左／右／不顯示） ----------
@@ -874,21 +895,21 @@ const DEFAULT_PLACEMENT = {
 };
 let navPlacement = Object.assign({}, DEFAULT_PLACEMENT);
 
-/* ---------- 身份、白名單與功能矩陣（ADR-008） ----------
+/* ---------- 身份、白名單與功能矩陣（ADR-008 → ADR-010） ----------
    三件事共用同一張雲端 line_users 表，但責任分得很開：
 
-     身份（B-2）    「我說我是誰」。存這支手機的 localStorage，不進 state——
-                    它是「這支手機是誰在用」，本來就不該跨裝置一致。
-     白名單（D-2）  「誰能寫」。真正的把關在 Apps Script 的 writeGate_，
-                    前端這邊只是先擋一層，省下被拒絕時灌進 logs 的雜訊。
+     身份（ADR-010 D-2）「我是誰」由 LINE 證明，不再由使用者選。配對拿到的
+                    裝置 token 存這台的 localStorage（獨立 key，不進 state），
+                    myLineId 一律由後端的 session 回答。
+     白名單（D-1）  「誰能讀寫」。把關在 Apps Script：token 先換出 line_id，
+                    再過 writeGate_。前端這邊沒有任何可以自己宣告的東西。
      功能矩陣（E-2）「誰看得到哪些分頁」。**只做前端隱藏**，後端不驗證。
-                    被繞過的代價僅止於「多看了一個空白分頁」。
-
-   ⚠️ 明講：選身份是宣告，不是驗證。這裡改掉自己的 line_id 不會拿到別人的權限，
-   只會讓雲端把你的寫入擋下來。真的要防，得有自有後端做 OAuth——純前端做不到，
-   而那個複雜度與「家人之間彼此熟識」的情境不成比例（ADR-008 B-1）。 */
+                    被繞過的代價僅止於「多看了一個空白分頁」。 */
+const DEVICE_TOKEN_KEY = 'personal-os-device-token';
+// session 回傳後的快取，只為了開機時先把名字畫上去；沒有 token 時不算數
 const LINE_ID_KEY = 'personal-os-line-id';
-const ROSTER_CACHE_KEY = 'personal-os-line-users';
+// 舊版給「離線選身份」用的名單快取。ADR-010 之後不再需要，開機時清掉
+const LEGACY_ROSTER_CACHE_KEY = 'personal-os-line-users';
 const LOCAL_ONLY_KEY = 'personal-os-local-only';
 const SCOPE_KEY = 'personal-os-scope';
 const LINE_USERS_SHEET = 'line_users';
@@ -903,13 +924,15 @@ const FEATURE_KEYS = NAV_ITEMS.map(function(it){ return FEATURE_BY_VIEW[it.view]
 const FEATURE_LABEL = {};
 NAV_ITEMS.forEach(function(it){ FEATURE_LABEL[FEATURE_BY_VIEW[it.view]] = it.icon + ' ' + it.label; });
 
+let deviceToken = null;
 let myLineId = null;
+let myDeviceId = null;
 let roster = [];
 let rosterStatus = 'loading';   // loading | ok | empty | unavailable
-let localOnly = false;          // 沒選身份也先用，雲端同步暫停
+let localOnly = false;          // 還沒配對也先用，雲端同步暫停
 let scopeMine = false;
+let gateMode = null;            // null | 'pair' | 'renew' | 'inactive'：蓋版開著時同步暫停
 let gateNotice = '';
-let gateOptions = [];           // 目前蓋版上列出的人，點擊以索引回查，避免把 id 塞進 onclick 字串
 
 /* Sheet 的勾選框回傳布林 true，手打的是字串 'TRUE'。判斷規則與後端 truthy_()
    一字不差——兩邊不一致的話，同一張表在前後端會被讀成兩種結果，那種 bug 最難查。
@@ -959,51 +982,104 @@ function featureAllowed(view){
 /* ---------- 身份：讀取與套用 ---------- */
 function loadIdentity(){
   // 私密瀏覽或封鎖網站資料時，讀 localStorage 會直接 throw
-  try{ myLineId=(localStorage.getItem(LINE_ID_KEY)||'').trim()||null; }catch(e){ myLineId=null; }
+  try{ deviceToken=(localStorage.getItem(DEVICE_TOKEN_KEY)||'').trim()||null; }catch(e){ deviceToken=null; }
+  try{ myLineId=deviceToken ? ((localStorage.getItem(LINE_ID_KEY)||'').trim()||null) : null; }catch(e){ myLineId=null; }
   try{ scopeMine=localStorage.getItem(SCOPE_KEY)==='mine'; }catch(e){ scopeMine=false; }
   try{ localOnly=localStorage.getItem(LOCAL_ONLY_KEY)==='1'; }catch(e){ localOnly=false; }
-  // 快取一份名單：離線冷啟動時，選身份的畫面才有東西可以選
-  try{ const c=JSON.parse(localStorage.getItem(ROSTER_CACHE_KEY)||'[]'); roster=Array.isArray(c)?c:[]; }catch(e){ roster=[]; }
+  try{ localStorage.removeItem(LEGACY_ROSTER_CACHE_KEY); }catch(e){}
+}
+
+/* ---------- 雲端請求的唯一出口（ADR-010 D-9） ----------
+   讀寫都是 POST、token 都放 body（Apps Script 讀不到 Header）。認證錯誤在這裡
+   統一轉進配對／續期畫面，呼叫端只要知道「這次不算數」——**絕不能把它當成空資料**，
+   cloudGet 上方那段註解說的事，換了門也一樣。
+
+   配對、續期、查狀態這三個動作的錯誤是它們自己的畫面在處理，不在這裡轉場。 */
+const AUTH_ERRORS = ['no_token','unknown_token','revoked','inactive','token_expired'];
+const SELF_HANDLED_ACTIONS = ['pairClaim','renewStart','session'];
+function cloudPost(body){
+  return fetch(CLOUD_URL,{
+    method:'POST',
+    headers:{'Content-Type':'text/plain'},
+    body:JSON.stringify(Object.assign({token:deviceToken||''}, body))
+  }).then(r=>r.json()).then(j=>{
+    if(j && AUTH_ERRORS.includes(j.error) && !SELF_HANDLED_ACTIONS.includes(body.action)) handleAuthError(j.error);
+    return j;
+  });
+}
+
+/* 被擋下來之後去哪裡：
+     token_expired → 續期（流程 C），同一台裝置續回來
+     inactive      → 停用＝暫停（D-7）。**token 留著**：管理者重新啟用後這台自動恢復，
+                     不必重新配對。交棒票寫的是「清掉 token」，但那會讓 D-7 的
+                     「自動恢復」在前端這一側失效——兩者衝突，這裡依 ADR 的 D-7。
+     其餘          → 這把 token 不算數了，清掉，回配對畫面 */
+function handleAuthError(code){
+  if(code==='token_expired'){ startRenewal(); return; }
+  if(code==='inactive'){ openAuthGate('inactive'); return; }
+  forgetDevice(code==='revoked' ? 'revoked' : 'unknown');
+}
+const FORGET_NOTICE = {
+  revoked:'這台裝置已被撤銷，要重新配對才能再用。',
+  unknown:'雲端認不得這台裝置的鑰匙，請重新配對一次。'
+};
+function forgetDevice(reason){
+  deviceToken=null; myLineId=null; myDeviceId=null;
+  try{ localStorage.removeItem(DEVICE_TOKEN_KEY); localStorage.removeItem(LINE_ID_KEY); }catch(e){}
+  stopRenewPoll();
+  applyIdentity();
+  openAuthGate('pair', FORGET_NOTICE[reason]||'');
+}
+
+/* 開機、回前景都先問一次「這把 token 現在是什麼狀態」。身份由它決定。
+   離線問不到就沿用快取的 line_id 先畫畫面——同步本來就送不出去，連線橫幅會講清楚。 */
+async function checkSession(){
+  if(!deviceToken){
+    applyIdentity();
+    if(!localOnly) openAuthGate('pair');
+    return false;
+  }
+  let j=null;
+  try{ j=await cloudPost({action:'session'}); }catch(e){ return false; }
+  if(!j) return false;
+  if(j.status==='ok'){
+    myLineId=j.line_id; myDeviceId=j.device_id||null;
+    try{ localStorage.setItem(LINE_ID_KEY, myLineId); }catch(e){}
+    if(gateMode) closeAuthGate();
+    return true;
+  }
+  if(AUTH_ERRORS.includes(j.status)) handleAuthError(j.status);
+  return false;
+}
+
+/* 身份確定之後的標準流程：名單 → 資料 → 補送。蓋版開著（要配對、在續期、被停用）就先不動 */
+function startSession(){
+  if(gateMode==='renew') return pollRenewal();
+  return checkSession().then(()=>{
+    if(gateMode) return;
+    return refreshRoster().then(syncFromCloud).then(flushOutbox);
+  });
 }
 
 /**
- * 抓 line_users。走 doGet，不需要驗證（ADR-008 D-2 刻意不動讀取層）。
- *
- * 讀不到時**不清掉快取裡的舊名單**：離線只是讀不到，不代表名單沒了。
- * 把它當成空的會直接把人鎖在選身份的畫面上，而那畫面本身是離線時最沒用的東西。
+ * 抓 line_users（名稱、管理者、功能矩陣）。ADR-010 起走帶 token 的 read，匿名讀不到了。
+ * 讀不到時不清掉手上的名單：離線只是讀不到，不代表名單沒了。
  */
 async function refreshRoster(){
   let rows=null;
-  try{
-    const j=await fetch(`${CLOUD_URL}?sheet=${LINE_USERS_SHEET}`).then(r=>r.json());
-    rows = (j && Array.isArray(j.data)) ? j.data : null;   // 分頁不存在時回的是 {error:...}
-  }catch(e){ rows=null; }
-
+  if(deviceToken){
+    try{
+      const j=await cloudPost({action:'read', sheet:LINE_USERS_SHEET});
+      rows = (j && Array.isArray(j.data)) ? j.data : null;   // 分頁不存在或被擋時回的是 {error:...}
+    }catch(e){ rows=null; }
+  }
   if(rows){
     roster=rows.filter(u=>rosterId(u));
     rosterStatus = activeUsers().length ? 'ok' : 'empty';
-    try{ localStorage.setItem(ROSTER_CACHE_KEY, JSON.stringify(roster)); }catch(e){}
   }else{
     rosterStatus='unavailable';
   }
-
-  // 選過的身份若已不在啟用名單上（被停用、或換了一張表），退回重選。
-  // 留著也沒用——雲端會把它的寫入全部擋下來，而且擋得很安靜。
-  if(myLineId && rosterStatus!=='unavailable' && !activeUsers().some(u=>rosterId(u)===myLineId)){
-    myLineId=null;
-    try{ localStorage.removeItem(LINE_ID_KEY); }catch(e){}
-    gateNotice='你原本選的身份已經不在名單上了，請重新選一次。';
-  }
-
-  // 一度離線而選了「先在本機用」，現在名單讀得到了 → 該挑身份了
-  if(localOnly && rosterStatus==='ok'){
-    localOnly=false;
-    try{ localStorage.removeItem(LOCAL_ONLY_KEY); }catch(e){}
-  }
-
   applyIdentity();
-  if(!myLineId && !localOnly) openIdentityGate(gateNotice);
-  else if(!document.getElementById('idGate').hidden) renderIdentityGate();
 }
 
 /* 身份一變，導覽、身份卡、管理頁、篩選鈕與所有列表都要跟著換一輪 */
@@ -1015,80 +1091,191 @@ function applyIdentity(){
   renderAll();
 }
 
-/* ---------- 選身份的蓋版 ---------- */
-function openIdentityGate(notice){
+/* ---------- 配對／續期／停用的蓋版（ADR-010 D-3） ---------- */
+function openAuthGate(mode, notice){
+  gateMode=mode;
   gateNotice=notice||'';
   document.getElementById('idGate').hidden=false;
-  renderIdentityGate();
+  renderAuthGate();
 }
-function closeIdentityGate(){
+function closeAuthGate(){
+  gateMode=null;
   gateNotice='';
+  stopRenewPoll();
   document.getElementById('idGate').hidden=true;
 }
-function renderIdentityGate(){
+function renderAuthGate(){
   const box=document.getElementById('idGateBody');
   if(!box) return;
-  gateOptions=activeUsers();
+  const title=document.getElementById('idGateTitle');
+  const sub=document.getElementById('idGateSub');
   let html = gateNotice ? `<div class="gate-err">${esc(gateNotice)}</div>` : '';
 
-  if(!gateOptions.length && rosterStatus==='unavailable'){
-    // 離線是常態，不是錯誤。本機優先的 App 不該因為讀不到名單就整個停擺。
-    html+=`<div class="gate-err">讀不到成員名單——可能是離線，或雲端暫時不通。<br>
-      沒有身份也可以先用：資料照樣存在這支手機，只是暫時不同步到雲端。</div>
+  if(gateMode==='renew'){
+    title.textContent='這台裝置需要重新確認';
+    sub.textContent='閒置超過 180 天了。在 LINE 上確認是你本人，這台就能繼續用，不必重新配對。';
+    html+=renewGateHtml();
+  }else if(gateMode==='inactive'){
+    title.textContent='這個帳號目前被停用';
+    sub.textContent='';
+    html+=`<p class="sub">管理者在「成員與權限」重新啟用之後，這台裝置會自動恢復，不需要重新配對。</p>
       <div class="gate-actions">
-        <button onclick="retryRoster()">再試一次</button>
-        <button class="ghost" onclick="useLocalOnly()">先在本機用</button>
+        <button onclick="startSession()">再試一次</button>
+        <button class="ghost" onclick="forgetDevice('manual')">改用別的帳號配對</button>
       </div>`;
-  }else if(!gateOptions.length){
-    html+=`<div class="gate-err">名單是空的：<b>line_users</b> 分頁裡沒有任何一列 is_active 是 TRUE。<br>
-      在 LINE 傳一句 <b>whoami</b> 就能查到自己的 userId，填進去並勾起 is_active 即可。</div>
-      <div class="gate-actions"><button onclick="retryRoster()">再試一次</button></div>`;
   }else{
-    html+='<div class="id-list">'+gateOptions.map(function(u,i){
-      const sel = myLineId===rosterId(u) ? ' sel' : '';
-      const tag = truthy(u.is_admin) ? '<span class="tag">管理者</span>' : '';
-      return `<button class="id-opt${sel}" onclick="pickIdentity(${i})">
-        <span class="who">${esc(rosterName(u))}</span>${tag}</button>`;
-    }).join('')+'</div>';
-    html+=`<p class="gate-note">這一步是「你說你是誰」，不是密碼驗證——真正的把關在雲端那一側的白名單。
-      選錯只會讓你的同步被擋下來，不會拿到別人的權限。</p>`;
+    title.textContent='配對這台裝置';
+    sub.textContent='每台裝置配對一次就好，之後這台會記得你。';
+    html+=`<ol>
+        <li>還沒註冊？在 LINE 先傳 <b>whoami</b>，再傳 <b>Line_ID/你的ID</b>，等管理者核准。</li>
+        <li>已核准？在跟 bot 的<b>一對一聊天室</b>傳「<b>配對</b>」，會拿到 6 位數配對碼。</li>
+        <li>10 分鐘內把碼輸入到下面。</li>
+      </ol>
+      <input class="pair-input" id="pairCode" inputmode="numeric" autocomplete="one-time-code"
+        maxlength="6" placeholder="000000" aria-label="6 位數配對碼">
+      <div class="gate-actions">
+        <button onclick="submitPairCode()">${pairBusy?'配對中…':'配對'}</button>
+        <button class="ghost" onclick="useLocalOnly()">先在本機用</button>
+      </div>
+      <p class="gate-note">配對碼只有你本人在自己的 LINE 上拿得到——那就是身份證明，不需要密碼。
+        閒置超過 180 天才需要在 LINE 上重新確認一次。</p>`;
   }
   box.innerHTML=html;
 }
-function retryRoster(){
-  gateNotice='';
-  document.getElementById('idGateBody').innerHTML='<p class="sub">重新讀取名單中…</p>';
-  refreshRoster();
+
+/* 裝置名稱只是給管理頁看的標籤：「iPhone · Safari · 9/30」，認得出是哪台就夠了 */
+function deviceLabel(){
+  const ua=String((typeof navigator!=='undefined' && navigator.userAgent)||'');
+  const os=/iPhone/.test(ua)?'iPhone':/iPad/.test(ua)?'iPad':/Android/.test(ua)?'Android'
+    :/Macintosh/.test(ua)?'Mac':/Windows/.test(ua)?'Windows':/Linux/.test(ua)?'Linux':'裝置';
+  const br=/Line\//.test(ua)?'LINE':/EdgA?\//.test(ua)?'Edge':/CriOS|Chrome\//.test(ua)?'Chrome'
+    :/FxiOS|Firefox\//.test(ua)?'Firefox':/Safari\//.test(ua)?'Safari':'瀏覽器';
+  const d=new Date();
+  return os+' · '+br+' · '+(d.getMonth()+1)+'/'+d.getDate();
 }
-function pickIdentity(i){
-  const u=gateOptions[i];
-  if(!u) return;
-  myLineId=rosterId(u);
-  localOnly=false;
+
+const PAIR_ERROR = {
+  invalid_code:'配對碼不對或已過期（10 分鐘）。在 LINE 重新傳「配對」拿一組新的。',
+  too_many_attempts:'嘗試太多次，先暫停 10 分鐘再試。',
+  inactive:'這個帳號還沒被核准或已被停用，請管理者到「成員與權限」打開。',
+  cache_unavailable:'雲端暫時沒辦法配對，請稍後再試。',
+  device_store_unavailable:'雲端暫時沒辦法配對，請稍後再試。'
+};
+let pairBusy=false;
+async function submitPairCode(raw){
+  const inp=document.getElementById('pairCode');
+  const code=String(raw!=null ? raw : ((inp&&inp.value)||'')).replace(/\D/g,'');
+  if(code.length!==6){ gateNotice='配對碼是 6 位數字'; renderAuthGate(); return false; }
+  if(pairBusy) return false;
+  pairBusy=true; renderAuthGate();
+  let j=null;
+  try{ j=await cloudPost({action:'pairClaim', code, device_label:deviceLabel()}); }catch(e){ j=null; }
+  pairBusy=false;
+  if(!j){ gateNotice='連不上雲端，確認網路後再試一次。'; renderAuthGate(); return false; }
+  if(!j.success){ gateNotice=PAIR_ERROR[j.error]||('配對失敗（'+j.error+'）'); renderAuthGate(); return false; }
+
+  deviceToken=j.token; myLineId=j.line_id; myDeviceId=j.device_id||null; localOnly=false;
   try{
+    localStorage.setItem(DEVICE_TOKEN_KEY, deviceToken);
     localStorage.setItem(LINE_ID_KEY, myLineId);
     localStorage.removeItem(LOCAL_ONLY_KEY);
   }catch(e){}
-  closeIdentityGate();
-  applyIdentity();
-  toast('哈囉，'+rosterName(u));
-  // 身份定了才送得出去。身份確定前寫的東西早就排在待送佇列裡（queueUpsert
-  // 沒有身份時只排不送），這裡只要把佇列送出去就好。
+  closeAuthGate();
+  toast('配對完成'+(j.display_name?'，哈囉 '+j.display_name:''));
+  // 配對前寫的東西早就排在待送佇列裡（queueUpsert 沒有身份時只排不送），
+  // 這裡只要把佇列送出去就好。
   // ⚠️ 不要重送 state：pull 之後 state 就是雲端快照，逐筆重送要好幾分鐘，
   // 那段時間家人在別支手機改的東西會被這份舊快照蓋回去（DATA-01 換個速度回來）。
-  syncFromCloud().then(flushOutbox);
+  await refreshRoster();
+  await syncFromCloud();
+  return flushOutbox();
 }
-function switchIdentity(){
-  openIdentityGate('');
-  refreshRoster();
-}
-/* 離線時的逃生門。不是一種「模式」，所以名單一旦讀得到就會自動失效、請人選身份。 */
+
+/* 還沒配對時的逃生門：資料照樣排進待送佇列，配對成功後補送。
+   不再像 ADR-008 那樣「一讀得到名單就自動失效」——沒有 token 本來就同步不了，
+   天天跳出來催只會讓人把它關掉。首頁的身份卡會一直提醒。 */
 function useLocalOnly(){
   localOnly=true;
   try{ localStorage.setItem(LOCAL_ONLY_KEY,'1'); }catch(e){}
-  closeIdentityGate();
+  closeAuthGate();
   applyIdentity();
   toast('先在本機使用，雲端同步暫停');
+}
+
+/* ---------- 流程 C：過期續期 ----------
+   同時好幾個請求回 token_expired（開機時五張表一起讀）只開一次；碼還有效就不重發。 */
+const RENEW_POLL_MS=3000;
+let renew=null;               // { code, oa, until }
+let renewBusy=false;
+let renewPollTimer=null;
+function renewCommand(){ return renew ? '驗證裝置 '+renew.code : ''; }
+function renewExpired(){ return !!renew && Date.now()>=renew.until; }
+async function startRenewal(force){
+  if(gateMode==='renew' && !force && (renewBusy || (renew && !renewExpired()))) return;
+  stopRenewPoll();
+  renew=null; renewBusy=true;
+  openAuthGate('renew');
+  let j=null;
+  try{ j=await cloudPost({action:'renewStart'}); }catch(e){ j=null; }
+  renewBusy=false;
+  if(!j){ gateNotice='連不上雲端，確認網路後按「重新產生」。'; renderAuthGate(); return; }
+  if(j.error==='not_expired'){ closeAuthGate(); return startSession(); }
+  if(!j.success){
+    if(AUTH_ERRORS.includes(j.error) && j.error!=='token_expired') return handleAuthError(j.error);
+    gateNotice='暫時沒辦法續期，請稍後再試（'+j.error+'）。'; renderAuthGate(); return;
+  }
+  renew={code:j.code, oa:j.oa_id||'', until:Date.now()+(Number(j.expires_in)||600)*1000};
+  gateNotice='';
+  renderAuthGate();
+  renewPollTimer=setInterval(pollRenewal, RENEW_POLL_MS);
+}
+function stopRenewPoll(){ if(renewPollTimer){ clearInterval(renewPollTimer); renewPollTimer=null; } }
+
+/* 每 3 秒問一次 session。LINE 那邊一確認，這裡就自己關掉回到畫面 */
+async function pollRenewal(){
+  if(gateMode!=='renew') return;
+  if(renewExpired()){ stopRenewPoll(); renderAuthGate(); return; }
+  let j=null;
+  try{ j=await cloudPost({action:'session'}); }catch(e){ return; }
+  if(!j || gateMode!=='renew') return;
+  if(j.status==='ok'){
+    stopRenewPoll(); renew=null;
+    myLineId=j.line_id; myDeviceId=j.device_id||null;
+    try{ localStorage.setItem(LINE_ID_KEY, myLineId); }catch(e){}
+    closeAuthGate();
+    toast('已續期，歡迎回來');
+    return startSession();
+  }
+  if(AUTH_ERRORS.includes(j.status) && j.status!=='token_expired') handleAuthError(j.status);
+}
+
+/* LINE 的「預填訊息給官方帳號」網址。ADR 列為 Speculation，所以旁邊永遠有「複製指令」可退 */
+function renewLineUrl(){
+  if(!renew || !renew.oa) return '';
+  return 'https://line.me/R/oaMessage/'+encodeURIComponent(renew.oa)+'/?'+encodeURIComponent(renewCommand());
+}
+function openLineRenew(){ const u=renewLineUrl(); if(u) location.href=u; }
+function copyRenewCmd(){
+  const cmd=renewCommand();
+  const done=()=>toast('已複製，到 LINE 貼上送出');
+  const fail=()=>toast('複製失敗，請照著畫面手動輸入');
+  try{ navigator.clipboard.writeText(cmd).then(done, fail); }catch(e){ fail(); }
+}
+function renewGateHtml(){
+  if(renewBusy || (!renew && !gateNotice)) return '<p class="sub">產生確認碼中…</p>';
+  if(!renew || renewExpired()){
+    return `${renew?'<div class="gate-err">確認碼已過期（10 分鐘）。</div>':''}
+      <div class="gate-actions"><button onclick="startRenewal(true)">重新產生確認碼</button></div>
+      <div class="gate-actions"><button class="ghost" onclick="forgetDevice('manual')">改用配對碼重新配對</button></div>`;
+  }
+  return `<p class="sub">在跟 bot 的<b>一對一聊天室</b>傳：</p>
+    <div class="pair-cmd">${esc(renewCommand())}</div>
+    <div class="gate-actions">
+      ${renew.oa?'<button onclick="openLineRenew()">開啟 LINE 傳送</button>':''}
+      <button onclick="copyRenewCmd()">複製指令</button>
+    </div>
+    <p class="gate-note">傳出去之後這個畫面會自己關掉（每 3 秒檢查一次），確認碼 10 分鐘內有效。</p>
+    <div class="gate-actions"><button class="ghost" onclick="forgetDevice('manual')">改用配對碼重新配對</button></div>`;
 }
 
 /* ---------- 身份卡 ---------- */
@@ -1099,9 +1286,9 @@ function renderMeCard(){
 
   if(!myLineId){
     el.classList.add('offline');
-    el.innerHTML=`<span class="me-who">⚠️ 還沒選身份
+    el.innerHTML=`<span class="me-who">⚠️ 這台裝置還沒配對
         <span class="sub">資料只存在這支手機，不會同步到雲端</span></span>
-      <button class="link" onclick="switchIdentity()">現在選</button>`;
+      <button class="link" onclick="openAuthGate('pair')">現在配對</button>`;
     return;
   }
   el.classList.remove('offline');
@@ -1109,7 +1296,18 @@ function renderMeCard(){
   el.innerHTML=`<span class="me-who">👤 ${esc(rosterName(myUser())||myLineId)}
       <span class="sub">${isAdmin()?'管理者・':''}之後記的東西會標記成你的</span></span>
     ${n?`<button class="link" onclick="claimOrphans()">認領舊資料 ${n}</button>`:''}
-    <button class="link" onclick="switchIdentity()">換人</button>`;
+    <button class="link" onclick="unpairThisDevice()">解除這台裝置的配對</button>`;
+}
+
+/* 取代 ADR-008 的「換人」：身份綁在配對上，換人＝這台解除配對、由另一個人重新配對。
+   先在雲端撤銷成功才清本機——只清本機的話，那把 token 在雲端仍然有效，
+   而原文已經丟了，管理頁會多一台「還活著但沒人拿著」的裝置。 */
+async function unpairThisDevice(){
+  if(!confirm('解除這台裝置的配對？\n解除後要在 LINE 傳「配對」重新拿碼，才能再同步。')) return;
+  let j=null;
+  try{ j=await cloudPost({action:'revokeDevice', device_id:myDeviceId||''}); }catch(e){ j=null; }
+  if(!j || !j.success){ toast('⚠️ 連不上雲端，這台還沒解除'); return; }
+  forgetDevice('manual');
 }
 
 /* 改版前的舊資料沒有 line_id。刻意**不自動蓋章**——那等於連 LINE 那端別人記的帳
@@ -1189,10 +1387,69 @@ function renderScopeBars(){
    前端藏，必須疊一層後端驗證——那等於在同一套系統裡開了兩種深淺的安全模型。
    真的需要時 is_admin 欄位已經在，加後端把關是小票，不是砍掉重練。 */
 let adminOpen=null;
+let adminDevices={};     // line_id → { loading, failed, list }，只活在記憶體，每次展開重抓
 function toggleAdminRow(i){
   const id=rosterId(roster[i]);
   adminOpen = (adminOpen===id) ? null : id;
   renderAdminCard();
+  if(adminOpen) loadAdminDevices(id);
+}
+
+/* ---------- 已配對的裝置（ADR-010 D-7） ---------- */
+function fetchDevicesOf(id){
+  return cloudPost({action:'listDevices', line_id:id})
+    .then(j=>(j&&j.success&&Array.isArray(j.devices)) ? j.devices : null)
+    .catch(()=>null);
+}
+function loadAdminDevices(id){
+  adminDevices[id]={loading:true, list:(adminDevices[id]||{}).list||null};
+  renderAdminCard();
+  return fetchDevicesOf(id).then(list=>{
+    adminDevices[id] = list ? {list} : {failed:true};
+    renderAdminCard();
+  });
+}
+const DEVICE_STATUS_LABEL={active:'有效', expired:'已過期', revoked:'已撤銷'};
+function adminDevicesHtml(i, id){
+  const d=adminDevices[id]||{loading:true};
+  if(d.failed) return `<div class="empty-hint">讀不到裝置清單 <button class="link" onclick="loadAdminDevices(rosterId(roster[${i}]))">重試</button></div>`;
+  if(!d.list) return '<div class="empty-hint">讀取中…</div>';
+  if(!d.list.length) return '<div class="empty-hint">還沒有配對任何裝置</div>';
+  const rows=d.list.map(function(dev,j){
+    const when=dev.last_used_at ? fmtTime(new Date(dev.last_used_at).getTime()) : '—';
+    const live=dev.status!=='revoked';
+    return `<div class="adm-dev">
+        <span class="who">${esc(dev.device_label||'(未命名裝置)')}
+          <small>最後使用 ${esc(when)}${dev.current?'・就是這台':''}</small></span>
+        <span class="state${dev.status==='active'?' on':''}">${DEVICE_STATUS_LABEL[dev.status]||esc(dev.status)}</span>
+        ${live?`<button onclick="revokeOneDevice(${i},${j})">撤銷</button>`:''}
+      </div>`;
+  }).join('');
+  const liveCount=d.list.filter(x=>x.status!=='revoked').length;
+  return rows+(liveCount>1?`<button class="adm-dev-all" onclick="revokeAllDevices(${i})">全部撤銷（${liveCount} 台）</button>`:'');
+}
+async function revokeOneDevice(i, j){
+  const id=rosterId(roster[i]);
+  const dev=((adminDevices[id]||{}).list||[])[j];
+  if(!dev) return;
+  const warn = dev.current ? '\n\n⚠️ 這就是你正在用的這台，撤銷後要重新配對。' : '';
+  if(!confirm('撤銷「'+(dev.device_label||'這台裝置')+'」？'+warn)) return;
+  const r=await cloudPost({action:'revokeDevice', device_id:dev.device_id}).catch(()=>null);
+  if(!r || !r.success){ toast('⚠️ 撤銷失敗，可再試一次'); return; }
+  if(dev.current){ forgetDevice('manual'); return; }
+  toast('已撤銷');
+  loadAdminDevices(id);
+}
+async function revokeAllDevices(i){
+  const u=roster[i]; if(!u) return;
+  const id=rosterId(u);
+  const mine = id===myLineId ? '\n\n⚠️ 包含你正在用的這台，撤銷後要重新配對。' : '';
+  if(!confirm('撤銷 '+rosterName(u)+' 的全部裝置？'+mine)) return;
+  const r=await cloudPost({action:'revokeDevice', all_of:id}).catch(()=>null);
+  if(!r || !r.success){ toast('⚠️ 撤銷失敗，可再試一次'); return; }
+  if(id===myLineId){ forgetDevice('manual'); return; }
+  toast('已撤銷 '+r.revoked+' 台');
+  loadAdminDevices(id);
 }
 function renderAdminCard(){
   const card=document.getElementById('adminCard');
@@ -1235,6 +1492,8 @@ function renderAdminCard(){
         </div>
         <div class="adm-sec">可用功能（關掉只是藏起導覽入口，不擋寫入）</div>
         <div class="adm-grid">${feats}</div>
+        <div class="adm-sec">已配對的裝置</div>
+        ${adminDevicesHtml(i, id)}
       </div>`;
     }
     return html+'</div>';
@@ -1254,6 +1513,17 @@ async function toggleAdminFlag(i, key){
     toast('至少要留一個啟用中的成員'); return;
   }
 
+  // 停用＝暫停（ADR-010 D-7）：裝置預設留著，重新啟用就自動恢復。停用的當下問一次
+  // 要不要順便撤銷——手機遺失的情境要的是撤銷，家人暫時不用的情境要的是暫停。
+  let revokeAll=false;
+  if(key==='is_active' && !next){
+    const list=await fetchDevicesOf(id);
+    const live=list ? list.filter(d=>d.status!=='revoked').length : null;
+    const keep='\n\n按「取消」＝只停用：重新啟用時裝置自動恢復，不必重新配對。';
+    if(live===null) revokeAll=confirm('要一併撤銷 '+rosterName(u)+' 的所有裝置嗎？\n（讀不到裝置清單，數量不明）'+keep);
+    else if(live>0) revokeAll=confirm('要一併撤銷 '+rosterName(u)+' 的 '+live+' 台裝置嗎？'+keep);
+  }
+
   const before=u[key], beforeStamp=u.updated_at;
   u[key]=next?'TRUE':'FALSE';
   u.updated_at=new Date().toISOString();
@@ -1262,8 +1532,11 @@ async function toggleAdminFlag(i, key){
   // 單列 upsert，不走 replaceAll：整包覆蓋一旦送出不完整的名單，會把所有人
   // （包含正在按按鈕的自己）鎖在門外。replaceAll 已於 ADR-009 退場，後端一律拒絕。
   const ok=await cloudUpsert(LINE_USERS_SHEET, u, 'line_id');
-  if(ok){
-    try{ localStorage.setItem(ROSTER_CACHE_KEY, JSON.stringify(roster)); }catch(e){}
+  if(ok && revokeAll){
+    const r=await cloudPost({action:'revokeDevice', all_of:id}).catch(()=>null);
+    toast(r&&r.success ? '已停用，並撤銷 '+r.revoked+' 台裝置' : '⚠️ 已停用，但撤銷裝置失敗，可在裝置清單再試');
+    if(adminOpen===id) loadAdminDevices(id);
+  }else if(ok){
     toast('已更新');
   }else{
     u[key]=before; u.updated_at=beforeStamp;
@@ -1273,11 +1546,8 @@ async function toggleAdminFlag(i, key){
 }
 function cloudUpsert(sheet, record, keyField){
   if(!myLineId) return Promise.resolve(false);
-  return fetch(CLOUD_URL,{
-    method:'POST',
-    headers:{'Content-Type':'text/plain'},
-    body:JSON.stringify({secret:CLOUD_SECRET, line_id:myLineId, sheet, action:'upsert', key_field:keyField, record})
-  }).then(r=>r.json()).then(j=>!!(j&&j.success)).catch(()=>false);
+  return cloudPost({sheet, action:'upsert', key_field:keyField, record})
+    .then(j=>!!(j&&j.success)).catch(()=>false);
 }
 
 /* ---------- 雜記類別（原成長頁的「創造」類型） ----------
@@ -1288,7 +1558,7 @@ const NOTE_TAGS = ['文章','作品','系統','分享','其他'];
 let selectedNoteTag = null;
 
 /* ---------- LOG 頁（ADR-006 §C／§D） ---------- */
-const LOG_SOURCES = ['任務','記帳','收入','查詢','註冊'];
+const LOG_SOURCES = ['任務','記帳','收入','查詢','註冊','配對'];
 const LOG_WINDOW_DAYS = 7;
 // 抓回來的記錄只活在記憶體裡：不進 state、不寫 localStorage、不進待送佇列
 let logsCache = null;
@@ -1419,9 +1689,12 @@ function save(){
    意思變成「這張表本來就沒東西」，於是一次網路抖動就會把五張表全部清空。
 
    所以失敗一律往上拋，讓 pullFromCloud 知道這次讀取不算數、原地不動。
-   唯一被當成「真的空」的是 sheet_not_found：那張分頁還沒被建出來，確實沒東西。 */
+   唯一被當成「真的空」的是 sheet_not_found：那張分頁還沒被建出來，確實沒東西。
+
+   ADR-010 之後多了一類失敗：認證（過期、撤銷、停用）。規則一樣——往上拋，
+   **絕不能變成空陣列**。cloudPost 已經把人帶去續期／配對畫面，這裡只負責不算數。 */
 function cloudGet(sheet){
-  return fetch(`${CLOUD_URL}?sheet=${sheet}`).then(r=>r.json()).then(j=>{
+  return cloudPost({action:'read', sheet}).then(j=>{
     if(!j) throw new Error('empty_response');
     if(j.error){
       if(j.error==='sheet_not_found') return [];     // 分頁還沒建，真的是空的
@@ -1475,7 +1748,8 @@ function persistOutbox(){
 }
 
 /** 排一筆寫入，然後試著送。沒有身份就只排不送——後端本來也會擋，
-    但先擋在這裡，logs 才不會被一整排「被拒絕」淹掉（同 ADR-008 的既有考量）。 */
+    但先擋在這裡，logs 才不會被一整排「被拒絕」淹掉（同 ADR-008 的既有考量）。
+    配對／續期畫面開著的時候也一樣只排不送，理由相同。 */
 function queueUpsert(sheet, record, keyField){
   outbox=outboxAdd(outbox, {sheet, record, key_field:keyField||'id', seq:++outboxSeq, at:Date.now()});
   persistOutbox();
@@ -1483,17 +1757,13 @@ function queueUpsert(sheet, record, keyField){
 }
 
 function sendJob(job){
-  return fetch(CLOUD_URL,{
-    method:'POST',
-    headers:{'Content-Type':'text/plain'},
-    body:JSON.stringify({secret:CLOUD_SECRET, line_id:myLineId||'', sheet:job.sheet,
-                         action:'upsert', key_field:job.key_field, record:job.record})
-  }).then(r=>r.json()).then(j=>!!(j&&j.success)).catch(()=>false);
+  return cloudPost({sheet:job.sheet, action:'upsert', key_field:job.key_field, record:job.record})
+    .then(j=>!!(j&&j.success)).catch(()=>false);
 }
 
 /** 一次送一筆、依序送。刻意不併發：同一張 Sheet 併發寫入正是這次要根治的那類問題。 */
 function flushOutbox(){
-  if(outboxFlushing || !outbox.length || !myLineId || localOnly) return Promise.resolve(false);
+  if(outboxFlushing || !outbox.length || !myLineId || localOnly || gateMode) return Promise.resolve(false);
   outboxFlushing=true;
   const job=outbox[0];
   return sendJob(job).then(ok=>{
@@ -1575,7 +1845,10 @@ function pushReview(key){
 function renderConnState(){
   const el=document.getElementById('connBanner');
   if(!el) return;
-  if(cloudOnline===false){
+  if(!myLineId){
+    el.hidden=false;
+    el.textContent='🔒 這台裝置還沒配對，雲端的資料要配對之後才看得到。';
+  }else if(cloudOnline===false){
     el.hidden=false;
     el.textContent='⚠️ 連線異常，畫面上不是完整的資料。恢復連線後會自動更新。';
   }else if(cloudOnline===null){
@@ -1614,6 +1887,8 @@ function manualRefresh(){
    讓回前景的觸發能節流。 */
 let pullPromise=null, lastPullAt=0;
 function syncFromCloud(){
+  // 沒配對問了也是被擋；續期畫面開著時問了只會多灌幾列 token_expired 的 logs
+  if(!myLineId || gateMode){ renderConnState(); return Promise.resolve(); }
   if(pullPromise) return pullPromise;
   pullPromise=pullFromCloud().finally(()=>{ pullPromise=null; lastPullAt=Date.now(); });
   return pullPromise;
@@ -1729,12 +2004,11 @@ const ARCHIVE_SHEETS=[
 ];
 
 /* 鍵由後端算好一起回傳，前端**不自己算**。
-   doGet 走 JSON.stringify，Date 會變成 UTC ISO 字串，這裡自己切出來的日期在
+   回應走 JSON.stringify，Date 會變成 UTC ISO 字串，這裡自己切出來的日期在
    UTC+8 可能差一天；鍵一對不上，archivePurge 會安靜地一筆都刪不掉——沒有錯誤
    訊息，只是沒有效果。同一套規則只留一份實作在後端，就沒有對不上的可能。 */
 function cloudTombstones(sheet, keyField){
-  const kf=encodeURIComponent(Array.isArray(keyField)?keyField.join(','):keyField);
-  return fetch(`${CLOUD_URL}?sheet=${sheet}&only=tombstones&key_field=${kf}`).then(r=>r.json()).then(j=>{
+  return cloudPost({action:'readTombstones', sheet, key_field:keyField}).then(j=>{
     if(!j) throw new Error('empty_response');
     if(j.error){ if(j.error==='sheet_not_found') return {rows:[], keys:[]}; throw new Error(j.error); }
     return {rows:j.data||[], keys:j.keys||[]};
@@ -1742,16 +2016,12 @@ function cloudTombstones(sheet, keyField){
 }
 
 function cloudArchivePurge(sheet, keyField, keys){
-  return fetch(CLOUD_URL,{
-    method:'POST',
-    headers:{'Content-Type':'text/plain'},
-    body:JSON.stringify({secret:CLOUD_SECRET, line_id:myLineId||'', sheet,
-                         action:'archivePurge', key_field:keyField, keys})
-  }).then(r=>r.json()).catch(()=>({error:'network'}));
+  return cloudPost({sheet, action:'archivePurge', key_field:keyField, keys})
+    .catch(()=>({error:'network'}));
 }
 
 async function archiveTombstones(){
-  if(!myLineId){ toast('先選身份才能封存'); return; }
+  if(!myLineId){ toast('先配對這台裝置才能封存'); return; }
 
   // 第一段：撈出所有已軟刪除的列
   let batches;
@@ -1863,13 +2133,8 @@ function toggleTask(id){
 }
 
 function completeRecurringTask(t){
-  return fetch(CLOUD_URL,{
-    method:'POST',
-    headers:{'Content-Type':'text/plain'},
-    body:JSON.stringify({secret:CLOUD_SECRET, line_id:myLineId||'', sheet:'tasks',
-                         action:'completeRecurring', key_field:'id',
-                         record:taskToCloud(t), next_id:String(Date.now()+1)})
-  }).then(r=>r.json()).then(j=>{
+  return cloudPost({sheet:'tasks', action:'completeRecurring', key_field:'id',
+                    record:taskToCloud(t), next_id:String(Date.now()+1)}).then(j=>{
     if(j && j.success){
       if(j.spawned) toast('已完成，下一期：'+j.next_due);
       return syncFromCloud();                 // 新的一期由後端生，撈回來才看得到
@@ -2549,14 +2814,17 @@ function logFromCloud(r){
     targetRow: (r.target_row===0||r.target_row) ? String(r.target_row) : ''
   };
 }
-/* 這裡不用 cloudGet()：它把錯誤吞成空陣列，會讓「連線失敗」跟「真的沒記錄」
-   在畫面上長得一模一樣——而這兩件事該給使用者完全不同的訊息。 */
+/* 這裡不用 cloudGet()：它把 sheet_not_found 當成空的，而 LOG 頁要把「連線失敗」
+   跟「真的沒記錄」分開講——這兩件事該給使用者完全不同的訊息。
+   任何錯誤回應（包含認證失敗）都算讀取失敗，不能畫成「還沒有任何記錄」。 */
 function fetchLogs(){
   logsLoading=true; logsFailed=false;
   renderLogsView();
-  return fetch(`${CLOUD_URL}?sheet=logs`)
-    .then(r=>r.json())
-    .then(j=>{ logsCache=(j.data||[]).map(logFromCloud).sort((a,b)=>b.ts-a.ts); })
+  return cloudPost({action:'read', sheet:'logs'})
+    .then(j=>{
+      if(!j || j.error) throw new Error((j&&j.error)||'empty_response');
+      logsCache=(j.data||[]).map(logFromCloud).sort((a,b)=>b.ts-a.ts);
+    })
     .catch(()=>{ logsFailed=true; })
     .finally(()=>{ logsLoading=false; renderLogsView(); });
 }
@@ -2688,23 +2956,23 @@ function renderAll(){
   renderScopeBars();
   load();
 
-  /* 先讀白名單，再開始同步。順序是有意義的：待送佇列需要 line_id 才送得動，
-     而 refreshRoster() 也是「還沒選身份」時把選身份蓋版叫出來的地方。
-     讀不到名單不會擋住本機使用——localStorage 那條路從頭到尾都沒被碰過。 */
-  refreshRoster().then(syncFromCloud);
+  /* 先問 session，再讀名單，最後才同步。順序是有意義的：身份由 session 決定，
+     待送佇列需要身份才送得動；沒有 token 時 checkSession() 會叫出配對蓋版。
+     離線問不到不會擋住本機使用——待送佇列照樣收，連線恢復再送。 */
+  startSession();
 
   /* 回到前景時重新 pull。App 留在背景期間，LINE 快速輸入或其他裝置
      可能已經往雲端新增資料。背景時輪詢是停的（ADR-009 §二），回前景第一眼
      要是最新的，不必等下一輪 15 秒。節流避免頻繁切換前後景時重複請求。
 
-     白名單一起補：權限是**別人在別的裝置上**改的，只靠冷啟動更新會慢一整輪；
-     一度離線而按了「先在本機用」的人，也在這裡被接回選身份的流程。 */
+     session 與白名單一起補：停用、撤銷、權限都是**別人在別的裝置上**改的，
+     只靠冷啟動更新會慢一整輪。 */
   const FOREGROUND_PULL_MIN_GAP=5000;
   document.addEventListener('visibilitychange',()=>{
     if(document.visibilityState!=='visible'){ stopPolling(); return; }
     startPolling();                                   // 回前景才恢復輪詢
     if(Date.now()-lastPullAt<FOREGROUND_PULL_MIN_GAP) return;
-    refreshRoster().then(syncFromCloud).then(flushOutbox);
+    startSession();
   });
   startPolling();
 

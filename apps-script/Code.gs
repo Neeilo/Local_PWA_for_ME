@@ -1,13 +1,13 @@
 /**
  * Neil OS — PWA ↔ Google Sheets 同步（Apps Script 端）
  * ---------------------------------------------------------------------------
- * doGet  : 讀取一張分頁（刻意不驗證，見 ADR-008 D-2）
+ * doGet  : 讀取一張分頁。ADR-010 過渡期（AUTH_MODE=dual）照舊不驗證；
+ *          AUTH_MODE=token_only 之後整個關閉，回 { error: 'gone' }
  * doPost : 由 line-router.gs 依 payload 形狀分流後呼叫 handlePwaSync_
  *
- * 寫入前一律過 line_users 白名單（ADR-008 Part D）。讀取維持現狀——
- * exec 網址一旦外流，讀取本來就擋不住（Apps Script 的 doGet 讀不到 HTTP Header，
- * 沒有東西可以拿來驗身份），那是 ADR-007 已記錄在案的既有限制。本次只把「寫入」
- * 這一層關起來，不重新設計整個安全模型。
+ * 讀寫都過 line_users 白名單（ADR-008 Part D → ADR-010 D-1）。身份不再由前端宣告，
+ * 而是由 LINE 配對換來的裝置 token 證明（ADR-010 D-2）；token 放在 POST body 裡，
+ * 因為 Apps Script 讀不到 HTTP Header。讀取改走 POST 的理由也是這個。
  */
 
 /**
@@ -33,6 +33,9 @@ var LINE_USERS_SHEET = 'line_users';
 var LINE_USERS_CACHE_KEY = 'adr008_line_users_v1';
 var LINE_USERS_CACHE_TTL = 300;          // 5 分鐘（ADR-008 D-3）
 
+/** 裝置 token 的雜湊表（ADR-010 D-8）。欄位與規則見下方「ADR-010」那一段 */
+var LINE_DEVICES_SHEET = 'line_devices';
+
 /**
  * 不歸前端 state 管的分頁：archivePurge 動不得。
  *
@@ -52,7 +55,17 @@ var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs'];
  * 不見」的假象。它比 NOT_FRONTEND_SHEETS 更嚴，所以擋在所有 action 之前，不另外列進去。
  */
 var GUIDE_SHEET = '_guide';
-var NO_PWA_WRITE = [GUIDE_SHEET];
+var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET];
+
+/**
+ * PWA 連讀都不准讀的分頁（ADR-010 D-8）。
+ *
+ * line_devices 只存雜湊，拿到也換不回 token；但它同時是「誰有幾台裝置、最後
+ * 什麼時候用」的清單，沒有任何前端功能需要整張讀走。管理頁要看裝置走
+ * listDevices，那條路會把 token_hash 拿掉。line_devices 同時在 NO_PWA_WRITE 裡
+ * （比 NOT_FRONTEND_SHEETS 更嚴，理由同 _guide），任何 action 都寫不進去。
+ */
+var NO_PWA_READ = [LINE_DEVICES_SHEET];
 
 /**
  * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
@@ -260,26 +273,45 @@ function diagnoseLineUsers() {
   return roster;
 }
 
-// ===== 讀取：GET /exec?sheet=tasks =====
+// ===== 讀取：GET /exec?sheet=tasks（ADR-010 過渡期的舊門） =====
 /**
+ * AUTH_MODE=token_only 之後整個關掉（ADR-010 D-9）。只留 console 不寫 logs：
+ * 舊版前端每 15 秒輪詢五張表，每一次都寫一列會把 logs 灌爆——「還有沒有舊版
+ * App 在跑」看寫入被擋的那幾列就夠了（見 pwaCaller_）。
+ */
+function doGet(e) {
+  const params = (e && e.parameter) || {};
+  if (authMode_() === 'token_only') {
+    console.log('🚫 doGet 已關閉（AUTH_MODE=token_only）：sheet=' + (params.sheet || '?'));
+    return jsonOut({ error: 'gone' });
+  }
+  return jsonOut(readSheetResponse_(params.sheet, params.only, params.key_field));
+}
+
+/**
+ * 讀一張分頁的回應本體。doGet（舊門）與 POST read／readTombstones（新門）共用這一份，
+ * 兩扇門回的形狀才不會漂移——前端換門的時候，不必連資料的解讀方式一起換。
+ *
  * 墓碑由**後端**濾掉，不指望前端自己 filter（ADR-009 待其他環境知道的事 #4）。
  *
  * 為什麼是後端的責任：前端有好幾條讀取路徑（輪詢、手動刷新、啟動載入），
  * 每條都記得濾一次才會對，漏掉任何一條，已刪除的項目就會從那條路徑跑回畫面上。
  * 擋在唯一的出口，就不需要任何人記得。
  *
- * ?only=tombstones 反過來只回墓碑，那是封存第一段要匯出的東西——它們被預設
+ * only='tombstones' 反過來只回墓碑，那是封存第一段要匯出的東西——它們被預設
  * 過濾掉之後，前端再也看不到，所以得留一扇專門的門。
  */
-function doGet(e) {
-  const params = (e && e.parameter) || {};
-  const sheetName = params.sheet;
+function readSheetResponse_(sheetName, only, keyFieldParam) {
+  if (NO_PWA_READ.indexOf(sheetName) !== -1) {
+    console.log('🚫 拒絕讀取分頁「' + sheetName + '」：它不對 PWA 開放');
+    return { error: 'sheet_not_readable', sheet: sheetName };
+  }
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) return jsonOut({ error: 'sheet_not_found', sheet: sheetName });
+  if (!sheet) return { error: 'sheet_not_found', sheet: sheetName };
 
   const values = sheet.getDataRange().getValues();
-  if (values.length < 2) return jsonOut({ data: [] });
+  if (values.length < 2) return { data: [] };
 
   const headers = values[0];
   const rows = values.slice(1).map(row => {
@@ -288,42 +320,53 @@ function doGet(e) {
     return obj;
   });
 
-  if (String(params.only || '').trim() === 'tombstones') {
+  if (String(only || '').trim() === 'tombstones') {
     var tombs = rows.filter(isTombstone_);
     // 鍵由**後端**算好一起回傳，前端原樣送回來就好。
     //
-    // 為什麼不讓前端自己算：doGet 走 JSON.stringify，Date 會被轉成 UTC ISO 字串，
+    // 為什麼不讓前端自己算：回應走 JSON.stringify，Date 會被轉成 UTC ISO 字串，
     // 前端 slice 出來的日期在 UTC+8 可能差一天（就是 DATA-05 那個根）。鍵一旦
     // 對不上，archivePurge 會安靜地一筆都刪不掉——沒有錯誤訊息，只是沒有效果。
     // 同一套規則只留一份實作，就沒有對不上的可能。
-    var keyField = String(params.key_field || 'id').split(',')
+    //
+    // GET 的 key_field 只能是逗號字串；POST 送上來的可能是陣列，攤平成同一種再拆
+    var rawKeyField = Array.isArray(keyFieldParam) ? keyFieldParam.join(',') : (keyFieldParam || 'id');
+    var keyField = String(rawKeyField).split(',')
       .map(function (k) { return k.trim(); }).filter(function (k) { return k; });
     var keys = keyFieldsOf_(keyField.length > 1 ? keyField : (keyField[0] || 'id'));
-    return jsonOut({
+    return {
       data: tombs,
       keys: tombs.map(function (r) { return recordKey_(r, keys); })
-    });
+    };
   }
-  return jsonOut({ data: withoutTombstones_(rows) });
+  return { data: withoutTombstones_(rows) };
 }
 
-// ===== 寫入：POST body = { secret, sheet, action, ... } =====
+/**
+ * 只收 token、不收舊密鑰的 action（ADR-010 D-9）。
+ * 全是新開的門，沒有任何舊版前端會送它們，所以不必進 dual 的相容範圍。
+ */
+var TOKEN_ACTIONS = ['read', 'readTombstones', 'listDevices', 'revokeDevice'];
+
+// ===== 所有 PWA 請求：POST body = { token, sheet, action, ... } =====
 function handlePwaSync_(e) {
   const body = JSON.parse(e.postData.contents);
 
-  const secret = cloudSecret_();
-  if (!secret) {
-    // 讀不到就一律拒絕。fail-open 等於把門直接拆掉——寧可同步壞掉讓人發現，
-    // 也不能安靜地變成「誰都能寫」。
-    console.log('❌ 指令碼屬性 CLOUD_SECRET 不存在或是空字串，所有寫入一律拒絕');
-    return jsonOut({ error: 'server_misconfigured' });
-  }
-  if (body.secret !== secret) return jsonOut({ error: 'unauthorized' });
+  // 不需要（或還沒有）有效 token 的三扇門：配對、查狀態、過期續期（ADR-010 D-3）
+  if (body.action === 'pairClaim') return jsonOut(pairClaim_(body.code, body.device_label));
+  if (body.action === 'session') return jsonOut(deviceSession_(body.token));
+  if (body.action === 'renewStart') return jsonOut(renewStart_(body.token));
 
-  // 白名單閘門（ADR-008 D-2）。密鑰只證明「這是我們家的 App」，證明不了「這是誰」；
-  // line_id 才回答後者。兩道門串聯，過不了任一道就不寫。
-  const gate = writeGate_(body.line_id, 'PWA ' + (body.action || '?') + ' → ' + (body.sheet || '?'));
-  if (!gate.allowed) return jsonOut({ error: gate.error, reason: gate.reason });
+  // 身份一律由後端換出來，不信任 body 裡的 line_id（ADR-010 D-2）
+  const caller = pwaCaller_(body);
+  if (!caller.ok) return jsonOut({ error: caller.error, reason: caller.error });
+
+  if (body.action === 'read') return jsonOut(readSheetResponse_(body.sheet, '', ''));
+  if (body.action === 'readTombstones') {
+    return jsonOut(readSheetResponse_(body.sheet, 'tombstones', body.key_field));
+  }
+  if (body.action === 'listDevices') return jsonOut(listDevices_(caller, body.line_id));
+  if (body.action === 'revokeDevice') return jsonOut(revokeDevices_(caller, body.device_id, body.all_of));
 
   if (NO_PWA_WRITE.indexOf(body.sheet) !== -1) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');
@@ -424,7 +467,7 @@ function handlePwaSync_(e) {
     console.log('🚫 拒絕 replaceAll → ' + body.sheet + '：已於 ADR-009 退場');
     try {
       logTransaction_('同步', '失敗', 'replaceAll ' + body.sheet,
-        '已退場的動作，拒絕執行', 'ADR-009 後前端只送 upsert；若這筆來自舊版 App，請重開 App', '', body.line_id || '');
+        '已退場的動作，拒絕執行', 'ADR-009 後前端只送 upsert；若這筆來自舊版 App，請重開 App', '', caller.line_id);
     } catch (err) {
       console.log('寫 logs 失敗（主流程不受影響）：' + err);
     }
@@ -1026,4 +1069,624 @@ function checkDueReminders(todayKey) {
     try { logTransaction_('同步', '失敗', '到期檢查', '例外中止', String(err), '', ''); } catch (e) {}
     return { notified: 0, error: String(err) };
   }
+}
+
+/* ========================================================================== */
+/* ADR-010 — 讀取驗證：LINE 配對 × 裝置 token                                   */
+/*                                                                            */
+/* 為什麼不是「讀取也過白名單」就好：line_users 本身可以被匿名讀走，而 line_id   */
+/* 就在裡面——名單就是鑰匙。所以身份改由 LINE 證明：只有本人在 LINE 上拿得到    */
+/* 配對碼，碼換成裝置 token，token 才是代領 line_id 的憑證（D-2）。               */
+/*                                                                            */
+/* 三條流程（D-3）：                                                           */
+/*   A 第一次  LINE「配對」→ issuePairCode_ → PWA pairClaim → 拿到 token         */
+/*   B 日常    每個請求帶 token → authDevice_ → 滑動續期                         */
+/*   C 過期    PWA renewStart → LINE「驗證裝置 碼」→ confirmRenewCode_ → 同一台續期 */
+/* ========================================================================== */
+
+/** 表頭（交棒票 1-1 的欄序）。token 只存雜湊，原文只在配對那一刻交給前端一次 */
+var LINE_DEVICES_HEADERS = ['device_id', 'token_hash', 'line_id', 'device_label',
+                            'created_at', 'last_used_at', 'revoked_at', 'revoked_by'];
+
+var DEVICE_IDLE_DAYS = 180;               // 滑動效期（D-5）：閒置超過就要走 C
+var DEVICE_TOUCH_MS = 86400000;           // last_used_at 一天最多寫一次（D-8）
+var DEVICE_CACHE_TTL = 300;               // 裝置查詢快取 5 分鐘（D-8，比照白名單）
+var DEVICE_CACHE_PREFIX = 'adr010_dev_';
+var DEVICE_LABEL_MAX = 60;
+
+var PAIR_CODE_TTL = 600;                  // 配對碼／續期碼 10 分鐘、用過即刪（D-8）
+var PAIR_CODE_PREFIX = 'adr010_pair_';
+var RENEW_CODE_PREFIX = 'adr010_renew_';
+
+/**
+ * pairClaim 是匿名入口，擋暴力猜碼（交棒票的實作建議）。
+ * 六位數只有一百萬種，不擋的話一個腳本幾小時就猜得到某個還活著的碼。
+ * 計數器每次失敗都重設 TTL，實際上是「最後一次猜錯後 10 分鐘內累積 30 次」——
+ * 比固定視窗更嚴，對正常使用者沒有差別（一個人不會連續打錯 30 次）。
+ */
+var PAIR_FAIL_KEY = 'adr010_pair_fail';
+var PAIR_LOCK_KEY = 'adr010_pair_lock';
+var PAIR_FAIL_LIMIT = 30;
+var PAIR_LOCK_TTL = 600;
+
+/** logs 的 source。前端 LOG 頁有同名的篩選鈕 */
+var DEVICE_LOG_SOURCE = '配對';
+
+/**
+ * 過渡期開關（D-10、交棒票 1-5）。讀不到或值不認得一律當 dual。
+ *
+ * 這不是安全邊界，是讓「第 3 段關門」不必重新部署的開關：Neil 在指令碼屬性把它
+ * 改成 token_only 就生效。為什麼缺值要當 dual 而不是 fail-closed：它只決定舊門
+ * 開不開，新門（token）永遠在驗；當成 token_only 的話，一個打錯字的屬性會讓
+ * 還沒配對的家人全部斷線，而那正是第 2 段驗證完成之前不該發生的事。
+ */
+function authMode_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('AUTH_MODE');
+  return String(raw == null ? '' : raw).trim().toLowerCase() === 'token_only' ? 'token_only' : 'dual';
+}
+
+/** LINE 官方帳號 ID（例如 @123abcde），給前端組「開啟 LINE 傳送」按鈕。沒設就回空，前端退回複製 */
+function lineOaId_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('LINE_OA_ID');
+  return raw ? String(raw).trim() : '';
+}
+
+function scriptCache_() {
+  try { return CacheService.getScriptCache(); } catch (err) { return null; }
+}
+
+function cacheGetJson_(cache, key) {
+  var raw = null;
+  try { raw = cache.get(key); } catch (err) { raw = null; }
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (err) { return null; }
+}
+
+/** SHA-256 → hex。computeDigest 回的是有號位元組（-128～127），要先轉回 0～255 */
+function tokenHash_(token) {
+  var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(token), Utilities.Charset.UTF_8);
+  return bytes.map(function (b) {
+    var v = (b < 0 ? b + 256 : b).toString(16);
+    return v.length < 2 ? '0' + v : v;
+  }).join('');
+}
+
+/** 兩個 UUIDv4 接起來：244 位元的亂數，來源是 Google 的安全亂數，不是 Math.random */
+function newDeviceToken_() {
+  return Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+}
+
+/**
+ * 六位數碼。取 UUID 前 12 個 hex（48 位元，第 13 個才是版本號）再取模：
+ * 一樣是安全亂數，偏差小到可以忽略。
+ */
+function newSixDigitCode_() {
+  var n = parseInt(Utilities.getUuid().replace(/-/g, '').slice(0, 12), 16) % 1000000;
+  var s = String(n);
+  while (s.length < 6) s = '0' + s;
+  return s;
+}
+
+/** Sheet 讀回來可能是 Date（自動辨識）也可能是字串；兩種都換成毫秒，換不出來回 NaN */
+function toTime_(v) {
+  if (v instanceof Date) return v.getTime();
+  var s = String(v == null ? '' : v).trim();
+  return s ? new Date(s).getTime() : NaN;
+}
+
+/** 建表方式比照 ensureLineUsersSheet_：只建表頭，不寫任何一列 */
+function ensureLineDevicesSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(LINE_DEVICES_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(LINE_DEVICES_SHEET);
+    sheet.appendRow(LINE_DEVICES_HEADERS);
+    console.log('已建立分頁「' + LINE_DEVICES_SHEET + '」並寫入表頭');
+    return sheet;
+  }
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(LINE_DEVICES_HEADERS);
+    console.log('分頁「' + LINE_DEVICES_SHEET + '」原本沒有表頭，已補上');
+  }
+  return sheet;
+}
+
+/**
+ * 整張讀進來。分頁不存在＝還沒有人配對過，是「讀到了、沒有裝置」，不是錯誤。
+ * 讀取丟例外才是 ok:false——那時一律拒絕，不能把讀不到當成「沒有撤銷紀錄」。
+ */
+function readDevices_() {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LINE_DEVICES_SHEET);
+    if (!sheet) return { ok: true, sheet: null, headers: [], rows: [] };
+    var headers = sheetHeaders_(sheet);
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 2 || !headers.length) return { ok: true, sheet: sheet, headers: headers, rows: [] };
+
+    var values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+    var rows = [];
+    values.forEach(function (line, i) {
+      var rec = {};
+      headers.forEach(function (h, c) { rec[h] = line[c]; });
+      if (!String(rec.device_id || '').trim()) return;
+      rows.push({ row: i + 2, record: rec });
+    });
+    return { ok: true, sheet: sheet, headers: headers, rows: rows };
+  } catch (err) {
+    return { ok: false, error: String(err), sheet: null, headers: [], rows: [] };
+  }
+}
+
+/** 只改指定的欄，其他欄一格都不動（撤銷不該順手改掉 last_used_at） */
+function setDeviceFields_(sheet, headers, rowNumber, patch) {
+  Object.keys(patch).forEach(function (k) {
+    var col = headers.indexOf(k) + 1;
+    if (col > 0) sheet.getRange(rowNumber, col, 1, 1).setValues([[patch[k]]]);
+  });
+}
+
+/** 撤銷／續期之後要立刻生效，不能等 5 分鐘快取過期（交棒票 1-2） */
+function invalidateDeviceCache_(hash) {
+  var cache = scriptCache_();
+  if (!cache || !hash) return;
+  try { cache.remove(DEVICE_CACHE_PREFIX + hash); } catch (err) {}
+}
+
+/**
+ * 以雜湊找裝置：先問快取，沒有才讀 Sheet。
+ * **只快取找到的**（比照 lineUsersRoster_）：把「找不到」也快取起來，剛配對好的
+ * 那台會在 5 分鐘內被當成陌生人。
+ */
+function findDeviceByHash_(hash) {
+  var cache = scriptCache_();
+  if (cache) {
+    var hit = cacheGetJson_(cache, DEVICE_CACHE_PREFIX + hash);
+    if (hit) return { ok: true, device: hit };
+  }
+  var all = readDevices_();
+  if (!all.ok) return { ok: false, error: all.error, device: null };
+
+  var found = null;
+  all.rows.some(function (r) {
+    if (String(r.record.token_hash || '').trim() === hash) { found = r.record; return true; }
+    return false;
+  });
+  if (found && cache) {
+    try { cache.put(DEVICE_CACHE_PREFIX + hash, JSON.stringify(found), DEVICE_CACHE_TTL); } catch (err) {}
+  }
+  return { ok: true, device: found };
+}
+
+/** 對外的裝置資料：拿掉 token_hash（交棒票 1-4 listDevices） */
+function publicDevice_(dev) {
+  if (!dev) return null;
+  var out = {};
+  LINE_DEVICES_HEADERS.forEach(function (h) {
+    if (h === 'token_hash') return;
+    var v = dev[h];
+    out[h] = v instanceof Date ? v.toISOString() : (v == null ? '' : v);
+  });
+  return out;
+}
+
+/**
+ * 閒置太久（D-5）。last_used_at 讀不出來就退回 created_at，兩個都讀不出來當作過期——
+ * 一列時間欄被改壞的裝置，寧可要本人走一次續期，也不要讓它永遠有效。
+ */
+function deviceIdle_(dev, nowMs) {
+  var last = toTime_(dev.last_used_at);
+  if (!isFinite(last)) last = toTime_(dev.created_at);
+  if (!isFinite(last)) return true;
+  return nowMs - last > DEVICE_IDLE_DAYS * 86400000;
+}
+
+/**
+ * 滑動續期，一天最多寫一次（D-8）。寫失敗只留 console：這一次的請求已經通過驗證，
+ * 不該因為「記一下時間」失敗而變成失敗；明天還會再試。
+ */
+function touchDevice_(dev, nowMs) {
+  var last = toTime_(dev.last_used_at);
+  if (isFinite(last) && nowMs - last <= DEVICE_TOUCH_MS) return;
+  try {
+    var all = readDevices_();
+    var hit = null;
+    all.rows.some(function (r) {
+      if (String(r.record.device_id) === String(dev.device_id)) { hit = r; return true; }
+      return false;
+    });
+    if (!hit) return;
+    var stamp = new Date(nowMs).toISOString();
+    setDeviceFields_(all.sheet, all.headers, hit.row, { last_used_at: stamp });
+    dev.last_used_at = stamp;
+    var cache = scriptCache_();
+    if (cache) {
+      try { cache.put(DEVICE_CACHE_PREFIX + dev.token_hash, JSON.stringify(dev), DEVICE_CACHE_TTL); } catch (err) {}
+    }
+  } catch (err) {
+    console.log('更新 last_used_at 失敗（這次請求照常放行）：' + err);
+  }
+}
+
+/**
+ * 人層被擋的原因。ADR 只寫了 inactive，但 writeGate_ 還會回「白名單讀不到」這類
+ * **系統**問題——那些要原樣往上傳：前端看到 inactive 會請人等管理者，看到系統錯誤
+ * 只會說連線異常。把一次 Sheet 故障講成「你被停用了」是假話。
+ */
+function personReason_(gateError) {
+  if (gateError === 'not_on_whitelist' || gateError === 'inactive' || gateError === 'missing_line_id') {
+    return 'inactive';
+  }
+  return gateError || 'inactive';
+}
+
+var DEVICE_DENY_TEXT = {
+  no_token: '請求沒有帶裝置 token，拒絕',
+  unknown_token: 'token 對不上任何裝置，拒絕',
+  revoked: '這台裝置已被撤銷，拒絕',
+  token_expired: '這台裝置閒置超過 ' + DEVICE_IDLE_DAYS + ' 天，要走續期',
+  device_store_unavailable: '裝置表讀不到，一律拒絕'
+};
+
+/**
+ * 裝置層被擋。有 what 才寫 logs（比照 denyWrite_，不可靜默失敗）；session 查狀態
+ * 不帶 what——續期畫面每 3 秒問一次「好了沒」，每次都寫一列只會把 logs 灌爆，
+ * 而狀態本身就回給了前端，不是安靜的失敗。
+ */
+function deviceDenied_(reason, dev, what, detail) {
+  if (what) {
+    console.log('🚫 裝置驗證沒過（' + reason + '）：' + what);
+    try {
+      logTransaction_('同步', '失敗', what, DEVICE_DENY_TEXT[reason] || reason,
+        (detail ? detail + '｜' : '') + 'code=' + reason + (dev ? '｜device_id=' + dev.device_id : ''),
+        '', dev ? String(dev.line_id || '') : '');
+    } catch (err) {
+      console.log('寫 logs 失敗（不影響拒絕的結果）：' + err);
+    }
+  }
+  return { ok: false, reason: reason, device: publicDevice_(dev), line_id: dev ? String(dev.line_id || '').trim() : '' };
+}
+
+/**
+ * 裝置驗證（交棒票 1-2）→ { ok, line_id, user, device, reason }
+ *
+ * 雙層、而且是 AND（D-6）：裝置層（認得、沒撤銷、沒過期）＋ 人層（is_active）。
+ * 人層直接呼叫 writeGate_，不另寫一份判斷——兩份遲早漂移，漂移的那天會有人被一邊
+ * 放行、另一邊擋下。停用＝暫停（D-7）也是這樣來的：裝置列一個字都沒改，人重新
+ * 啟用之後自然又過得了。
+ *
+ * now 只給測試用（比照 checkDueReminders）：綁死系統時鐘的測試會跟著真實日期漂。
+ */
+function authDevice_(rawToken, what, now) {
+  var nowMs = now || Date.now();
+  var token = String(rawToken == null ? '' : rawToken).trim();
+  if (!token) return deviceDenied_('no_token', null, what);
+
+  var found = findDeviceByHash_(tokenHash_(token));
+  if (!found.ok) return deviceDenied_('device_store_unavailable', null, what, found.error);
+  var dev = found.device;
+  if (!dev) return deviceDenied_('unknown_token', null, what);
+  if (String(dev.revoked_at == null ? '' : dev.revoked_at).trim()) return deviceDenied_('revoked', dev, what);
+  if (deviceIdle_(dev, nowMs)) return deviceDenied_('token_expired', dev, what);
+
+  var gate = writeGate_(dev.line_id, what || 'PWA session');
+  if (!gate.allowed) {
+    return { ok: false, reason: personReason_(gate.error), device: publicDevice_(dev),
+             line_id: String(dev.line_id || '').trim() };
+  }
+
+  touchDevice_(dev, nowMs);
+  return { ok: true, reason: '', line_id: String(dev.line_id).trim(), user: gate.user, device: publicDevice_(dev) };
+}
+
+/**
+ * 這個請求是誰（ADR-010 D-1／D-2）。line_id 一律由後端換出來。
+ *
+ * 帶了 token 就只看 token；新開的 action（TOKEN_ACTIONS）沒帶也當成 token 驗，
+ * 會落在 no_token。只有舊版前端會送的那幾個動作、而且 AUTH_MODE=dual 時，才退回
+ * 舊的「密鑰＋自稱 line_id」——那是過渡期給還沒更新的 App 用的，第 3 段關門。
+ */
+function pwaCaller_(body) {
+  var what = 'PWA ' + (body.action || '?') + ' → ' + (body.sheet || '?');
+
+  if (body.token || TOKEN_ACTIONS.indexOf(body.action) !== -1) {
+    var auth = authDevice_(body.token, what);
+    if (!auth.ok) return { ok: false, error: auth.reason };
+    return { ok: true, line_id: auth.line_id, user: auth.user, device: auth.device };
+  }
+
+  if (authMode_() !== 'dual') {
+    // 看得出是不是還有舊版 App 在跑（交棒票 1-5）
+    console.log('🚫 舊寫法已停用（AUTH_MODE=token_only）：' + what);
+    try {
+      logTransaction_('同步', '失敗', what, '舊版寫法已停用，拒絕',
+        'AUTH_MODE=token_only 之後只收裝置 token；這筆多半來自還沒更新的 App，請它重開 App 並配對',
+        '', String(body.line_id || ''));
+    } catch (err) {
+      console.log('寫 logs 失敗（不影響拒絕的結果）：' + err);
+    }
+    return { ok: false, error: 'token_required' };
+  }
+
+  var secret = cloudSecret_();
+  if (!secret) {
+    // 讀不到就一律拒絕。fail-open 等於把門直接拆掉——寧可同步壞掉讓人發現，
+    // 也不能安靜地變成「誰都能寫」。
+    console.log('❌ 指令碼屬性 CLOUD_SECRET 不存在或是空字串，所有寫入一律拒絕');
+    return { ok: false, error: 'server_misconfigured' };
+  }
+  if (body.secret !== secret) return { ok: false, error: 'unauthorized' };
+
+  // 白名單閘門（ADR-008 D-2）。密鑰只證明「這是我們家的 App」，證明不了「這是誰」；
+  // line_id 才回答後者。兩道門串聯，過不了任一道就不寫。
+  var gate = writeGate_(body.line_id, what);
+  if (!gate.allowed) return { ok: false, error: gate.error };
+  return { ok: true, line_id: String(body.line_id).trim(), user: gate.user, device: null };
+}
+
+/** session：這把 token 現在是什麼狀態（前端開機、回前景、續期輪詢都問這個） */
+function deviceSession_(token, now) {
+  var auth = authDevice_(token, '', now);
+  if (!auth.ok) return { status: auth.reason };
+  return {
+    status: 'ok',
+    line_id: auth.line_id,
+    display_name: String((auth.user && auth.user.display_name) || '').trim(),
+    device_id: auth.device.device_id,
+    device_label: auth.device.device_label
+  };
+}
+
+/**
+ * 發配對碼（LINE「配對」）。碼與 line_id 的對應只放快取，TTL 10 分鐘（D-8）。
+ * 呼叫端（line-router.gs）已經確認過發話者是 active 成員、而且是一對一聊天。
+ */
+function issuePairCode_(lineId) {
+  return issueCode_(PAIR_CODE_PREFIX, { line_id: String(lineId || '').trim() });
+}
+
+/** 配對碼與續期碼共用：產生一個快取裡還沒有的碼。撞到就換，十次都撞到代表快取有問題 */
+function issueCode_(prefix, payload) {
+  var cache = scriptCache_();
+  if (!cache) return { ok: false, reason: 'cache_unavailable' };
+  for (var i = 0; i < 10; i++) {
+    var code = newSixDigitCode_();
+    var busy = null;
+    try { busy = cache.get(prefix + code); } catch (err) { return { ok: false, reason: 'cache_unavailable' }; }
+    if (busy) continue;
+    try { cache.put(prefix + code, JSON.stringify(payload), PAIR_CODE_TTL); } catch (err) {
+      return { ok: false, reason: 'cache_unavailable' };
+    }
+    return { ok: true, code: code };
+  }
+  return { ok: false, reason: 'cache_unavailable' };
+}
+
+/** 猜錯一次記一筆；累積到上限就鎖 10 分鐘，鎖的當下寫一列 logs（只寫這一列，不是每次猜錯都寫） */
+function notePairFailure_(cache) {
+  var n = 0;
+  try { n = Number(cache.get(PAIR_FAIL_KEY)) || 0; } catch (err) { n = 0; }
+  n++;
+  try {
+    if (n >= PAIR_FAIL_LIMIT) {
+      cache.put(PAIR_LOCK_KEY, '1', PAIR_LOCK_TTL);
+      cache.remove(PAIR_FAIL_KEY);
+      console.log('🚫 配對碼連續猜錯 ' + n + ' 次，暫停配對 ' + (PAIR_LOCK_TTL / 60) + ' 分鐘');
+      logTransaction_(DEVICE_LOG_SOURCE, '失敗', 'PWA pairClaim',
+        '配對碼猜錯太多次，暫停配對 ' + (PAIR_LOCK_TTL / 60) + ' 分鐘',
+        '10 分鐘內累積猜錯 ' + n + ' 次，疑似有人在猜碼', '', '');
+    } else {
+      cache.put(PAIR_FAIL_KEY, String(n), PAIR_LOCK_TTL);
+    }
+  } catch (err) {
+    console.log('記錄配對失敗次數時出錯：' + err);
+  }
+}
+
+/** 前端帶上來的裝置名稱只是給人看的標籤，去掉換行、截短就好 */
+function cleanDeviceLabel_(raw) {
+  var s = String(raw == null ? '' : raw).replace(/[\r\n\t]+/g, ' ').trim();
+  return (s.length > DEVICE_LABEL_MAX ? s.slice(0, DEVICE_LABEL_MAX) : s) || '(未命名裝置)';
+}
+
+/**
+ * pairClaim（流程 A 的最後一步）→ { success, token, device_id, line_id, display_name } 或 { error }
+ *
+ * 碼先刪再發 token：同一個碼同時被送兩次，第二次會找不到——一個碼只換得到一把鑰匙。
+ * 發之前再過一次人層：碼是 10 分鐘前發的，這段時間裡人可能被停用了。
+ */
+function pairClaim_(rawCode, rawLabel, now) {
+  var cache = scriptCache_();
+  if (!cache) {
+    console.log('❌ CacheService 取不到，配對碼無從比對');
+    return { error: 'cache_unavailable' };
+  }
+  var locked = null;
+  try { locked = cache.get(PAIR_LOCK_KEY); } catch (err) { locked = null; }
+  if (locked) return { error: 'too_many_attempts' };
+
+  var code = String(rawCode == null ? '' : rawCode).trim();
+  var hit = /^\d{6}$/.test(code) ? cacheGetJson_(cache, PAIR_CODE_PREFIX + code) : null;
+  if (!hit || !hit.line_id) {
+    notePairFailure_(cache);
+    return { error: 'invalid_code' };
+  }
+  try { cache.remove(PAIR_CODE_PREFIX + code); } catch (err) {}
+
+  var gate = writeGate_(hit.line_id, 'PWA pairClaim');
+  if (!gate.allowed) return { error: personReason_(gate.error) };
+
+  var nowIso = new Date(now || Date.now()).toISOString();
+  var token = newDeviceToken_();
+  var dev = {
+    device_id: Utilities.getUuid(),
+    token_hash: tokenHash_(token),
+    line_id: String(hit.line_id).trim(),
+    device_label: cleanDeviceLabel_(rawLabel),
+    created_at: nowIso,
+    last_used_at: nowIso,
+    revoked_at: '',
+    revoked_by: ''
+  };
+
+  var rowNumber;
+  try {
+    var sheet = ensureLineDevicesSheet_();
+    var headers = sheetHeaders_(sheet);
+    sheet.appendRow(headers.map(function (h) { return dev[h] == null ? '' : dev[h]; }));
+    rowNumber = sheet.getLastRow();
+  } catch (err) {
+    console.log('寫入 ' + LINE_DEVICES_SHEET + ' 失敗：' + err);
+    try {
+      logTransaction_(DEVICE_LOG_SOURCE, '失敗', 'PWA 配對 ' + dev.device_label, '裝置寫入失敗',
+        String(err && err.stack || err), '', dev.line_id);
+    } catch (e) {}
+    return { error: 'device_store_unavailable' };
+  }
+
+  try {
+    logTransaction_(DEVICE_LOG_SOURCE, '成功', 'PWA 配對 ' + dev.device_label, '已配對新裝置',
+      'device_id=' + dev.device_id, rowNumber, dev.line_id);
+  } catch (err) {}
+
+  return {
+    success: true,
+    token: token,
+    device_id: dev.device_id,
+    line_id: dev.line_id,
+    display_name: String((gate.user && gate.user.display_name) || '').trim()
+  };
+}
+
+/**
+ * renewStart（流程 C 的第一步）→ { success, code, oa_id } 或 { error }
+ *
+ * 只有「真的只是過期」才發碼（D-6）。被撤銷、被停用、認不得的 token 一律拒絕，
+ * 只能走 A——撤銷的意義就是「這台不算數了」，讓它自己續回來等於撤銷無效。
+ * authDevice_ 在過期那一步就停了、還沒查人，所以人層要在這裡補查一次。
+ */
+function renewStart_(token, now) {
+  var auth = authDevice_(token, '', now);
+  if (auth.ok) return { error: 'not_expired' };
+  if (auth.reason !== 'token_expired') {
+    if (auth.reason === 'revoked' || auth.reason === 'unknown_token' || auth.reason === 'no_token') {
+      try {
+        logTransaction_(DEVICE_LOG_SOURCE, '失敗', 'PWA renewStart', DEVICE_DENY_TEXT[auth.reason] + '，不發續期碼',
+          'code=' + auth.reason + (auth.device ? '｜device_id=' + auth.device.device_id : ''), '', auth.line_id || '');
+      } catch (err) {}
+    }
+    return { error: auth.reason };
+  }
+
+  var gate = writeGate_(auth.line_id, 'PWA renewStart');
+  if (!gate.allowed) return { error: personReason_(gate.error) };
+
+  var issued = issueCode_(RENEW_CODE_PREFIX, { device_id: auth.device.device_id, line_id: auth.line_id });
+  if (!issued.ok) return { error: issued.reason };
+  return { success: true, code: issued.code, oa_id: lineOaId_(), expires_in: PAIR_CODE_TTL };
+}
+
+/**
+ * LINE「驗證裝置 碼」（流程 C 的第二步）→ { ok, reason, device }
+ *
+ * 發話者必須是裝置原主人。別人傳同一個碼一律拒絕，而且**不刪碼**：刪掉的話，
+ * 旁人亂傳一次就能讓原主人的續期失效，等於給了一個干擾別人的按鈕。
+ */
+function confirmRenewCode_(rawCode, speakerId, now) {
+  var cache = scriptCache_();
+  if (!cache) return { ok: false, reason: 'cache_unavailable' };
+  var code = String(rawCode == null ? '' : rawCode).trim();
+  var hit = /^\d{6}$/.test(code) ? cacheGetJson_(cache, RENEW_CODE_PREFIX + code) : null;
+  if (!hit) return { ok: false, reason: 'invalid_code' };
+  if (String(hit.line_id) !== String(speakerId || '').trim()) return { ok: false, reason: 'not_owner' };
+
+  var all = readDevices_();
+  if (!all.ok) return { ok: false, reason: 'device_store_unavailable' };
+  var target = null;
+  all.rows.some(function (r) {
+    if (String(r.record.device_id) === String(hit.device_id)) { target = r; return true; }
+    return false;
+  });
+  if (!target) return { ok: false, reason: 'unknown_device' };
+  // 發碼之後才被撤銷的，照樣不續——撤銷的決定比續期新
+  if (String(target.record.revoked_at == null ? '' : target.record.revoked_at).trim()) {
+    return { ok: false, reason: 'revoked' };
+  }
+
+  setDeviceFields_(all.sheet, all.headers, target.row, { last_used_at: new Date(now || Date.now()).toISOString() });
+  try { cache.remove(RENEW_CODE_PREFIX + code); } catch (err) {}
+  invalidateDeviceCache_(String(target.record.token_hash || ''));
+  return { ok: true, reason: '', device: publicDevice_(target.record) };
+}
+
+/** 裝置在畫面上的狀態。算法與 authDevice_ 同一套，不另寫 */
+function deviceStatus_(dev, nowMs) {
+  if (String(dev.revoked_at == null ? '' : dev.revoked_at).trim()) return 'revoked';
+  return deviceIdle_(dev, nowMs) ? 'expired' : 'active';
+}
+
+/**
+ * listDevices：自己的裝置；管理者可以查任何人（交棒票 1-4）。不回 token_hash。
+ * current 標出「發這個請求的就是這一台」，管理頁與「解除這台」都靠它認得自己。
+ */
+function listDevices_(caller, targetLineId) {
+  var target = String(targetLineId == null ? '' : targetLineId).trim() || caller.line_id;
+  if (target !== caller.line_id && !truthy_((caller.user || {}).is_admin)) {
+    return { error: 'forbidden' };
+  }
+  var all = readDevices_();
+  if (!all.ok) return { error: 'device_store_unavailable' };
+
+  var nowMs = Date.now();
+  var mine = caller.device ? String(caller.device.device_id) : '';
+  var devices = all.rows
+    .filter(function (r) { return String(r.record.line_id || '').trim() === target; })
+    .map(function (r) {
+      var d = publicDevice_(r.record);
+      d.status = deviceStatus_(r.record, nowMs);
+      d.current = !!mine && String(d.device_id) === mine;
+      return d;
+    });
+  return { success: true, line_id: target, devices: devices };
+}
+
+/**
+ * revokeDevice：本人可撤銷自己的，管理者可撤銷任何人的（交棒票 1-4）。
+ * device_id 撤一台；all_of 撤某人的全部（D-7「停用時要一併撤銷嗎」、管理頁的全部撤銷）。
+ *
+ * 權限是整批判斷：清單裡只要有一台不是自己的而且自己不是管理者，整個請求拒絕，
+ * 不做「撤得掉的先撤」——半套結果比全有全無難解釋得多。已撤銷的不重寫，保留第一次
+ * 撤銷的時間與撤銷者。
+ */
+function revokeDevices_(caller, deviceId, allOf) {
+  var id = String(deviceId == null ? '' : deviceId).trim();
+  var owner = String(allOf == null ? '' : allOf).trim();
+  if (!id && !owner) return { error: 'missing_target' };
+
+  var all = readDevices_();
+  if (!all.ok) return { error: 'device_store_unavailable' };
+  var targets = all.rows.filter(function (r) {
+    return id ? String(r.record.device_id) === id : String(r.record.line_id || '').trim() === owner;
+  });
+  if (id && !targets.length) return { error: 'device_not_found' };
+
+  var admin = truthy_((caller.user || {}).is_admin);
+  var foreign = targets.some(function (r) { return String(r.record.line_id || '').trim() !== caller.line_id; });
+  if (foreign && !admin) return { error: 'forbidden' };
+
+  var nowIso = new Date().toISOString();
+  var revoked = 0;
+  targets.forEach(function (r) {
+    if (String(r.record.revoked_at == null ? '' : r.record.revoked_at).trim()) return;
+    setDeviceFields_(all.sheet, all.headers, r.row, { revoked_at: nowIso, revoked_by: caller.line_id });
+    invalidateDeviceCache_(String(r.record.token_hash || ''));
+    revoked++;
+  });
+
+  try {
+    logTransaction_(DEVICE_LOG_SOURCE, '成功',
+      '撤銷裝置 ' + (id ? 'device_id=' + id : '「' + owner + '」的全部裝置'),
+      '已撤銷 ' + revoked + ' 台' + (targets.length > revoked ? '（' + (targets.length - revoked) + ' 台原本就已撤銷）' : ''),
+      targets.map(function (r) { return r.record.device_label; }).join('、'), '', caller.line_id);
+  } catch (err) {}
+  return { success: true, revoked: revoked, matched: targets.length };
 }

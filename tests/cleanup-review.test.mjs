@@ -2,7 +2,8 @@
  * 清理小票的回歸測試（2026-09-24 JHIN code review）
  *
  * 三件事：
- *   1. 選身份之後，只送「身份確定前就排好」的那幾筆，不把整份雲端快照重送一遍
+ *   1. 配對之後，只送「身份確定前就排好」的那幾筆，不把整份雲端快照重送一遍
+ *      （原本測的是 ADR-008 的選身份；ADR-010 把入口換成配對，要守的事沒變）
  *   2. replaceAll 已退場：後端收到要明確拒絕，整張表一個字都不能動
  *   3. logs／line_users 不歸前端管的保護，在 replaceAll 退場後仍然擋得住 archivePurge
  */
@@ -14,44 +15,50 @@ import { loadCodeGs, FakeSheet } from './fake-apps-script.mjs';
 const ME = 'Uneil';
 const SECRET = 'test-cloud-secret';
 
-describe('選身份之後的補推', () => {
+describe('配對之後的補推（原「選身份之後的補推」，ADR-010 起身份改由配對取得）', () => {
   function cloudWith20Tasks() {
     const tasks = Array.from({ length: 20 }, (_, i) => ({
       id: String(1000 + i), text: '雲端任務 ' + i, is_completed: '', created_at: '2026-09-01T00:00:00Z',
       priority: 'M', line_id: 'Ufamily'
     }));
-    return ({ url, body }) => {
-      if (!body && url.includes('sheet=tasks')) return { json: () => Promise.resolve({ data: tasks }) };
-      if (!body && url.includes('sheet=line_users')) {
+    return ({ body }) => {
+      if (body && body.action === 'pairClaim') {
+        return { json: () => Promise.resolve({ success: true, token: 'tok-new', device_id: 'd1', line_id: ME, display_name: 'Neil' }) };
+      }
+      if (body && body.action === 'read' && body.sheet === 'tasks') return { json: () => Promise.resolve({ data: tasks }) };
+      if (body && body.action === 'read' && body.sheet === 'line_users') {
         return { json: () => Promise.resolve({ data: [{ line_id: ME, display_name: 'Neil', is_active: 'TRUE' }] }) };
       }
+      if (body && body.action === 'read') return { json: () => Promise.resolve({ data: [] }) };
       return null;
     };
   }
-  async function settle(e, rounds = 400) {
-    for (let i = 0; i < rounds; i++) await new Promise((r) => setImmediate(r));
-  }
 
-  test('只送身份確定前排好的那一筆，不重送雲端上既有的 20 筆', async () => {
+  test('只送配對前排好的那一筆，不重送雲端上既有的 20 筆', async () => {
     const e = loadFrontend({ fetchImpl: cloudWith20Tasks() });
-    e.raw('myLineId = ""');
-    e.raw('localOnly = false');
+    e.raw('myLineId = null; deviceToken = null');
+    e.raw('localOnly = true');
     e.raw('state = EMPTY_STATE()');
     e.raw('outbox = []');
-    e.call('queueUpsert', 'notes', { id: '77', text: '選身份前記的', line_id: '' });
-    assert.equal(e.call('pendingCount'), 1, '前提：身份未定時寫入只排不送');
+    e.call('queueUpsert', 'notes', { id: '77', text: '配對前記的', line_id: '' });
+    assert.equal(e.call('pendingCount'), 1, '前提：還沒配對時寫入只排不送');
 
     // 畫面相關的部分與這裡要驗的無關（假 DOM 也撐不起導覽列重排），換成空函式
-    e.raw('applyIdentity = function(){}; closeIdentityGate = function(){}');
-    e.raw('gateOptions = [{ line_id: "' + ME + '", display_name: "Neil" }]');
-    e.call('pickIdentity', 0);
-    await settle(e);
+    e.raw('applyIdentity = function(){}');
+    const ok = await e.callRaw('submitPairCode', '123456');
 
-    const writes = e.calls.filter((c) => c.body && c.body.action);
+    assert.equal(ok, true);
+    assert.equal(e.read('deviceToken'), 'tok-new');
+    assert.equal(e.read('myLineId'), ME, '身份來自配對的回應，不是使用者選的');
+    assert.equal(e.localStorage.getItem('personal-os-device-token'), 'tok-new');
+    assert.equal(e.read('localOnly'), false, '配對成功就不再是「先在本機用」');
+
+    const writes = e.calls.filter((c) => c.body && c.body.action === 'upsert');
     assert.equal(writes.filter((c) => c.body.sheet === 'tasks').length, 0,
       '雲端既有的任務不該被重送——那是別人的最新版本，重送等於拿快照蓋回去');
     assert.equal(writes.filter((c) => c.body.sheet === 'notes' && c.body.record.id === '77').length, 1,
-      '身份確定前記的那一筆要送出去');
+      '配對前記的那一筆要送出去');
+    assert.ok(writes.every((c) => c.body.token === 'tok-new'), '補送要帶上剛拿到的 token');
     assert.equal(e.call('pendingCount'), 0, '佇列要清空');
   });
 });

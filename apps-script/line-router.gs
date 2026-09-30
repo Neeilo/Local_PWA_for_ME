@@ -254,8 +254,82 @@ function handleLineEvent_(event) {
     return;
   }
 
+  // 裝置配對與續期（ADR-010）。排在閘門**之後**：只有 active 成員拿得到配對碼，
+  // 那張碼就是「這個人本人在 LINE 上」的證明，放在閘門前面等於誰都能領鑰匙。
+  var deviceReply = handleDeviceCommand_(text, event.source, userId);
+  if (deviceReply !== null) {
+    lineReply_(event.replyToken, deviceReply);
+    return;
+  }
+
   var reply = routeLineMessage_(text, userId);
   lineReply_(event.replyToken, reply);
+}
+
+/* ========================================================================== */
+/* 裝置配對與續期（ADR-010 流程 A／C 的 LINE 端）                                */
+/* ========================================================================== */
+
+var PAIR_COMMAND = '配對';
+var RENEW_COMMAND = '驗證裝置';
+var RENEW_USAGE = '驗證裝置 123456（碼在 App 畫面上）';
+
+/**
+ * 「配對」與「驗證裝置 碼」。不是這兩個指令就回 null，交給一般路由。
+ *
+ * ⚠️ 只接受一對一聊天（source.type === 'user'）。ADR 沒寫明、但不擋就會出事：
+ * 在群組裡傳「配對」，bot 回的碼全群都看得到，誰先輸入誰就拿到這個人的鑰匙。
+ * 續期碼也一樣擋——續期的意義是「本人在自己的 LINE 上確認」，群組不是那個地方。
+ *
+ * 無論成敗都寫 logs（source「配對」），前端 LOG 頁有同名的篩選鈕。
+ */
+function handleDeviceCommand_(rawText, source, userId) {
+  var text = String(rawText || '').trim();
+  var isPair = text === PAIR_COMMAND;
+  var isRenew = text.indexOf(RENEW_COMMAND) === 0;
+  if (!isPair && !isRenew) return null;
+
+  if (!source || source.type !== 'user') {
+    logTransaction_(DEVICE_LOG_SOURCE, '失敗', text, '不在一對一聊天室，拒絕',
+      '來源：' + ((source && source.type) || '(不明)'), '', userId);
+    return '這個指令只能在跟 bot 的一對一聊天室傳。\n在群組裡傳的話，碼會被全群看到。';
+  }
+
+  if (isPair) {
+    var issued = issuePairCode_(userId);
+    if (!issued.ok) {
+      logTransaction_(DEVICE_LOG_SOURCE, '失敗', text, '配對碼產生失敗', 'reason=' + issued.reason, '', userId);
+      return '暫時沒辦法產生配對碼，請稍後再試。';
+    }
+    logTransaction_(DEVICE_LOG_SOURCE, '成功', text, '已發配對碼', '', '', userId);
+    return '🔑 配對碼：' + issued.code + '\n' +
+      (PAIR_CODE_TTL / 60) + ' 分鐘內到 App 輸入，只能用一次。\n' +
+      '不要把這個碼給別人——拿到碼的人就能用你的身份登入。';
+  }
+
+  var code = text.slice(RENEW_COMMAND.length).trim();
+  if (!/^\d{6}$/.test(code)) {
+    logTransaction_(DEVICE_LOG_SOURCE, '失敗', text, '續期碼格式不對', '', '', userId);
+    return '格式：' + RENEW_USAGE;
+  }
+
+  var res = confirmRenewCode_(code, userId);
+  if (!res.ok) {
+    logTransaction_(DEVICE_LOG_SOURCE, '失敗', text, '續期被拒絕', 'reason=' + res.reason, '', userId);
+    return renewDeniedMessage_(res.reason);
+  }
+  logTransaction_(DEVICE_LOG_SOURCE, '成功', text, '已續期：' + res.device.device_label,
+    'device_id=' + res.device.device_id, '', userId);
+  return '✅ 已續期：' + res.device.device_label + '\nApp 會在幾秒內自己回到畫面。';
+}
+
+function renewDeniedMessage_(reason) {
+  if (reason === 'not_owner') return '這個碼不是你的裝置，沒辦法幫你續期。';
+  if (reason === 'revoked') return '這台裝置已被撤銷，不能續期。\n請在 App 上重新配對。';
+  if (reason === 'invalid_code') {
+    return '這個碼不對或已過期（' + (PAIR_CODE_TTL / 60) + ' 分鐘）。\n請在 App 上重新產生一個。';
+  }
+  return '暫時沒辦法續期，請稍後再試。';
 }
 
 /* ========================================================================== */
@@ -1111,6 +1185,8 @@ function supportedPrefixesMessage_() {
   }
   lines.push('・' + QUERY_USAGE);
   lines.push('・' + REGISTER_USAGE);
+  lines.push('・' + PAIR_COMMAND + '（拿 App 的配對碼，限一對一聊天）');
+  lines.push('・' + RENEW_USAGE);
   lines.push('（輸入 whoami 可查自己的 userId）');
   return lines.join('\n');
 }
