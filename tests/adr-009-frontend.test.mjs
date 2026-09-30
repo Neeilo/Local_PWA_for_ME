@@ -15,12 +15,13 @@ import assert from 'node:assert/strict';
 import { loadFrontend } from './fake-browser.mjs';
 
 const ME = 'Uneil';
+const TOKEN = 'tok-test-device';
 
-/** 建好一個「已選身份、雲端會成功」的環境 */
+/** 建好一個「已配對、雲端會成功」的環境 */
 function env(opts = {}) {
   const e = loadFrontend(opts);
   e.set('myLineId', ME);
-  e.raw('myLineId = "' + ME + '"');
+  e.raw('myLineId = "' + ME + '"; deviceToken = "' + TOKEN + '"');
   e.raw('localOnly = false');
   e.raw('outbox = []');
   return e;
@@ -114,7 +115,9 @@ describe('每一次改動只送自己那一筆', () => {
     assert.equal(w[0].body.action, 'upsert');
     assert.equal(w[0].body.sheet, 'tasks');
     assert.equal(w[0].body.record.text, '買菜');
-    assert.equal(w[0].body.line_id, ME, 'line_id 要一起送，後端靠它查白名單');
+    assert.equal(w[0].body.token, TOKEN, '裝置 token 要一起送，後端靠它換出身份（ADR-010）');
+    assert.equal(w[0].body.line_id, undefined, '身份由 token 換出來，前端不再自稱是誰');
+    assert.equal(w[0].body.secret, undefined, 'CLOUD_SECRET 已從前端拿掉');
   });
 
   test('沒有任何一次寫入是 replaceAll', () => {

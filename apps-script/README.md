@@ -39,6 +39,8 @@
 | `LINE_CHANNEL_ACCESS_TOKEN` | LINE 回覆用長期權杖 | 寫入照常，但 bot 不會回話 |
 | `GEMINI_API_KEY` | 「查」前綴用 | 只有查詢不能用，其他前綴照常 |
 | `GEMINI_MODEL` | 覆寫預設模型 ID（選填） | 用程式內建預設值 |
+| `AUTH_MODE` | ADR-010 過渡期開關：`dual`／`token_only`。改完立刻生效，**不用重新部署** | 當 `dual`（值打錯也是）：舊版 App 的「密鑰＋line_id」寫法與 `doGet` 照舊可用。`token_only` 才關門 |
+| `LINE_OA_ID` | LINE 官方帳號 ID（例如 `@123abcde`），續期畫面的「開啟 LINE 傳送」按鈕用（選填） | 按鈕不出現，只剩「複製指令」 |
 
 > ⚠️ 這個 repo 會整包發布到 GitHub Pages，此資料夾也會公開。
 > **任何權杖、SECRET 一律放 Apps Script 的「指令碼屬性」，不要寫進這裡的檔案。**

@@ -80,18 +80,17 @@ describe('後端：?only=tombstones 附上算好的鍵', () => {
 /* ========================================================================== */
 describe('前端：什麼時候不該刪', () => {
 
-  /** 假雲端：GET tombstones 回一批，POST 一律成功 */
+  /** 假雲端：readTombstones 回一批，其餘寫入一律成功（ADR-010 起讀取也走 POST） */
   function archiveEnv({ tombstones = {}, getFails = false, confirmAnswer = true } = {}) {
     const e = loadFrontend({
-      fetchImpl: ({ url }) => {
-        if (/only=tombstones/.test(url)) {
+      fetchImpl: ({ body }) => {
+        if (body && body.action === 'readTombstones') {
           if (getFails) return { json: () => Promise.reject(new Error('offline')) };
-          const m = /[?&]sheet=([^&]+)/.exec(url);
-          const sheet = decodeURIComponent(m[1]);
+          const sheet = body.sheet;
           const rows = tombstones[sheet] || [];
           return { json: () => Promise.resolve({ data: rows, keys: rows.map(r => String(r.id || '')) }) };
         }
-        if (/sheet=/.test(url)) return { json: () => Promise.resolve({ data: [] }) };
+        if (body && body.action === 'read') return { json: () => Promise.resolve({ data: [] }) };
         return { json: () => Promise.resolve({ success: true, deleted: 1 }) };
       }
     });
@@ -142,7 +141,7 @@ describe('前端：什麼時候不該刪', () => {
     assert.ok(e.toasts.some(t => t.includes('沒有已刪除的資料')));
   });
 
-  test('還沒選身份就不封存', async () => {
+  test('還沒配對就不封存', async () => {
     const e = archiveEnv({ tombstones: { notes: [{ id: '7' }] } });
     e.raw('myLineId = ""');
     await e.callRaw('archiveTombstones');
@@ -153,15 +152,14 @@ describe('前端：什麼時候不該刪', () => {
   test('刪除發生在下載之後，順序不可以反過來', async () => {
     const order = [];
     const e = loadFrontend({
-      fetchImpl: ({ url, body }) => {
-        if (/only=tombstones/.test(url)) {
-          const m = /[?&]sheet=([^&]+)/.exec(url);
-          const sheet = decodeURIComponent(m[1]);
+      fetchImpl: ({ body }) => {
+        if (body && body.action === 'readTombstones') {
+          const sheet = body.sheet;
           const rows = sheet === 'notes' ? [{ id: '7', text: 'a' }] : [];
           return { json: () => Promise.resolve({ data: rows, keys: rows.map(r => r.id) }) };
         }
         if (body && body.action === 'archivePurge') { order.push('purge'); return { json: () => Promise.resolve({ success: true, deleted: 1 }) }; }
-        if (/sheet=/.test(url)) return { json: () => Promise.resolve({ data: [] }) };
+        if (body && body.action === 'read') return { json: () => Promise.resolve({ data: [] }) };
         return { json: () => Promise.resolve({ success: true }) };
       }
     });
