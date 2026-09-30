@@ -23,6 +23,7 @@
 | `Code.gs` | PWA ↔ Sheets 同步（`doGet` 讀取、`handlePwaSync_` 寫入） |
 | `line-router.gs` | LINE 快速輸入 → Sheets 路由，並持有統一入口 `doPost` |
 | `sheet-guide.gs` | `_guide` 導覽分頁：分頁登記表＋每天自動重新產生（`refreshGuide()`） |
+| `build-info.gs` | **不在 repo**：CI 部署時產生的發行號（`BUILD_INFO`），LINE 回「沒有這個前綴」時附在最後一行。`npm run pull` 會把它帶回來，已列入 `.gitignore` |
 
 ⚠️ **兩個密鑰一律讀指令碼屬性，不可寫回原始碼**（見下）。線上版原本把
 `CLOUD_SECRET` 與 LINE userId 白名單寫死在裡面——這個 repo 是公開的，寫死等於
