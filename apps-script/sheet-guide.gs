@@ -43,6 +43,9 @@ function guideRegistry_() {
     { sheet: 'line_users', category: '系統', purpose: '白名單＋功能權限矩陣',
       writers: '註冊指令、管理頁', readers: 'GAS 閘門、PWA',
       key: 'line_id', adr: '008' },
+    { sheet: LINE_DEVICES_SHEET, category: '系統', purpose: '已配對的裝置（token 只存雜湊）',
+      writers: 'PWA 配對、LINE「驗證裝置」、管理頁撤銷（皆由 GAS 寫）', readers: '只有 GAS（PWA 不可讀）',
+      key: 'device_id', adr: '010' },
     { sheet: GUIDE_SHEET, category: '系統', purpose: '本導覽表',
       writers: '只有 refreshGuide()', readers: 'Neil',
       key: '分頁名稱', adr: '' }
