@@ -436,6 +436,6 @@ Apps Script 與 Pages 分成兩個 job：認證與 scriptId 完全不會進到 P
   - ✅ T1 後端：`line_devices`（只存雜湊）、`authDevice_`、`pairClaim`／`session`／`renewStart`／`read`／`readTombstones`／`listDevices`／`revokeDevice`，LINE「配對」「驗證裝置 碼」（只收一對一），`AUTH_MODE` 雙模式
   - ✅ T2 前端：配對畫面取代選身份；所有讀寫改 POST 帶 token、拿掉 `CLOUD_SECRET`；過期續期畫面（每 3 秒輪詢）；管理頁的裝置清單與撤銷、停用時詢問一併撤銷；「換人」改為「解除這台裝置的配對」
   - 📌 ADR 沒寫到的：群組裡傳「配對」會讓全群看到碼 → 只收一對一；`writeGate_` 的「白名單讀不到」是系統錯誤不是停用，原樣往上傳，前端不會因為一次 Sheet 故障把人登出；`doGet` 在 dual 期間也不能讀 `line_devices`
-  - ⚠️ 與交棒票不同處（依 ADR D-7）：收到 `inactive` 時**不清 token**，改顯示「等管理者重新啟用」——清掉的話，重新啟用後這台不會自動恢復
+  - ✅ 裁決（2026-09-30，Neil）：收到 `inactive` 時**保留 token**（依 ADR D-7），顯示「等管理者重新啟用」，重新啟用後自動恢復。交棒票原寫「清掉 token」，以此裁決為準
   - ⏳ 第 3 段（Neil 操作）：`AUTH_MODE=token_only` → 家人配對 → 穩定一週後另開 PR 拔掉 dual 與 `CLOUD_SECRET`
   - ⏳ 另開票、須 Neil 明確同意：`交接.md` 從 git 歷史移除（改寫歷史不可逆）
