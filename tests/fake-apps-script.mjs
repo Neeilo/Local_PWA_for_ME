@@ -215,10 +215,12 @@ class FakeSpreadsheet {
  * 回傳的 call() 直接呼叫原始碼裡的函式，read() 讀得到頂層的 const
  * （vm 的頂層 const 不會變成全域屬性，但同一個 context 裡的後續運算看得見）。
  */
-export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [], cache = false, overrides = {} } = {}) {
+export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [], cache = false, overrides = {}, mailImpl = null } = {}) {
   const logs = [];              // console.log 的內容
   const transactions = [];      // logTransaction_ 收到的參數
   const pushes = [];            // linePush_ 收到的 (userId, text)
+  const mails = [];             // MailApp.sendEmail 收到的參數
+  const lock = { held: false, busy: false };   // busy=true 模擬「另一個封存正在跑」
   const triggers = [];          // ScriptApp 建出來的觸發器
   const ss = new FakeSpreadsheet(sheets);
 
@@ -273,6 +275,20 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
       MimeType: { JSON: 'application/json' }
     },
     UrlFetchApp: { fetch: () => { throw new Error('測試不發網路請求'); } },
+    // 寄信只記錄、不真的寄；mailImpl 可以丟例外，模擬額度用完或沒授權
+    MailApp: {
+      sendEmail: (opts) => {
+        if (mailImpl) mailImpl(opts);
+        mails.push(opts);
+      },
+      getRemainingDailyQuota: () => 100
+    },
+    LockService: {
+      getScriptLock: () => ({
+        tryLock: () => { if (lock.busy) return false; lock.held = true; return true; },
+        releaseLock: () => { lock.held = false; }
+      })
+    },
     // line-router.gs 裡的函式，Code.gs 靠全域範圍看見它們
     logTransaction_: (...args) => transactions.push(args),
     linePush_,
@@ -287,6 +303,7 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
       computeDigest: (_alg, text) => Array.from(createHash('sha256').update(String(text), 'utf8').digest(),
         (b) => (b > 127 ? b - 256 : b)),
       DigestAlgorithm: { SHA_256: 'SHA_256' },
+      newBlob: (data, contentType, name) => ({ data: String(data), contentType, name }),
       Charset: { UTF_8: 'UTF_8' }
     },
     Date,
@@ -318,6 +335,8 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
     pushes,
     triggers,
     cache: fakeCache,
+    mails,
+    lock,
     clock,
     /** 呼叫 Code.gs 裡的函式，回傳值搬回這一側的 realm */
     call: (name, ...args) => toHost(context[name].apply(null, args)),

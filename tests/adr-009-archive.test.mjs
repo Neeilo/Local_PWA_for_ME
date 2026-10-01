@@ -4,6 +4,9 @@
  * 這是整個 ADR 裡唯一一個會**永久刪除資料**的流程，所以測的重點全在「什麼時候
  * 不該刪」：讀不到雲端時不刪、使用者沒確認時不刪、鍵算不出來時不刪。
  *
+ * 2026-10-01 起封存改成後端一次做完並寄信（tests/archive-mail.test.mjs）。下面後端的
+ * ?only=tombstones／archivePurge 測試保留：AUTH_MODE=dual 期間舊版前端仍可能走那兩扇門。
+ *
  * 跑法：npm test
  */
 
@@ -78,99 +81,90 @@ describe('後端：?only=tombstones 附上算好的鍵', () => {
 });
 
 /* ========================================================================== */
-describe('前端：什麼時候不該刪', () => {
+/* 前端（2026-10-01 起封存改寄信：一個請求交給後端做完，見 tests/archive-mail.test.mjs）
+   這裡守的仍是「什麼時候不該刪」——只是刪除的開關從前端搬到了後端，前端要守的是
+   「什麼時候不該按下那個開關」，以及失敗時講得出是哪一步。 */
+describe('前端：什麼時候不該送出封存', () => {
 
-  /** 假雲端：readTombstones 回一批，其餘寫入一律成功（ADR-010 起讀取也走 POST） */
-  function archiveEnv({ tombstones = {}, getFails = false, confirmAnswer = true } = {}) {
+  function archiveEnv({ reply = { success: true, total: 3, deleted: 3 }, confirmAnswer = true, admin = true, fail = false } = {}) {
+    const alerts = [];
     const e = loadFrontend({
       fetchImpl: ({ body }) => {
-        if (body && body.action === 'readTombstones') {
-          if (getFails) return { json: () => Promise.reject(new Error('offline')) };
-          const sheet = body.sheet;
-          const rows = tombstones[sheet] || [];
-          return { json: () => Promise.resolve({ data: rows, keys: rows.map(r => String(r.id || '')) }) };
+        if (body && body.action === 'archiveMail') {
+          return fail ? { json: () => Promise.reject(new Error('offline')) } : { json: () => Promise.resolve(reply) };
         }
-        if (body && body.action === 'read') return { json: () => Promise.resolve({ data: [] }) };
-        return { json: () => Promise.resolve({ success: true, deleted: 1 }) };
+        return { json: () => Promise.resolve({ data: [] }) };
       }
     });
-    e.raw('myLineId = "' + ME + '"; localOnly = false; outbox = []');
-    e.raw('state = EMPTY_STATE()');
+    e.raw('myLineId = "' + ME + '"; deviceToken = "t"; localOnly = false; outbox = []; state = EMPTY_STATE()');
+    e.raw('roster = [{ line_id: "' + ME + '", is_active: "TRUE", is_admin: "' + (admin ? 'TRUE' : '') + '" }]');
     e.set('confirm', () => confirmAnswer);
+    e.set('alert', (m) => { alerts.push(String(m)); });
+    e.alerts = alerts;
     return e;
   }
+  const sends = (e) => e.calls.filter((c) => c.body && c.body.action === 'archiveMail');
 
-  const purges = (e) => e.calls.filter(c => c.body && c.body.action === 'archivePurge');
-
-  test('讀不到雲端就什麼都不做——絕不用猜的去刪', async () => {
-    const e = archiveEnv({ getFails: true });
+  test('⚠️ 使用者沒按確認就不送——這是「不先斬後奏」那道鎖', async () => {
+    const e = archiveEnv({ confirmAnswer: false });
     await e.callRaw('archiveTombstones');
-
-    assert.equal(purges(e).length, 0);
-    assert.ok(e.toasts.some(t => t.includes('讀不到雲端')));
+    assert.equal(sends(e).length, 0);
+    assert.ok(e.toasts.some((t) => t.includes('原封不動')));
   });
 
-  test('⚠️ 使用者沒按確認就不刪——這是「不先斬後奏」那道鎖', async () => {
-    const e = archiveEnv({
-      tombstones: { notes: [{ id: '7', text: '刪掉的' }] },
-      confirmAnswer: false
-    });
+  test('非管理者不送（按鈕也不該出現）', async () => {
+    const e = archiveEnv({ admin: false });
     await e.callRaw('archiveTombstones');
-
-    assert.equal(purges(e).length, 0, '檔案沒確定到手，雲端那一份就不能消失');
-    assert.ok(e.toasts.some(t => t.includes('原封不動')));
+    assert.equal(sends(e).length, 0);
   });
 
-  test('確認之後才送 archivePurge，而且只送有墓碑的那幾張表', async () => {
-    const e = archiveEnv({
-      tombstones: { notes: [{ id: '7', text: 'a' }], tasks: [{ id: '8', text: 'b' }] }
-    });
-    await e.callRaw('archiveTombstones');
-
-    const p = purges(e);
-    assert.equal(p.length, 2, '沒有墓碑的分頁不必打擾它');
-    assert.deepEqual(p.map(c => c.body.sheet).sort(), ['notes', 'tasks']);
-    p.forEach(c => assert.ok(c.body.keys.length > 0, '不可以送空清單'));
-  });
-
-  test('沒有任何墓碑時，連下載都不做', async () => {
-    const e = archiveEnv({ tombstones: {} });
-    await e.callRaw('archiveTombstones');
-
-    assert.equal(purges(e).length, 0);
-    assert.ok(e.toasts.some(t => t.includes('沒有已刪除的資料')));
-  });
-
-  test('還沒配對就不封存', async () => {
-    const e = archiveEnv({ tombstones: { notes: [{ id: '7' }] } });
+  test('還沒配對就不送', async () => {
+    const e = archiveEnv();
     e.raw('myLineId = ""');
     await e.callRaw('archiveTombstones');
-
-    assert.equal(purges(e).length, 0);
+    assert.equal(sends(e).length, 0);
   });
 
-  test('刪除發生在下載之後，順序不可以反過來', async () => {
-    const order = [];
-    const e = loadFrontend({
-      fetchImpl: ({ body }) => {
-        if (body && body.action === 'readTombstones') {
-          const sheet = body.sheet;
-          const rows = sheet === 'notes' ? [{ id: '7', text: 'a' }] : [];
-          return { json: () => Promise.resolve({ data: rows, keys: rows.map(r => r.id) }) };
-        }
-        if (body && body.action === 'archivePurge') { order.push('purge'); return { json: () => Promise.resolve({ success: true, deleted: 1 }) }; }
-        if (body && body.action === 'read') return { json: () => Promise.resolve({ data: [] }) };
-        return { json: () => Promise.resolve({ success: true }) };
-      }
-    });
-    e.raw('myLineId = "' + ME + '"; localOnly = false; outbox = []');
-    e.raw('state = EMPTY_STATE()');
-    e.set('confirm', () => { order.push('confirm'); return true; });
-    e.set('URL', { createObjectURL: () => { order.push('download'); return 'blob:x'; }, revokeObjectURL() {} });
-
+  test('確認之後只送一個請求，不再逐張分頁各自刪；也不再下載檔案', async () => {
+    const e = archiveEnv();
+    let downloads = 0;
+    e.set('URL', { createObjectURL: () => { downloads++; return 'blob:x'; }, revokeObjectURL() {} });
     await e.callRaw('archiveTombstones');
+    assert.equal(sends(e).length, 1);
+    assert.equal(e.calls.filter((c) => c.body && /archivePurge|readTombstones/.test(c.body.action)).length, 0);
+    assert.equal(downloads, 0, '備份改走信箱');
+    assert.ok(e.toasts.some((t) => t.includes('已寄出備份並刪除 3 筆')));
+  });
 
-    assert.deepEqual(order, ['download', 'confirm', 'purge'],
-      '標記 → 匯出 → 確認 → 刪除，一步都不能提前');
+  test('失敗時講得出是哪一步、原因是什麼', async () => {
+    const e = archiveEnv({ reply: { error: 'archive_failed', stage: 'mail', message: '沒有任何啟用中的管理者填了 email' } });
+    await e.callRaw('archiveTombstones');
+    assert.equal(e.alerts.length, 1);
+    assert.match(e.alerts[0], /階段：寄信/);
+    assert.match(e.alerts[0], /填了 email/);
+    assert.match(e.alerts[0], /沒有任何變動/);
+  });
+
+  test('刪到一半失敗：告訴使用者信已寄出、已補回幾筆', async () => {
+    const e = archiveEnv({ reply: { error: 'archive_failed', stage: 'delete', message: 'timed out', mailed: true, rolled_back: true, restored: 2 } });
+    await e.callRaw('archiveTombstones');
+    assert.match(e.alerts[0], /階段：刪除/);
+    assert.match(e.alerts[0], /已寄出/);
+    assert.match(e.alerts[0], /2 筆已經補回/);
+    assert.doesNotMatch(e.alerts[0], /沒有任何變動/, '刪過又補回，不能說沒動過');
+  });
+
+  test('⚠️ 沒收到回應：不能說「沒有變動」——雲端可能已經做完了', async () => {
+    const e = archiveEnv({ fail: true });
+    await e.callRaw('archiveTombstones');
+    assert.match(e.alerts[0], /不確定是否已完成/);
+    assert.doesNotMatch(e.alerts[0], /沒有任何變動/);
+  });
+
+  test('沒有任何墓碑：說清楚，不當成錯誤', async () => {
+    const e = archiveEnv({ reply: { success: true, total: 0, deleted: 0 } });
+    await e.callRaw('archiveTombstones');
+    assert.equal(e.alerts.length, 0);
+    assert.ok(e.toasts.some((t) => t.includes('沒有已刪除的資料')));
   });
 });
