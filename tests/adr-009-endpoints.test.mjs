@@ -1,7 +1,7 @@
 /**
  * ADR-009 Phase 2-b — 後端端點接線的測試
  *
- * 前兩批測的是還沒接線的純函式；這一批是第一次真的接上 doGet 與 doPost，
+ * 前兩批測的是還沒接線的純函式；這一批是第一次真的接上讀取與 doPost（ADR-010 起讀取也走 POST），
  * 所以測的重點從「算得對不對」變成「接得對不對」：墓碑有沒有真的被擋在出口、
  * 舊版前端會不會被改名弄壞、封存第二段有沒有守住那兩道鎖。
  *
@@ -12,7 +12,9 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadCodeGs, FakeSheet } from './fake-apps-script.mjs';
 
-const SECRET = 'test-cloud-secret';
+// ADR-010 關門後，PWA 的每個請求都帶裝置 token；身份由後端從 token 換出來
+const TOKEN = 'tok-neil';
+const STRANGER_TOKEN = 'tok-stranger';     // 有裝置，但人不在白名單上
 const ME = 'Uneil';
 
 const TASK_HEADERS = ['id', 'text', 'is_completed', 'created_at', 'priority', 'line_id', 'del', 'archive'];
@@ -29,26 +31,28 @@ function tasksSheet(rows = []) {
   return new FakeSheet('tasks', [TASK_HEADERS.slice(), ...rows]);
 }
 
-/** 建好一個能通過密鑰與白名單兩道門的環境 */
+/** 建好一個能通過裝置與白名單兩道門的環境 */
 function envWith(sheets) {
   return loadCodeGs({
     sheets: Object.assign({ line_users: whitelist() }, sheets),
-    properties: { CLOUD_SECRET: SECRET }
+    tokens: { [TOKEN]: ME, [STRANGER_TOKEN]: 'Ustranger' }
   });
 }
 
-/** doPost 的 body 包裝。預設帶齊會過閘門的東西 */
-function post(env, body) {
-  const e = { postData: { contents: JSON.stringify(Object.assign({ secret: SECRET, line_id: ME }, body)) } };
+/** doPost 的 body 包裝。預設帶會過閘門的 token */
+function post(env, body, token = TOKEN) {
+  const e = { postData: { contents: JSON.stringify(Object.assign({ token }, body)) } };
   return env.call('handlePwaSync_', e);
 }
 
+/** 讀取：原本走 doGet，ADR-010 關門後改走 POST read／readTombstones，回應形狀不變 */
 function get(env, params) {
-  return JSON.parse(env.call('doGet', { parameter: params }).body);
+  const action = params.only === 'tombstones' ? 'readTombstones' : 'read';
+  return JSON.parse(post(env, { action, sheet: params.sheet, key_field: params.key_field }).body);
 }
 
 /* ========================================================================== */
-describe('doGet — 墓碑擋在唯一的出口', () => {
+describe('讀取 — 墓碑擋在唯一的出口', () => {
 
   test('預設不回傳 del=true 的列', () => {
     const sheet = tasksSheet([
@@ -100,7 +104,7 @@ describe('doGet — 墓碑擋在唯一的出口', () => {
 });
 
 /* ========================================================================== */
-describe('doPost — upsert 正名，但舊名不能壞', () => {
+describe('doPost — upsert', () => {
 
   test("action:'upsert' 走單列 upsert", () => {
     const sheet = tasksSheet([['1', '舊的', '', '', 'M', ME, '', '']]);
@@ -116,7 +120,8 @@ describe('doPost — upsert 正名，但舊名不能壞', () => {
     assert.equal(sheet.toRecords()[0].text, '新的');
   });
 
-  test("action:'append' 仍然收——舊版前端會活到使用者下次開 App", () => {
+  test("舊名 action:'append' 已退場（ADR-010 關門）：拒絕，一列都不寫", () => {
+    // 原本收它是為了還沒更新的舊版前端；那些前端沒有裝置 token，關門後根本進不來
     const sheet = tasksSheet();
     const env = envWith({ tasks: sheet });
 
@@ -125,8 +130,8 @@ describe('doPost — upsert 正名，但舊名不能壞', () => {
       record: { id: '9', text: '舊版送上來的', line_id: ME }
     }).body);
 
-    assert.equal(out.success, true);
-    assert.equal(sheet.getLastRow(), 2);
+    assert.equal(out.error, 'unknown_action');
+    assert.equal(sheet.getLastRow(), 1);
   });
 
   test('reviews 用複合鍵：同一天不同人不會互相覆蓋', () => {
@@ -158,21 +163,22 @@ describe('doPost — upsert 正名，但舊名不能壞', () => {
     assert.deepEqual(get(env, { sheet: 'tasks' }).data, []);
   });
 
-  test('兩道門仍然擋得住：密鑰錯、不在白名單', () => {
+  test('兩道門仍然擋得住：沒有 token（含舊的密鑰寫法）、不在白名單', () => {
     const sheet = tasksSheet();
     const env = envWith({ tasks: sheet });
 
-    const badSecret = JSON.parse(env.call('handlePwaSync_', {
-      postData: { contents: JSON.stringify({ secret: 'wrong', line_id: ME, sheet: 'tasks', action: 'upsert', record: {} }) }
+    // 關門前的舊寫法：密鑰＋自稱 line_id。現在沒有 token 就是沒有身份
+    const legacy = JSON.parse(env.call('handlePwaSync_', {
+      postData: { contents: JSON.stringify({ secret: 'whatever', line_id: ME, sheet: 'tasks', action: 'upsert', record: { id: '1' } }) }
     }).body);
-    assert.equal(badSecret.error, 'unauthorized');
+    assert.equal(legacy.error, 'no_token');
 
     const stranger = JSON.parse(post(env, {
-      line_id: 'Ustranger', sheet: 'tasks', action: 'upsert', record: { id: '1', line_id: 'Ustranger' }
-    }).body);
-    // 拒絕原因刻意分得出來，不是籠統的 forbidden（ADR-008 H-5）：出事時要看得出
-    // 是「不在名單上」還是「名單讀不到」，這兩件事的修法完全不同
-    assert.equal(stranger.error, 'not_on_whitelist');
+      sheet: 'tasks', action: 'upsert', record: { id: '1', line_id: 'Ustranger' }
+    }, STRANGER_TOKEN).body);
+    // 拒絕原因刻意分得出來（ADR-008 H-5）：「人被擋」是 inactive，「名單讀不到」
+    // 原樣回 whitelist_unavailable——這兩件事的修法完全不同
+    assert.equal(stranger.error, 'inactive');
     assert.equal(sheet.getLastRow(), 1, '被擋下來就一列都不該寫進去');
   });
 });
@@ -235,10 +241,10 @@ describe('doPost — 封存第二段 archivePurge', () => {
   test('走的是同一套閘門：不在白名單的人刪不了東西', () => {
     const { sheet, env } = seeded();
     const out = JSON.parse(post(env, {
-      line_id: 'Ustranger', sheet: 'tasks', action: 'archivePurge', keys: ['2', '3']
-    }).body);
+      sheet: 'tasks', action: 'archivePurge', keys: ['2', '3']
+    }, STRANGER_TOKEN).body);
 
-    assert.equal(out.error, 'not_on_whitelist');
+    assert.equal(out.error, 'inactive');
     assert.equal(sheet.getLastRow(), 4, '一列都不該被刪');
   });
 });

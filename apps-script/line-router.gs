@@ -21,7 +21,7 @@
  *
  * 【設計約束】
  *  - 純規則式字串切分，不接 AI 判讀（ADR-006：查詢型 AI 為獨立分支，不走 ROUTE_TABLE）
- *  - 與 PWA 同步共用同一部署網址、同一 SECRET，只多一個判斷分支
+ *  - 與 PWA 同步共用同一部署網址，只多一個判斷分支
  *  - id 用 Date.now()，與 index.html 全站慣例一致（不可用 UUID，
  *    否則 taskFromCloud / expenseFromCloud 的 Number(r.id)||Date.now()
  *    會讓 UUID 轉成 NaN，每次啟動都重複塞一筆）

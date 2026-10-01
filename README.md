@@ -119,9 +119,8 @@ ADR-008 的「選名字」是宣告不是驗證，而 `doGet` 可以匿名讀走
 - 註冊（`Line_ID/`）與配對是兩件事：前者一人一次、有刻意的摩擦；後者一台一次。
 - `line_devices` 分頁 PWA 讀不到也寫不進去；管理頁看裝置走 `listDevices`（不回雜湊）。
 
-**過渡期開關** `AUTH_MODE`（指令碼屬性，改了立刻生效）：`dual`（預設）時舊版 App 的
-「密鑰＋自稱 line_id」寫法與 `doGet` 照舊可用；`token_only` 時 `doGet` 回 `gone`、舊寫法
-被擋並寫 `logs`。第 3 段穩定後會用另一個 PR 拔掉 dual 路徑與 `CLOUD_SECRET`。
+**已關門**（2026-10-01，Neil 決定不留過渡期）：`doGet` 一律回 `gone`，舊的「`CLOUD_SECRET`＋
+自稱 line_id」寫法整條移除，所有請求都要帶裝置 token。`AUTH_MODE` 開關一併拿掉。
 
 **一律 fail-closed**：白名單讀不到、名單是空的、沒帶 `line_id`——全部拒絕，而且每一次
 都寫一列 `logs`。這次是「新增」一道門，不是「維護」既有可用性；一出狀況就自動變回
@@ -287,11 +286,11 @@ tests/          單元測試（`npm test`）。後端跑的是 apps-script/Code.
 
 修改任何發布檔案後，需同步更新 `sw.js` 的 CACHE 版號（例如 `neil-os-v5` → `v6`），否則舊快取會擋住新版本。
 
-`index.html` 裡的 `CLOUD_URL` / `CLOUD_SECRET` 是 `__CLOUD_URL__` / `__CLOUD_SECRET__` 佔位字串，**不會**存真正的值。部署交給 `.github/workflows/deploy.yml`：push 到 `main` 時由 GitHub Actions 用 repo 的 `CLOUD_URL` / `CLOUD_SECRET` Secrets 取代佔位字串後再發布到 GitHub Pages，真正的值只存在 GitHub Secrets，不進 git history。
+`index.html` 裡的 `CLOUD_URL` 是 `__CLOUD_URL__` 佔位字串。部署交給 `.github/workflows/deploy.yml`：push 到 `main` 時由 GitHub Actions 用 repo 的 `CLOUD_URL` Secret 取代佔位字串後再發布到 GitHub Pages。
 
-設定方式：Repo → Settings → Secrets and variables → Actions，新增 `CLOUD_URL`、`CLOUD_SECRET` 兩個 Repository secret；並把 Settings → Pages → Build and deployment → Source 切成「GitHub Actions」（原本若是「Deploy from a branch」要一併關掉，避免兩邊搶著部署）。
+設定方式：Repo → Settings → Secrets and variables → Actions，新增 `CLOUD_URL` Repository secret；並把 Settings → Pages → Build and deployment → Source 切成「GitHub Actions」（原本若是「Deploy from a branch」要一併關掉，避免兩邊搶著部署）。
 
-> 注意：即使密鑰不進 git，部署出去的頁面原始碼裡還是看得到（純前端架構無法真正隱藏密鑰），這個設計只解決「密鑰留在 git history 裡」的問題，不是解決「密鑰對外不可見」——真正解法是密鑰一旦外流就要重新產生。
+> 網址本身不是鑰匙：部署出去的頁面看得到它，但 ADR-010 之後每個請求都要帶 LINE 配對換來的裝置 token。原本的 `CLOUD_SECRET` 已於 2026-10-01 關門時退場（它就寫在公開的頁面裡，擋不了任何人）。
 
 ### 後端單元測試
 
@@ -437,11 +436,11 @@ Apps Script 與 Pages 分成兩個 job：認證與 scriptId 完全不會進到 P
   - ✅ T2 前端：配對畫面取代選身份；所有讀寫改 POST 帶 token、拿掉 `CLOUD_SECRET`；過期續期畫面（每 3 秒輪詢）；管理頁的裝置清單與撤銷、停用時詢問一併撤銷；「換人」改為「解除這台裝置的配對」
   - 📌 ADR 沒寫到的：群組裡傳「配對」會讓全群看到碼 → 只收一對一；`writeGate_` 的「白名單讀不到」是系統錯誤不是停用，原樣往上傳，前端不會因為一次 Sheet 故障把人登出；`doGet` 在 dual 期間也不能讀 `line_devices`
   - ✅ 裁決（2026-09-30，Neil）：收到 `inactive` 時**保留 token**（依 ADR D-7），顯示「等管理者重新啟用」，重新啟用後自動恢復。交棒票原寫「清掉 token」，以此裁決為準
-  - ⏳ 第 3 段（Neil 操作）：`AUTH_MODE=token_only` → 家人配對 → 穩定一週後另開 PR 拔掉 dual 與 `CLOUD_SECRET`
+  - ✅ 第 3 段（2026-10-01，Neil 決定不留過渡期）：直接移除 dual 路徑、`AUTH_MODE` 與 `CLOUD_SECRET`，`doGet` 一律回 `gone`。家人打開 App 會看到配對畫面
   - ⏳ 另開票、須 Neil 明確同意：`交接.md` 從 git 歷史移除（改寫歷史不可逆）
 - **封存改寄信＋DATA-05 日期修正**（2026-10-01，Neil 裁決；**待補 ADR**）：🔧 程式完成，待部署驗證
   - ✅ 日期少一天：Sheet 的日期格子讀回來是 UTC ISO 字串，前端切前 10 字少一天，月初的帳掉到上個月。新增 `localDateKey()`，記帳日期、任務到期日、日誌鍵都改用它
   - ✅ 封存：後端一次做完「① 整理 JSON → ② 寄給所有啟用中且有 email 的管理者 → ③ 寄出成功才刪」，任一步失敗就停並回報階段與原因；③ 刪到一半失敗會把已刪的列補回去。只有管理者看得到、按得到。取代 ADR-009 §一.4 的「下載＋人工確認」
   - ✅ `line_users.email`：首頁對還沒填的人顯示設定卡；後端 `setMyEmail` 只改自己那一格（不走整列 upsert，避免舊名單蓋回權限）
-  - 📌 舊的 `readTombstones`／`archivePurge` 後端動作保留：`AUTH_MODE=dual` 期間舊版前端仍可能呼叫
+  - 📌 舊的 `readTombstones`／`archivePurge` 後端動作仍在（要 token 才能呼叫），前端已不使用，列為之後的清理候選
   - ⚠️ 部署後要在 Apps Script 編輯器執行一次 `authorizeArchiveMail()` 授權寄信（見 `apps-script/README.md`）

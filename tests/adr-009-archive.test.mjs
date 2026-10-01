@@ -18,7 +18,8 @@ import { loadCodeGs, FakeSheet } from './fake-apps-script.mjs';
 const ME = 'Uneil';
 
 /* ========================================================================== */
-describe('後端：?only=tombstones 附上算好的鍵', () => {
+// doGet 已於 ADR-010 關門；墓碑讀取現在只走帶 token 的 POST readTombstones，回應本體是同一支 readSheetResponse_
+describe('後端：讀墓碑時附上算好的鍵', () => {
 
   test('鍵由後端算，前端不必自己拼', () => {
     const headers = ['id', 'text', 'line_id', 'del'];
@@ -29,7 +30,7 @@ describe('後端：?only=tombstones 附上算好的鍵', () => {
     ]);
     const env = loadCodeGs({ sheets: { notes: sheet } });
 
-    const out = JSON.parse(env.call('doGet', { parameter: { sheet: 'notes', only: 'tombstones', key_field: 'id' } }).body);
+    const out = env.call('readSheetResponse_', 'notes', 'tombstones', 'id');
 
     assert.deepEqual(out.data.map(r => r.id), ['2']);
     assert.deepEqual(out.keys, ['2']);
@@ -44,9 +45,7 @@ describe('後端：?only=tombstones 附上算好的鍵', () => {
     ]);
     const env = loadCodeGs({ sheets: { reviews: sheet } });
 
-    const out = JSON.parse(env.call('doGet', {
-      parameter: { sheet: 'reviews', only: 'tombstones', key_field: 'review_date,line_id' }
-    }).body);
+    const out = env.call('readSheetResponse_', 'reviews', 'tombstones', 'review_date,line_id');
 
     assert.deepEqual(out.keys, ['2026-09-16|' + ME, '2026-09-16|Ufamily']);
   });
@@ -59,9 +58,7 @@ describe('後端：?only=tombstones 附上算好的鍵', () => {
     ]);
     const env = loadCodeGs({ sheets: { reviews: sheet } });
 
-    const out = JSON.parse(env.call('doGet', {
-      parameter: { sheet: 'reviews', only: 'tombstones', key_field: 'review_date,line_id' }
-    }).body);
+    const out = env.call('readSheetResponse_', 'reviews', 'tombstones', 'review_date,line_id');
 
     assert.deepEqual(out.keys, ['2026-09-16|' + ME],
       '前端自己 slice ISO 字串會在 UTC+8 拿到 09-15，鍵對不上就會安靜地刪不掉');
@@ -72,9 +69,7 @@ describe('後端：?only=tombstones 附上算好的鍵', () => {
     const sheet = new FakeSheet('reviews', [headers, ['2026-09-16', 'x', '', 'TRUE']]);
     const env = loadCodeGs({ sheets: { reviews: sheet } });
 
-    const out = JSON.parse(env.call('doGet', {
-      parameter: { sheet: 'reviews', only: 'tombstones', key_field: 'review_date,line_id' }
-    }).body);
+    const out = env.call('readSheetResponse_', 'reviews', 'tombstones', 'review_date,line_id');
 
     assert.deepEqual(out.keys, ['']);
   });

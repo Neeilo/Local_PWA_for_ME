@@ -13,7 +13,7 @@ import { loadFrontend } from './fake-browser.mjs';
 import { loadCodeGs, FakeSheet } from './fake-apps-script.mjs';
 
 const ME = 'Uneil';
-const SECRET = 'test-cloud-secret';
+const TOKEN = 'tok-neil';
 
 describe('配對之後的補推（原「選身份之後的補推」，ADR-010 起身份改由配對取得）', () => {
   function cloudWith20Tasks() {
@@ -66,7 +66,7 @@ describe('配對之後的補推（原「選身份之後的補推」，ADR-010 �
 describe('replaceAll 已退場（ADR-009 §一.2）', () => {
   function env() {
     return loadCodeGs({
-      properties: { CLOUD_SECRET: SECRET },
+      tokens: { [TOKEN]: ME },
       sheets: {
         tasks: new FakeSheet('tasks', [['id', 'text', 'line_id'], ['1', '買菜', ME], ['2', '繳費', ME]]),
         logs: new FakeSheet('logs', [['id', 'ts', 'source', 'status', 'input', 'result', 'detail', 'target_row', 'user_id']]),
@@ -75,7 +75,7 @@ describe('replaceAll 已退場（ADR-009 §一.2）', () => {
     });
   }
   function post(e, body) {
-    const req = { postData: { contents: JSON.stringify(Object.assign({ secret: SECRET, line_id: ME }, body)) } };
+    const req = { postData: { contents: JSON.stringify(Object.assign({ token: TOKEN }, body)) } };
     return JSON.parse(e.call('handlePwaSync_', req).body);
   }
 
