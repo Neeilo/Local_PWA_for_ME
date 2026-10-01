@@ -133,6 +133,12 @@ export class FakeSheet {
     this.values.splice(r - 1, 1);
   }
 
+  /** 一次刪連續 n 列，列號語意同 deleteRow（刪完下面的列往上補） */
+  deleteRows(r, n) {
+    for (let i = 0; i < n; i++) this.deletedRows.push(r + i);
+    this.values.splice(r - 1, n);
+  }
+
   clearContents() {
     this.values = [];
   }

@@ -118,6 +118,7 @@ ADR-008 的「選名字」是宣告不是驗證，而 `doGet` 可以匿名讀走
 - **停用＝暫停**（D-7）：裝置列不動，重新啟用後自動恢復。停用的當下管理頁會問要不要一併撤銷。
 - 註冊（`Line_ID/`）與配對是兩件事：前者一人一次、有刻意的摩擦；後者一台一次。
 - `line_devices` 分頁 PWA 讀不到也寫不進去；管理頁看裝置走 `listDevices`（不回雜湊）。
+- `performance` 分頁（ADR-012）同樣讀不到也寫不進去：原始列只由雲端寫，管理頁看摘要走 `perfSummary`、刪舊紀錄走 `perfPurge`。
 
 **已關門**（2026-10-01，Neil 決定不留過渡期）：`doGet` 一律回 `gone`，舊的「`CLOUD_SECRET`＋
 自稱 line_id」寫法整條移除，所有請求都要帶裝置 token。`AUTH_MODE` 開關一併拿掉。
@@ -444,3 +445,9 @@ Apps Script 與 Pages 分成兩個 job：認證與 scriptId 完全不會進到 P
   - ✅ `line_users.email`：首頁對還沒填的人顯示設定卡；後端 `setMyEmail` 只改自己那一格（不走整列 upsert，避免舊名單蓋回權限）
   - 📌 舊的 `readTombstones`／`archivePurge` 後端動作仍在（要 token 才能呼叫），前端已不使用，列為之後的清理候選
   - ⚠️ 部署後要在 Apps Script 編輯器執行一次 `authorizeArchiveMail()` 授權寄信（見 `apps-script/README.md`）
+- **ADR-012 PR-A｜效能紀錄**（依 [ADR-012]，2026-10-01）：🔧 程式完成，待部署後累積「改版前」基準
+  - ✅ `performance` 分頁：雲端在回應前量 `server_ms` 與分段（驗證／開表／讀表）；手機量的 `client_ms` 暫存記憶體、夾在下一個請求的 `perf` 裡送上來，另寫一列。不存 token、不存資料內容；沒通過驗證的請求一列都不寫
+  - ✅ 取樣：開 App（cold）、回前景、手動刷新、寫入每次都記；輪詢每 20 次記 1 次；續期畫面的 `session` 輪詢不記
+  - ✅ 管理頁「⏱️ 效能紀錄」：`perfSummary` 雲端算好中位數與「慢的時候」（p90）；`perfPurge` 手動刪 30 天前的紀錄；超過 5,000 筆首頁提醒（筆數由 `session` 順便回給管理員）。不開排程
+  - 📌 寫紀錄本身的時間算不進 `server_ms`（GAS 不能先回應再做事），但手機量得到——PR-B 一樣有這筆開銷，前後比較仍公平
+  - ⏳ PR-B（`boot`／`readMany`、功能權限上雲、骨架畫面、本機快照清除）：建議累積 2～3 天基準後再合併

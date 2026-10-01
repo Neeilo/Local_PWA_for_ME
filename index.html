@@ -370,6 +370,11 @@
   .slot-fixed{font-size:12px; color:var(--muted); padding-bottom:10px; border-bottom:1px solid var(--line); margin-bottom:10px;}
   .slot-fixed b{color:var(--ink); font-weight:600;}
   .slot-hint{font-size:12px; color:var(--muted); margin:8px 0 0;}
+  .perf-table{width:100%; border-collapse:collapse; font-size:12px; margin-top:6px;}
+  .perf-table th{color:var(--muted); font-weight:500; text-align:right; padding:4px 2px; border-bottom:1px solid var(--line);}
+  .perf-table td{color:var(--ink); text-align:right; padding:4px 2px; border-bottom:1px solid var(--line);}
+  .perf-table th:first-child, .perf-table td:first-child{text-align:left;}
+  .perf-sub{font-size:12px; color:var(--muted); margin:10px 0 0;}
   .place-head{display:flex; align-items:baseline; justify-content:space-between; gap:8px;}
   .place-head h2{margin:0 0 10px;}
   .place-count{font-size:12px; color:var(--muted); white-space:nowrap;}
@@ -622,6 +627,9 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
     <!-- ⓪ 目前身份（ADR-008 B-2／C-3） -->
     <div class="me-card" id="meCard" hidden></div>
 
+    <!-- 效能紀錄太多時提醒管理員（ADR-012 D-7）。筆數由 session 順便回，不另外發請求 -->
+    <div class="adm-pending" id="perfAlert" hidden></div>
+
     <!-- Email（2026-10-01）：還沒填的人在首頁看到這張卡；填了就收起，從身份卡的「修改 Email」再打開。
          存在 line_users.email，家人之間看得到；管理者的 email 用來收封存備份信。 -->
     <div class="card" id="emailCard" hidden>
@@ -702,6 +710,21 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       <div class="slot-fixed">改動即時寫回 <b>line_users</b>，其他人最多等 5 分鐘生效。</div>
       <div id="adminRows"></div>
       <p class="slot-hint">功能權限只控制導覽列顯不顯示，擋不住直接打 API 的人——家人之間夠用，不是資安邊界。</p>
+    </div>
+
+    <!-- ⑥ 效能紀錄（僅 is_admin，ADR-012 D-7）。摘要由雲端算好，按了才抓——平常開 App 不為它多發請求。
+         刪舊紀錄是手動的，不開排程。 -->
+    <div class="slot-card" id="perfCard" hidden>
+      <div class="place-head">
+        <h2>⏱️ 效能紀錄</h2>
+        <span class="place-count" id="perfCount"></span>
+      </div>
+      <div id="perfBody"></div>
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap">
+        <button class="btn" onclick="loadPerfSummary()">看最近 7 天</button>
+        <button class="btn" onclick="purgePerf()">刪除 30 天前的紀錄</button>
+      </div>
+      <p class="slot-hint">只記耗時，不記 token 與資料內容。超過 5,000 筆時首頁會提醒整理。</p>
     </div>
   </section>
 
@@ -1008,14 +1031,43 @@ function loadIdentity(){
 const AUTH_ERRORS = ['no_token','unknown_token','revoked','inactive','token_expired'];
 const SELF_HANDLED_ACTIONS = ['pairClaim','renewStart','session'];
 function cloudPost(body){
+  // 暫存的耗時紀錄搭這班車上去（ADR-012 T1）。那三扇門不經過雲端的驗證，帶了也寫不進去
+  const carry = (!SELF_HANDLED_ACTIONS.includes(body.action) && perfPending.length) ? perfPending.splice(0) : null;
+  const started = Date.now();
   return fetch(CLOUD_URL,{
     method:'POST',
     headers:{'Content-Type':'text/plain'},
-    body:JSON.stringify(Object.assign({token:deviceToken||''}, body))
+    body:JSON.stringify(Object.assign({token:deviceToken||''}, body, carry?{perf:carry}:{}))
   }).then(r=>r.json()).then(j=>{
-    if(j && AUTH_ERRORS.includes(j.error) && !SELF_HANDLED_ACTIONS.includes(body.action)) handleAuthError(j.error);
+    if(j && AUTH_ERRORS.includes(j.error)){
+      if(carry) perfRestore(carry);                  // 被擋下的請求雲端一列都不寫
+      if(!SELF_HANDLED_ACTIONS.includes(body.action)) handleAuthError(j.error);
+    }
+    if(body.trigger==='write' && j && j.success) perfNote(body.action, 'write', Date.now()-started);
     return j;
+  }, err=>{
+    if(carry) perfRestore(carry);                    // 沒送到就不能丟，下一班再帶
+    throw err;
   });
+}
+
+/* ---------- 效能紀錄（ADR-012 T1） ----------
+   手機量的是「人等了多久」（含網路與 GAS 冷啟動）。量到的數字只放記憶體，
+   **不另外發請求**：夾在下一個請求的 body.perf 裡，由雲端寫進 performance 分頁。
+   App 關掉前沒搭上車的就算了——少幾筆樣本，不值得為它動 localStorage。
+
+   只記成功的：讀取失敗不是「慢」，是「沒讀到」，混進去中位數就不準了。 */
+const PERF_POLL_SAMPLE=20;          // 輪詢每 20 次記 1 次
+const PERF_PENDING_MAX=20;          // 跟雲端一個請求收的上限一樣
+const PERF_ALERT_ROWS=5000;         // 管理員開 App 時超過這個數就提醒整理
+let perfPending=[], perfPollCount=0, perfRows=0, perfSummaryCache=null;
+
+function perfNote(action, trigger, ms){
+  perfPending.push({action, trigger, client_ms:Math.round(ms)});
+  if(perfPending.length>PERF_PENDING_MAX) perfPending=perfPending.slice(-PERF_PENDING_MAX);
+}
+function perfRestore(list){
+  perfPending=list.concat(perfPending).slice(-PERF_PENDING_MAX);
 }
 
 /* 被擋下來之後去哪裡：
@@ -1043,17 +1095,18 @@ function forgetDevice(reason){
 
 /* 開機、回前景都先問一次「這把 token 現在是什麼狀態」。身份由它決定。
    離線問不到就沿用快取的 line_id 先畫畫面——同步本來就送不出去，連線橫幅會講清楚。 */
-async function checkSession(){
+async function checkSession(trigger){
   if(!deviceToken){
     applyIdentity();
     if(!localOnly) openAuthGate('pair');
     return false;
   }
   let j=null;
-  try{ j=await cloudPost({action:'session'}); }catch(e){ return false; }
+  try{ j=await cloudPost({action:'session', trigger}); }catch(e){ return false; }
   if(!j) return false;
   if(j.status==='ok'){
     myLineId=j.line_id; myDeviceId=j.device_id||null;
+    perfRows = typeof j.perf_rows==='number' ? j.perf_rows : 0;   // 只有管理員會拿到
     try{ localStorage.setItem(LINE_ID_KEY, myLineId); }catch(e){}
     if(gateMode) closeAuthGate();
     return true;
@@ -1062,12 +1115,17 @@ async function checkSession(){
   return false;
 }
 
-/* 身份確定之後的標準流程：名單 → 資料 → 補送。蓋版開著（要配對、在續期、被停用）就先不動 */
-function startSession(){
+/* 身份確定之後的標準流程：名單 → 資料 → 補送。蓋版開著（要配對、在續期、被停用）就先不動。
+   trigger（cold／foreground）有給才記耗時：從問 session 到畫面更新，人等了多久 */
+function startSession(trigger){
   if(gateMode==='renew') return pollRenewal();
-  return checkSession().then(()=>{
+  const started=Date.now();
+  return checkSession(trigger).then(()=>{
     if(gateMode) return;
-    return refreshRoster().then(syncFromCloud).then(flushOutbox);
+    return refreshRoster(trigger).then(()=>syncFromCloud(trigger?{trigger}:undefined)).then(ok=>{
+      if(ok && trigger) perfNote('startup', trigger, Date.now()-started);
+      return flushOutbox();
+    });
   });
 }
 
@@ -1075,11 +1133,11 @@ function startSession(){
  * 抓 line_users（名稱、管理者、功能矩陣）。ADR-010 起走帶 token 的 read，匿名讀不到了。
  * 讀不到時不清掉手上的名單：離線只是讀不到，不代表名單沒了。
  */
-async function refreshRoster(){
+async function refreshRoster(trigger){
   let rows=null;
   if(deviceToken){
     try{
-      const j=await cloudPost({action:'read', sheet:LINE_USERS_SHEET});
+      const j=await cloudPost({action:'read', sheet:LINE_USERS_SHEET, trigger});
       rows = (j && Array.isArray(j.data)) ? j.data : null;   // 分頁不存在或被擋時回的是 {error:...}
     }catch(e){ rows=null; }
   }
@@ -1099,6 +1157,7 @@ function applyIdentity(){
   renderEmailCard();
   renderArchiveCard();
   renderAdminCard();
+  renderPerfCard();
   renderScopeBars();
   renderAll();
 }
@@ -1589,7 +1648,7 @@ async function toggleAdminFlag(i, key){
 }
 function cloudUpsert(sheet, record, keyField){
   if(!myLineId) return Promise.resolve(false);
-  return cloudPost({sheet, action:'upsert', key_field:keyField, record})
+  return cloudPost({sheet, action:'upsert', key_field:keyField, record, trigger:'write'})
     .then(j=>!!(j&&j.success)).catch(()=>false);
 }
 
@@ -1748,8 +1807,8 @@ function save(){
 
    ADR-010 之後多了一類失敗：認證（過期、撤銷、停用）。規則一樣——往上拋，
    **絕不能變成空陣列**。cloudPost 已經把人帶去續期／配對畫面，這裡只負責不算數。 */
-function cloudGet(sheet){
-  return cloudPost({action:'read', sheet}).then(j=>{
+function cloudGet(sheet, meta){
+  return cloudPost(Object.assign({action:'read', sheet}, meta)).then(j=>{
     if(!j) throw new Error('empty_response');
     if(j.error){
       if(j.error==='sheet_not_found') return [];     // 分頁還沒建，真的是空的
@@ -1812,7 +1871,7 @@ function queueUpsert(sheet, record, keyField){
 }
 
 function sendJob(job){
-  return cloudPost({sheet:job.sheet, action:'upsert', key_field:job.key_field, record:job.record})
+  return cloudPost({sheet:job.sheet, action:'upsert', key_field:job.key_field, record:job.record, trigger:'write'})
     .then(j=>!!(j&&j.success)).catch(()=>false);
 }
 
@@ -1923,29 +1982,45 @@ let pollTimer=null;
 
 function startPolling(){
   stopPolling();
-  pollTimer=setInterval(()=>{
-    if(document.visibilityState!=='visible') return;   // 保險：背景時不送
-    syncFromCloud();
-    flushOutbox();                                     // 順手把積著的推出去
-  }, POLL_INTERVAL);
+  pollTimer=setInterval(pollTick, POLL_INTERVAL);
 }
 function stopPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null; } }
+
+function pollTick(){
+  if(document.visibilityState!=='visible') return;     // 保險：背景時不送
+  const sample=(++perfPollCount % PERF_POLL_SAMPLE)===0;
+  timedPull('poll', sample);
+  flushOutbox();                                       // 順手把積著的推出去
+}
 
 /** 手動刷新鈕：直接呼叫既有的 pull 入口，不需要新邏輯（ADR-009 §二） */
 function manualRefresh(){
   toast('更新中…');
   flushOutbox();
-  return syncFromCloud();
+  return timedPull('manual', true);
+}
+
+/* pull 一次並記耗時。poll 沒抽中的那幾輪仍帶 trigger，但不帶 perf_sample，
+   雲端看到就不記（取樣由前端數，雲端不必記得這是第幾輪） */
+function timedPull(trigger, sample){
+  const started=Date.now();
+  const meta = (trigger==='poll' && sample) ? {trigger, perf_sample:true} : {trigger};
+  return syncFromCloud(meta).then(ok=>{
+    if(ok && sample) perfNote('pull', trigger, Date.now()-started);
+    return ok;
+  });
 }
 
 /* 統一的 pull 入口：同一時間只允許一個 pull 在跑，並記下完成時間，
    讓回前景的觸發能節流。 */
 let pullPromise=null, lastPullAt=0;
-function syncFromCloud(){
+/* meta 是給效能紀錄的 {trigger, perf_sample}，原樣夾進每個讀取請求。
+   回傳 Promise<boolean>：這次有沒有真的讀到（記耗時只記讀到的那幾次） */
+function syncFromCloud(meta){
   // 沒配對問了也是被擋；續期畫面開著時問了只會多灌幾列 token_expired 的 logs
-  if(!myLineId || gateMode){ renderConnState(); return Promise.resolve(); }
+  if(!myLineId || gateMode){ renderConnState(); return Promise.resolve(false); }
   if(pullPromise) return pullPromise;
-  pullPromise=pullFromCloud().finally(()=>{ pullPromise=null; lastPullAt=Date.now(); });
+  pullPromise=pullFromCloud(meta).finally(()=>{ pullPromise=null; lastPullAt=Date.now(); });
   return pullPromise;
 }
 
@@ -1989,18 +2064,18 @@ function applyPendingOverlay(){
   });
 }
 
-async function pullFromCloud(){
+async function pullFromCloud(meta){
   let fetched;
   try{
     fetched=await Promise.all([
-      cloudGet('tasks'), cloudGet('reviews'), cloudGet('moods'), cloudGet('notes'), cloudGet('expenses')
+      cloudGet('tasks',meta), cloudGet('reviews',meta), cloudGet('moods',meta), cloudGet('notes',meta), cloudGet('expenses',meta)
     ]);
   }catch(e){
     // 讀不到就原地不動。把讀取失敗當成「雲端是空的」會清光所有資料——
     // 那是這次改版最容易犯、也最貴的一個錯。
     cloudOnline=false;
     renderConnState(); renderAll();
-    return;
+    return false;
   }
 
   const [cTasks,cReviews,cMoods,cNotes,cExpenses]=fetched;
@@ -2031,6 +2106,7 @@ async function pullFromCloud(){
   try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); }catch(e){}
   cloudOnline=true;
   renderConnState(); renderAll();
+  return true;
 }
 
 /* ---------- 封存：寄信給管理者（2026-10-01 Neil 裁決，取代 ADR-009 §一.4 的下載流程） ----------
@@ -2067,7 +2143,7 @@ async function archiveTombstones(){
   }
   toast('封存中…');
   let r=null;
-  try{ r=await cloudPost({action:'archiveMail'}); }catch(e){ r=null; }
+  try{ r=await cloudPost({action:'archiveMail', trigger:'write'}); }catch(e){ r=null; }
   if(!r){
     // 請求可能已經在雲端跑完、只是回應沒傳回來——不能說「沒有變動」
     alert('封存沒有收到回應（可能是連線中斷）。\n\n不確定是否已完成：請看信箱有沒有收到備份信，'+
@@ -2081,6 +2157,65 @@ async function archiveTombstones(){
   }
   alert(archiveFailMessage(r));
 }
+/* ---------- 效能紀錄的管理頁（ADR-012 T1 1-4） ---------- */
+const PERF_TRIGGER_LABEL={cold:'開 App', foreground:'回前景', poll:'輪詢', manual:'手動刷新', write:'寫入'};
+
+function perfAlertNeeded(){ return isAdmin() && perfRows>PERF_ALERT_ROWS; }
+
+function fmtMs(ms){ return ms<1000 ? Math.round(ms)+' ms' : (ms/1000).toFixed(1)+' 秒'; }
+
+/** 摘要畫成表格。p90 這個詞不上畫面，寫成「慢的時候」 */
+function perfSummaryHtml(r){
+  if(!r || !r.success) return '<p class="perf-sub">讀不到效能紀錄，稍後再試。</p>';
+  if(!r.total) return '<p class="perf-sub">還沒有任何紀錄。</p>';
+  const client=(r.client||[]).map(g=>`<tr><td>${esc(PERF_TRIGGER_LABEL[g.trigger]||g.trigger)}</td>
+      <td>${g.count}</td><td>${fmtMs(g.p50)}</td><td>${fmtMs(g.p90)}</td></tr>`).join('');
+  const server=(r.server||[]).map(g=>`<tr><td>${esc(g.action)}</td>
+      <td>${g.count}</td><td>${fmtMs(g.p50)}</td><td>${fmtMs(g.p90)}</td>
+      <td>${g.auth_pct}／${g.open_pct}／${g.read_pct}%</td></tr>`).join('');
+  return `<p class="perf-sub">手機上等了多久（近 ${r.days} 天）</p>
+    <table class="perf-table"><tr><th>情境</th><th>次數</th><th>一般</th><th>慢的時候</th></tr>${client||'<tr><td colspan="4">—</td></tr>'}</table>
+    <p class="perf-sub">雲端內部（驗證／開表／讀表 佔比）</p>
+    <table class="perf-table"><tr><th>動作</th><th>次數</th><th>一般</th><th>慢的時候</th><th>分段</th></tr>${server||'<tr><td colspan="5">—</td></tr>'}</table>
+    <p class="perf-sub">「慢的時候」：90% 的請求比這個快。共 ${r.total} 筆，最舊一筆 ${esc(String(r.oldest||'').slice(0,10))}</p>`;
+}
+
+function renderPerfCard(){
+  const alertEl=document.getElementById('perfAlert');
+  if(alertEl){
+    alertEl.hidden=!perfAlertNeeded();
+    alertEl.textContent=`⏱️ 效能紀錄 ${perfRows} 筆，要整理嗎？到下方「效能紀錄」刪除 30 天前的紀錄。`;
+  }
+  const card=document.getElementById('perfCard');
+  if(!card) return;
+  card.hidden=!isAdmin();
+  if(!isAdmin()) return;
+  document.getElementById('perfCount').textContent = perfRows ? perfRows+' 筆' : '';
+  document.getElementById('perfBody').innerHTML = perfSummaryCache ? perfSummaryHtml(perfSummaryCache) : '';
+}
+
+async function loadPerfSummary(){
+  let r=null;
+  try{ r=await cloudPost({action:'perfSummary'}); }catch(e){ r=null; }
+  perfSummaryCache = r || {success:false};
+  if(r && r.success) perfRows=r.total;
+  renderPerfCard();
+}
+
+async function purgePerf(){
+  if(!confirm('刪除 30 天前的效能紀錄？刪掉的不會備份。')) return;
+  let r=null;
+  try{ r=await cloudPost({action:'perfPurge', days:30}); }catch(e){ r=null; }
+  if(!r || !r.success){
+    toast(r && r.error==='busy' ? '⚠️ 另一個整理正在進行，請稍後再試' : '⚠️ 刪除失敗，請稍後再試');
+    return;
+  }
+  perfRows=r.remaining;
+  perfSummaryCache=null;
+  renderPerfCard();
+  toast('已刪除 '+r.deleted+' 筆，剩 '+r.remaining+' 筆');
+}
+
 function renderArchiveCard(){
   const el=document.getElementById('archiveCard');
   if(el) el.hidden=!isAdmin();
@@ -2156,7 +2291,7 @@ function toggleTask(id){
 
 function completeRecurringTask(t){
   return cloudPost({sheet:'tasks', action:'completeRecurring', key_field:'id',
-                    record:taskToCloud(t), next_id:String(Date.now()+1)}).then(j=>{
+                    record:taskToCloud(t), next_id:String(Date.now()+1), trigger:'write'}).then(j=>{
     if(j && j.success){
       if(j.spawned) toast('已完成，下一期：'+j.next_due);
       return syncFromCloud();                 // 新的一期由後端生，撈回來才看得到
@@ -2981,7 +3116,7 @@ function renderAll(){
   /* 先問 session，再讀名單，最後才同步。順序是有意義的：身份由 session 決定，
      待送佇列需要身份才送得動；沒有 token 時 checkSession() 會叫出配對蓋版。
      離線問不到不會擋住本機使用——待送佇列照樣收，連線恢復再送。 */
-  startSession();
+  startSession('cold');
 
   /* 回到前景時重新 pull。App 留在背景期間，LINE 快速輸入或其他裝置
      可能已經往雲端新增資料。背景時輪詢是停的（ADR-009 §二），回前景第一眼
@@ -2994,7 +3129,7 @@ function renderAll(){
     if(document.visibilityState!=='visible'){ stopPolling(); return; }
     startPolling();                                   // 回前景才恢復輪詢
     if(Date.now()-lastPullAt<FOREGROUND_PULL_MIN_GAP) return;
-    startSession();
+    startSession('foreground');
   });
   startPolling();
 

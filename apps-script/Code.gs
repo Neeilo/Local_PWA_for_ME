@@ -20,6 +20,9 @@ var LINE_USERS_CACHE_TTL = 300;          // 5 分鐘（ADR-008 D-3）
 /** 裝置 token 的雜湊表（ADR-010 D-8）。欄位與規則見下方「ADR-010」那一段 */
 var LINE_DEVICES_SHEET = 'line_devices';
 
+/** 效能紀錄（ADR-012 D-6）。欄位與規則見檔尾「效能紀錄」那一段 */
+var PERFORMANCE_SHEET = 'performance';
+
 /**
  * 不歸前端 state 管的分頁：archivePurge 動不得。
  *
@@ -29,7 +32,7 @@ var LINE_DEVICES_SHEET = 'line_devices';
  *
  * 原名 NO_REPLACE_ALL；replaceAll 於 ADR-009 退場後改名，規則不變。
  */
-var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs'];
+var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs', PERFORMANCE_SHEET];
 
 /**
  * PWA 連一筆都不准寫的分頁（任何 action 都一樣，包括 upsert）。
@@ -39,7 +42,7 @@ var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs'];
  * 不見」的假象。它比 NOT_FRONTEND_SHEETS 更嚴，所以擋在所有 action 之前，不另外列進去。
  */
 var GUIDE_SHEET = '_guide';
-var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET];
+var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET];
 
 /**
  * PWA 連讀都不准讀的分頁（ADR-010 D-8）。
@@ -48,8 +51,11 @@ var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET];
  * 什麼時候用」的清單，沒有任何前端功能需要整張讀走。管理頁要看裝置走
  * listDevices，那條路會把 token_hash 拿掉。line_devices 同時在 NO_PWA_WRITE 裡
  * （比 NOT_FRONTEND_SHEETS 更嚴，理由同 _guide），任何 action 都寫不進去。
+ *
+ * performance（ADR-012 T1）同理：讀寫都只能透過管理員的 perfSummary／perfPurge，
+ * 原始列只由雲端自己寫。
  */
-var NO_PWA_READ = [LINE_DEVICES_SHEET];
+var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET];
 
 /**
  * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
@@ -284,16 +290,22 @@ function doGet(e) {
  * only='tombstones' 反過來只回墓碑，那是封存第一段要匯出的東西——它們被預設
  * 過濾掉之後，前端再也看不到，所以得留一扇專門的門。
  */
-function readSheetResponse_(sheetName, only, keyFieldParam) {
+function readSheetResponse_(sheetName, only, keyFieldParam, perf) {
   if (NO_PWA_READ.indexOf(sheetName) !== -1) {
     console.log('🚫 拒絕讀取分頁「' + sheetName + '」：它不對 PWA 開放');
     return { error: 'sheet_not_readable', sheet: sheetName };
   }
+  perf = perf || {};
+  var opened = Date.now();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(sheetName);
+  perf.open_ms = Date.now() - opened;
   if (!sheet) return { error: 'sheet_not_found', sheet: sheetName };
 
+  var reading = Date.now();
   const values = sheet.getDataRange().getValues();
+  perf.read_ms = Date.now() - reading;
+  perf.rows = Math.max(values.length - 1, 0);
   if (values.length < 2) return { data: [] };
 
   const headers = values[0];
@@ -326,34 +338,56 @@ function readSheetResponse_(sheetName, only, keyFieldParam) {
 }
 
 // ===== 所有 PWA 請求：POST body = { token, sheet, action, ... } =====
+// 外層只負責量時間與寫效能紀錄（ADR-012 T1）；分流在 routePwaSync_。
 function handlePwaSync_(e) {
+  var started = Date.now();
   const body = JSON.parse(e.postData.contents);
+  var perf = {};
+  var out = routePwaSync_(body, perf);
+  recordPerf_(body, perf, Date.now() - started);
+  return out;
+}
 
+/** perf 由各分支填：who（通過驗證才有）、auth_ms、open_ms、read_ms、rows */
+function routePwaSync_(body, perf) {
   // 不需要（或還沒有）有效 token 的三扇門：配對、查狀態、過期續期（ADR-010 D-3）
   if (body.action === 'pairClaim') return jsonOut(pairClaim_(body.code, body.device_label));
-  if (body.action === 'session') return jsonOut(deviceSession_(body.token));
+  if (body.action === 'session') {
+    var authStarted = Date.now();
+    var s = deviceSession_(body.token);
+    perf.auth_ms = Date.now() - authStarted;
+    if (s.status === 'ok') perf.who = { line_id: s.line_id, device_id: s.device_id };
+    return jsonOut(s);
+  }
   if (body.action === 'renewStart') return jsonOut(renewStart_(body.token));
 
   // 身份一律由後端換出來，不信任 body 裡的 line_id（ADR-010 D-2）
+  var callerStarted = Date.now();
   const caller = pwaCaller_(body);
+  perf.auth_ms = Date.now() - callerStarted;
   if (!caller.ok) return jsonOut({ error: caller.error, reason: caller.error });
+  perf.who = { line_id: caller.line_id, device_id: caller.device ? caller.device.device_id : '' };
 
-  if (body.action === 'read') return jsonOut(readSheetResponse_(body.sheet, '', ''));
+  if (body.action === 'read') return jsonOut(readSheetResponse_(body.sheet, '', '', perf));
   if (body.action === 'readTombstones') {
-    return jsonOut(readSheetResponse_(body.sheet, 'tombstones', body.key_field));
+    return jsonOut(readSheetResponse_(body.sheet, 'tombstones', body.key_field, perf));
   }
   if (body.action === 'listDevices') return jsonOut(listDevices_(caller, body.line_id));
   if (body.action === 'revokeDevice') return jsonOut(revokeDevices_(caller, body.device_id, body.all_of));
   if (body.action === 'archiveMail') return jsonOut(archiveByMail_(caller));
   if (body.action === 'setMyEmail') return jsonOut(setMyEmail_(caller, body.email));
+  if (body.action === 'perfSummary') return jsonOut(perfSummary_(caller));
+  if (body.action === 'perfPurge') return jsonOut(perfPurge_(caller, body.days));
 
   if (NO_PWA_WRITE.indexOf(body.sheet) !== -1) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');
     return jsonOut({ error: 'sheet_not_writable', sheet: body.sheet });
   }
 
+  var opened = Date.now();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(body.sheet);
+  perf.open_ms = Date.now() - opened;
   if (!sheet) return jsonOut({ error: 'sheet_not_found' });
 
   if (body.action === 'upsert') {
@@ -1359,13 +1393,16 @@ function pwaCaller_(body) {
 function deviceSession_(token, now) {
   var auth = authDevice_(token, '', now);
   if (!auth.ok) return { status: auth.reason };
-  return {
+  var out = {
     status: 'ok',
     line_id: auth.line_id,
     display_name: String((auth.user && auth.user.display_name) || '').trim(),
     device_id: auth.device.device_id,
     device_label: auth.device.device_label
   };
+  // 門檻提醒要的筆數順便給管理員，不另外發請求（ADR-012 T1 1-4）
+  if (truthy_((auth.user || {}).is_admin)) out.perf_rows = perfRowCount_();
+  return out;
 }
 
 /**
@@ -1835,3 +1872,241 @@ function authorizeArchiveMail() {
   return { quota: left, recipients: to.emails };
 }
 
+
+/* ========================================================================== */
+/* 效能紀錄（ADR-012 D-6／D-7，交棒票 T1）                                     */
+/* ========================================================================== */
+
+/**
+ * 每列是一次請求的耗時，**不存 token、不存任何資料內容**：只有動作名、觸發情境、
+ * 毫秒數、表名、列數、哪台裝置、哪個人。
+ *
+ * 兩種列：
+ *  - 雲端列：handlePwaSync_ 自己量的 server_ms 與分段（驗證／開表／讀表），client_ms 空白
+ *  - 手機列：手機量的 client_ms（含網路與 GAS 冷啟動），夾在**下一個**請求的 body.perf
+ *    裡送上來，另寫一列；server 那幾欄空白。不回頭補同一列：要先找到那一列，
+ *    找錯就是寫錯人的數字，另寫一列沒有這個風險
+ *
+ * 寫入時機不在 server_ms 裡：GAS 不能先回應再做事，所以寫紀錄的那一點時間
+ * 使用者還是要等，只是量不到自己。用 appendRow 一列一列寫：開機時五張表是
+ * 並行的五個請求，appendRow 才不會互相蓋掉。
+ */
+var PERFORMANCE_HEADERS = ['id', 'ts', 'action', 'trigger', 'client_ms', 'server_ms', 'auth_ms', 'open_ms', 'read_ms',
+  'sheets', 'rows', 'device_id', 'line_id'];
+
+/** 觸發情境。不在清單裡的一律不記——欄位裡只會出現這幾個字 */
+var PERF_TRIGGERS = ['cold', 'foreground', 'poll', 'manual', 'write'];
+var PERF_CLIENT_MAX = 20;              // 一個請求最多收幾筆手機紀錄
+var PERF_CLIENT_MS_MAX = 600000;       // 超過 10 分鐘的不是耗時，是手機睡著了
+var PERF_SUMMARY_DAYS = 7;
+var PERF_PURGE_DEFAULT_DAYS = 30;
+var PERF_LOCK_MS = 10000;
+var PERF_DAY_MS = 86400000;
+
+/** 建表方式比照 ensureLineUsersSheet_：只建表頭 */
+function ensurePerformanceSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(PERFORMANCE_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(PERFORMANCE_SHEET);
+    sheet.appendRow(PERFORMANCE_HEADERS);
+    return sheet;
+  }
+  if (sheet.getLastRow() === 0) sheet.appendRow(PERFORMANCE_HEADERS);
+  return sheet;
+}
+
+/** 手機送上來的紀錄只收形狀對的；動作名只允許英文字母，夾帶任何內容都進不來 */
+function clientPerfRows_(list) {
+  if (!Array.isArray(list)) return [];
+  var out = [];
+  list.forEach(function (p) {
+    if (out.length >= PERF_CLIENT_MAX || !p || typeof p !== 'object') return;
+    var action = String(p.action == null ? '' : p.action);
+    var ms = p.client_ms;
+    if (!/^[A-Za-z]{1,32}$/.test(action)) return;
+    if (PERF_TRIGGERS.indexOf(p.trigger) === -1) return;
+    if (typeof ms !== 'number' || !isFinite(ms) || ms < 0 || ms > PERF_CLIENT_MS_MAX) return;
+    out.push({ action: action, trigger: p.trigger, client_ms: Math.round(ms) });
+  });
+  return out;
+}
+
+/**
+ * 回應前寫紀錄。整支包 try/catch：紀錄是事後回頭看的東西，寫不進去不該讓一次
+ * 成功的讀寫變成失敗（比照 logTransaction_）。
+ *
+ * **沒通過驗證的請求一列都不寫**：不然拿到網址的人就能灌爆這張表。
+ * poll 只在前端帶 perf_sample:true 時寫（每 20 次 1 次，由前端計數）。
+ */
+function recordPerf_(body, perf, serverMs) {
+  try {
+    if (!perf.who) return;
+    var rows = [];
+    var trigger = body.trigger;
+    if (PERF_TRIGGERS.indexOf(trigger) !== -1 && (trigger !== 'poll' || body.perf_sample === true)) {
+      rows.push({
+        action: String(body.action || ''), trigger: trigger, server_ms: serverMs,
+        auth_ms: perf.auth_ms, open_ms: perf.open_ms, read_ms: perf.read_ms,
+        sheets: typeof body.sheet === 'string' ? body.sheet : '', rows: perf.rows
+      });
+    }
+    rows = rows.concat(clientPerfRows_(body.perf));
+    if (!rows.length) return;
+
+    var sheet = ensurePerformanceSheet_();
+    var headers = sheetHeaders_(sheet);
+    var now = Date.now();
+    rows.forEach(function (r, i) {
+      r.id = String(now + i);
+      r.ts = new Date(now).toISOString();
+      r.device_id = perf.who.device_id || '';
+      r.line_id = perf.who.line_id || '';
+      sheet.appendRow(headers.map(function (h) {
+        return (r[h] === undefined || r[h] === null) ? '' : r[h];
+      }));
+    });
+  } catch (err) {
+    console.log('寫效能紀錄失敗（主流程不受影響）：' + err);
+  }
+}
+
+/** 管理員開 App 時的門檻提醒用。讀不到就回 0：提醒不重要到要擋住開機 */
+function perfRowCount_() {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PERFORMANCE_SHEET);
+    return sheet ? Math.max(sheet.getLastRow() - 1, 0) : 0;
+  } catch (err) {
+    return 0;
+  }
+}
+
+/** 非管理員碰效能紀錄：擋下並記一筆 */
+function perfForbidden_(caller, action) {
+  logTransaction_('效能', '失敗', action, '只有管理者可以使用效能紀錄', '', '', caller.line_id);
+  return { error: 'forbidden' };
+}
+
+/** 空白當沒有；Sheet 讀回來可能是數字也可能是字串 */
+function perfNum_(v) {
+  if (v === '' || v == null) return null;
+  var n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+/** nearest-rank：排序後第 ceil(q×n) 個。不內插，回的一定是真的量到過的數字 */
+function perfPercentile_(sorted, q) {
+  return sorted[Math.max(Math.ceil(q * sorted.length) - 1, 0)];
+}
+
+function perfReadRows_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PERFORMANCE_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return { sheet: sheet, rows: [] };
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0].map(function (h) { return String(h).trim(); });
+  return {
+    sheet: sheet,
+    rows: values.slice(1).map(function (row) {
+      var o = {};
+      headers.forEach(function (h, i) { o[h] = row[i]; });
+      return o;
+    })
+  };
+}
+
+/**
+ * perfSummary（管理員）：近 7 天的摘要，雲端算好再送，不傳原始列。
+ *  - client：手機感受到的時間，依 trigger 分組（開 App、回前景、輪詢、手動刷新、寫入）
+ *  - server：雲端內部時間，依 action 分組，附各分段佔比（%）
+ * 依 trigger 分手機那組，是因為改版前後 action 名稱會變（3 輪流程 → boot），
+ * 「開 App 要等多久」這個問題本身不變，比較基準才對得起來。
+ */
+function perfSummary_(caller, now) {
+  if (!truthy_((caller.user || {}).is_admin)) return perfForbidden_(caller, 'perfSummary');
+  var nowMs = now || Date.now();
+  var data = perfReadRows_();
+  var since = nowMs - PERF_SUMMARY_DAYS * PERF_DAY_MS;
+
+  var oldest = NaN;
+  var client = {};
+  var server = {};
+  data.rows.forEach(function (r) {
+    var t = toTime_(r.ts);
+    if (!isNaN(t) && (isNaN(oldest) || t < oldest)) oldest = t;
+    if (isNaN(t) || t < since) return;
+
+    var c = perfNum_(r.client_ms);
+    if (c !== null) {
+      var ck = String(r.trigger || '');
+      (client[ck] = client[ck] || []).push(c);
+    }
+    var s = perfNum_(r.server_ms);
+    if (s !== null) {
+      var sk = String(r.action || '');
+      var g = server[sk] = server[sk] || { ms: [], total: 0, auth: 0, open: 0, read: 0 };
+      g.ms.push(s);
+      g.total += s;
+      g.auth += perfNum_(r.auth_ms) || 0;
+      g.open += perfNum_(r.open_ms) || 0;
+      g.read += perfNum_(r.read_ms) || 0;
+    }
+  });
+
+  var asc = function (a, b) { return a - b; };
+  var pct = function (part, total) { return total > 0 ? Math.round(part / total * 100) : 0; };
+  return {
+    success: true,
+    days: PERF_SUMMARY_DAYS,
+    total: data.rows.length,
+    oldest: isNaN(oldest) ? '' : new Date(oldest).toISOString(),
+    client: Object.keys(client).map(function (k) {
+      var ms = client[k].sort(asc);
+      return { trigger: k, count: ms.length, p50: perfPercentile_(ms, 0.5), p90: perfPercentile_(ms, 0.9) };
+    }),
+    server: Object.keys(server).map(function (k) {
+      var g = server[k];
+      var ms = g.ms.sort(asc);
+      return { action: k, count: ms.length, p50: perfPercentile_(ms, 0.5), p90: perfPercentile_(ms, 0.9),
+        auth_pct: pct(g.auth, g.total), open_pct: pct(g.open, g.total), read_pct: pct(g.read, g.total) };
+    })
+  };
+}
+
+/**
+ * perfPurge（管理員）：刪 ts 早於 N 天（預設 30）的列。手動按，不開排程（D-7）。
+ *
+ * 天數亂填一律退回預設——0 或負數會變成「全部刪掉」，那不該是打錯字的後果。
+ * 認不出日期的列不刪：不知道多舊的東西，不替人決定它夠舊了。
+ * 由下往上刪，連續的整段一次刪（deleteRows），列號才不會位移、也不會一列一列刪到逾時。
+ */
+function perfPurge_(caller, days, now) {
+  if (!truthy_((caller.user || {}).is_admin)) return perfForbidden_(caller, 'perfPurge');
+  var n = Math.floor(Number(days));
+  if (days === null || days === undefined || days === '' || !(n >= 1)) n = PERF_PURGE_DEFAULT_DAYS;
+  var cutoff = (now || Date.now()) - n * PERF_DAY_MS;
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(PERF_LOCK_MS)) return { error: 'busy' };
+  try {
+    var data = perfReadRows_();
+    var doomed = [];                                   // Sheet 列號（表頭是第 1 列）
+    data.rows.forEach(function (r, i) {
+      var t = toTime_(r.ts);
+      if (!isNaN(t) && t < cutoff) doomed.push(i + 2);
+    });
+
+    for (var end = doomed.length - 1; end >= 0;) {
+      var start = end;
+      while (start > 0 && doomed[start - 1] === doomed[start] - 1) start--;
+      data.sheet.deleteRows(doomed[start], end - start + 1);
+      end = start - 1;
+    }
+
+    var remaining = data.rows.length - doomed.length;
+    logTransaction_('效能', '成功', 'perfPurge ' + n + ' 天前', '刪除 ' + doomed.length + ' 列',
+      '剩 ' + remaining + ' 列', '', caller.line_id);
+    return { success: true, days: n, deleted: doomed.length, remaining: remaining };
+  } finally {
+    lock.releaseLock();
+  }
+}
