@@ -57,4 +57,17 @@ describe('雲端日期欄換回本地日期', () => {
     await e.callRaw('pullFromCloud');
     assert.equal(e.read('state.tasks[0].due'), '2026-10-01');
   });
+
+  test('⚠️ 日誌：今天寫的那篇刷新後還認得出是「今天的」，編輯時送回去的是純日期', async () => {
+    const e = env({ reviews: [{ review_date: OCT1_FROM_SHEET, good: '有運動', stuck: '', most_important: '', line_id: ME }] });
+    await e.callRaw('pullFromCloud');
+    assert.deepEqual(Object.keys(e.read('state.reviews')), ['2026-10-01|' + ME],
+      '鍵若是 ISO 字串，今天的日誌在畫面上會變成空白');
+
+    // 再送回雲端時，日期欄要是純日期：後端拿它跟 Sheet 的日期格子比對，
+    // 送 ISO 字串會對不上，upsert 退化成 append，生出重複的一列
+    await e.callRaw('pushReview', '2026-10-01|' + ME);
+    const sent = e.calls.filter((c) => c.body && c.body.action === 'upsert' && c.body.sheet === 'reviews');
+    assert.equal(sent.at(-1).body.record.review_date, '2026-10-01');
+  });
 });

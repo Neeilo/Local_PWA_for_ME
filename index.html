@@ -1972,7 +1972,7 @@ async function pullFromCloud(){
     if(!row.review_date) return;
     const owner=String(row.line_id||'').trim();
     // compass 只活在本機（它不上雲端），所以覆蓋時要留住原本那一份
-    const k=reviewKey(row.review_date, owner);
+    const k=reviewKey(localDateKey(row.review_date), owner);   // 鍵要是純日期，見 localDateKey
     state.reviews[k]={compass:'', good:row.good||'', stuck:row.stuck||'',
                       next:row.most_important||'', line_id:owner, ts:Date.now()};
   });
