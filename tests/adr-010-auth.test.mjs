@@ -6,7 +6,7 @@
  *   - token 原文不落地，Sheet 上只有雜湊
  *   - 過期要本人在 LINE 上確認才續得回來；撤銷、停用的不能自己續
  *   - 身份一律由 token 換出來，body 裡自稱的 line_id 不算數
- *   - 過渡期開關 AUTH_MODE 的兩種狀態，以及它缺值時的預設
+ *   - 舊門（doGet、密鑰＋自稱 line_id）已關，屬性留著也沒作用
  *
  * 測的是 apps-script/Code.gs 與 line-router.gs 本人，整份載進同一個假環境
  * （線上兩個檔案共用全域），只把回覆 LINE 的出口換成記錄器。
@@ -23,7 +23,6 @@ import { createHash } from 'node:crypto';
 import { loadCodeGs, FakeSheet } from './fake-apps-script.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const SECRET = 'test-cloud-secret';
 const ME = 'Uneil';
 const MOM = 'Umom';
 const PENDING = 'Upending';
@@ -45,7 +44,7 @@ function env({ properties = {}, sheets = {} } = {}) {
   const e = loadCodeGs({
     cache: true,
     extraFiles: ['line-router.gs'],
-    properties: Object.assign({ CLOUD_SECRET: SECRET }, properties),
+    properties,
     sheets: Object.assign({
       line_users: roster(),
       tasks: new FakeSheet('tasks', [TASK_HEADERS.slice(), ['1', '買菜', '', '', 'M', ME, '', '']])
@@ -436,83 +435,72 @@ describe('身份只從 token 來', () => {
     assert.equal(e.ss.getSheetByName('tasks').toRecords().some((r) => r.id === '10'), false);
   });
 
-  test('read 回的形狀與舊 doGet 一模一樣，墓碑照樣擋在後端', () => {
+  test('read 墓碑照樣擋在後端；readTombstones 只回墓碑並附上鍵（陣列或逗號字串都收）', () => {
     const e = env();
     e.ss.getSheetByName('tasks').appendRow(['2', '已刪', '', '', 'M', ME, 'TRUE', '']);
     const out = pair(e);
     const viaPost = post(e, { action: 'read', token: out.token, sheet: 'tasks' });
-    assert.deepEqual(viaPost, get(e, { sheet: 'tasks' }));
     assert.deepEqual(viaPost.data.map((r) => r.id), ['1']);
 
     const tombs = post(e, { action: 'readTombstones', token: out.token, sheet: 'tasks', key_field: ['id'] });
-    assert.deepEqual(tombs, get(e, { sheet: 'tasks', only: 'tombstones', key_field: 'id' }));
+    assert.deepEqual(tombs, post(e, { action: 'readTombstones', token: out.token, sheet: 'tasks', key_field: 'id' }));
     assert.deepEqual(tombs.keys, ['2']);
   });
 
   test('沒帶 token 的 read → no_token；帶亂填的 → unknown_token（都寫 logs）', () => {
     const e = env();
-    assert.equal(post(e, { action: 'read', sheet: 'tasks', secret: SECRET, line_id: ME }).error, 'no_token',
-      '新開的讀取門不收舊密鑰');
+    assert.equal(post(e, { action: 'read', sheet: 'tasks', secret: 'old-secret', line_id: ME }).error, 'no_token',
+      '舊密鑰＋自稱 line_id 不算身份');
     assert.equal(post(e, { action: 'read', sheet: 'tasks', token: 'x'.repeat(64) }).error, 'unknown_token');
     assert.equal(e.transactions.filter((t) => t[0] === '同步' && t[1] === '失敗').length, 2);
   });
 
-  test('line_devices：read、readTombstones、upsert、archivePurge、doGet 一律擋下', () => {
+  test('line_devices：read、readTombstones、upsert、archivePurge 一律擋下', () => {
     const e = env();
     const out = pair(e);
     const before = JSON.stringify(e.ss.getSheetByName('line_devices').values);
 
     assert.equal(post(e, { action: 'read', token: out.token, sheet: 'line_devices' }).error, 'sheet_not_readable');
     assert.equal(post(e, { action: 'readTombstones', token: out.token, sheet: 'line_devices' }).error, 'sheet_not_readable');
-    assert.equal(get(e, { sheet: 'line_devices' }).error, 'sheet_not_readable', 'dual 期間的舊門也不能讀走它');
     assert.equal(post(e, { action: 'upsert', token: out.token, sheet: 'line_devices', key_field: 'device_id',
       record: { device_id: out.device_id, revoked_at: '' } }).error, 'sheet_not_writable');
     assert.equal(post(e, { action: 'archivePurge', token: out.token, sheet: 'line_devices', keys: [out.device_id] }).error,
       'sheet_not_writable');
-    assert.equal(post(e, { action: 'upsert', secret: SECRET, line_id: ME, sheet: 'line_devices',
-      record: { device_id: 'x' } }).error, 'sheet_not_writable', '舊寫法也一樣');
     assert.equal(JSON.stringify(e.ss.getSheetByName('line_devices').values), before);
   });
 });
 
 /* ========================================================================== */
-describe('AUTH_MODE 過渡期開關', () => {
+describe('舊門已關（2026-10-01 Neil 決定不留過渡期）', () => {
 
-  const legacyUpsert = { action: 'upsert', secret: SECRET, line_id: ME, sheet: 'tasks', key_field: 'id',
+  const legacyUpsert = { action: 'upsert', secret: 'old-secret', line_id: ME, sheet: 'tasks', key_field: 'id',
     record: { id: '5', text: '舊版 App 寫的', line_id: ME } };
 
-  test('屬性缺漏 → 當 dual：舊寫法、token、doGet 都通', () => {
+  test('doGet 一律回 gone：匿名讀取的門關了，連白名單都讀不走', () => {
     const e = env();
-    const out = pair(e);
-    assert.equal(post(e, legacyUpsert).success, true);
-    assert.equal(post(e, { action: 'upsert', token: out.token, sheet: 'tasks', key_field: 'id',
-      record: { id: '6', text: '新版', line_id: ME } }).success, true);
-    assert.ok(Array.isArray(get(e, { sheet: 'tasks' }).data));
+    for (const sheet of ['tasks', 'line_users', 'line_devices', 'logs']) {
+      assert.deepEqual(get(e, { sheet }), { error: 'gone' }, sheet);
+    }
+    assert.deepEqual(get(e, { sheet: 'tasks', only: 'tombstones', key_field: 'id' }), { error: 'gone' });
   });
 
-  test('值不認得（打錯字）→ 也當 dual，不會把還沒配對的人鎖在外面', () => {
-    const e = env({ properties: { AUTH_MODE: 'token-only ' } });
-    assert.equal(post(e, legacyUpsert).success, true);
-    assert.ok(Array.isArray(get(e, { sheet: 'tasks' }).data));
-  });
-
-  test('dual 時舊寫法仍然要過密鑰與白名單', () => {
+  test('舊寫法（密鑰＋自稱 line_id）一律 no_token，一筆都不落地', () => {
     const e = env();
-    assert.equal(post(e, Object.assign({}, legacyUpsert, { secret: 'wrong' })).error, 'unauthorized');
-    assert.equal(post(e, Object.assign({}, legacyUpsert, { line_id: PENDING })).error, 'inactive');
-  });
-
-  test('token_only：doGet 回 gone；舊寫法被擋而且寫 logs；token 照常', () => {
-    const e = env({ properties: { AUTH_MODE: ' TOKEN_ONLY ' } });
-    const out = pair(e);
-
-    assert.deepEqual(get(e, { sheet: 'tasks' }), { error: 'gone' });
     const before = e.ss.getSheetByName('tasks').toRecords().length;
-    assert.equal(post(e, legacyUpsert).error, 'token_required');
-    assert.equal(e.ss.getSheetByName('tasks').toRecords().length, before, '被擋的寫入一筆都不能落地');
-    assert.ok(e.transactions.some((t) => t[1] === '失敗' && String(t[3]).includes('舊版寫法')),
-      '要看得出還有舊版 App 在跑');
+    assert.equal(post(e, legacyUpsert).error, 'no_token');
+    assert.equal(post(e, Object.assign({}, legacyUpsert, { action: 'append' })).error, 'no_token');
+    assert.equal(e.ss.getSheetByName('tasks').toRecords().length, before);
+  });
 
+  test('AUTH_MODE／CLOUD_SECRET 屬性就算還留著也沒有作用', () => {
+    const e = env({ properties: { AUTH_MODE: 'dual', CLOUD_SECRET: 'old-secret' } });
+    assert.equal(post(e, legacyUpsert).error, 'no_token');
+    assert.deepEqual(get(e, { sheet: 'tasks' }), { error: 'gone' });
+  });
+
+  test('token 照常讀寫', () => {
+    const e = env();
+    const out = pair(e);
     assert.equal(post(e, { action: 'read', token: out.token, sheet: 'tasks' }).data.length, 1);
     assert.equal(post(e, { action: 'upsert', token: out.token, sheet: 'tasks', key_field: 'id',
       record: { id: '7', text: '新版', line_id: ME } }).success, true);

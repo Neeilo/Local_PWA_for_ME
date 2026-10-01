@@ -19,7 +19,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadCodeGs, FakeSheet } from './fake-apps-script.mjs';
 
-const SECRET = 'test-cloud-secret';
+const TOKEN = 'tok-neil';
 const ME = 'Uneil';
 
 function whitelist() {
@@ -43,7 +43,7 @@ function registeredSheets() {
 }
 
 function envWith(sheets) {
-  return loadCodeGs({ sheets, properties: { CLOUD_SECRET: SECRET }, extraFiles: ['sheet-guide.gs'] });
+  return loadCodeGs({ sheets, tokens: { [TOKEN]: ME }, extraFiles: ['sheet-guide.gs'] });
 }
 
 /** _guide 讀回來：第 1 列是說明，第 2 列是表頭，之後每列一張分頁 */
@@ -220,7 +220,7 @@ describe('觸發器 — 可重複安裝，且不碰到期提醒的那一個', ()
 describe('寫入保護 — PWA 寫不進 _guide', () => {
 
   function post(env, body) {
-    const e = { postData: { contents: JSON.stringify(Object.assign({ secret: SECRET, line_id: ME }, body)) } };
+    const e = { postData: { contents: JSON.stringify(Object.assign({ token: TOKEN }, body)) } };
     return JSON.parse(env.call('handlePwaSync_', e).body);
   }
 

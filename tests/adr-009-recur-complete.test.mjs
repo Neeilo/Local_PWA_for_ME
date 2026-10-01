@@ -13,7 +13,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadCodeGs, FakeSheet } from './fake-apps-script.mjs';
 
-const SECRET = 'test-cloud-secret';
+const TOKEN = 'tok-neil';
+const STRANGER_TOKEN = 'tok-stranger';   // 有裝置，但人不在白名單上
 const ME = 'Uneil';
 const TODAY = '2026-09-16';
 
@@ -28,13 +29,13 @@ function env(rows) {
     ['line_id', 'display_name', 'is_active', 'is_admin'],
     [ME, 'Neil', 'TRUE', 'TRUE']
   ]);
-  const e = loadCodeGs({ sheets: { tasks, line_users: users }, properties: { CLOUD_SECRET: SECRET } });
+  const e = loadCodeGs({ sheets: { tasks, line_users: users }, tokens: { [TOKEN]: ME, [STRANGER_TOKEN]: 'Ustranger' } });
   return { tasks, e };
 }
 
 function complete(e, record, nextId) {
   const body = {
-    secret: SECRET, line_id: ME, sheet: 'tasks', action: 'completeRecurring',
+    token: TOKEN, sheet: 'tasks', action: 'completeRecurring',
     record, key_field: 'id', today: TODAY, next_id: nextId
   };
   return JSON.parse(e.call('handlePwaSync_', { postData: { contents: JSON.stringify(body) } }).body);
@@ -139,12 +140,12 @@ describe('不是週期任務的情況', () => {
     const { tasks, e } = env([{ id: '1', text: 'x', line_id: ME, due_date: '2026-09-16', recur_interval: '1', recur_unit: '月' }]);
 
     const body = {
-      secret: SECRET, line_id: 'Ustranger', sheet: 'tasks', action: 'completeRecurring',
+      token: STRANGER_TOKEN, sheet: 'tasks', action: 'completeRecurring',
       record: { id: '1' }, key_field: 'id', today: TODAY
     };
     const out = JSON.parse(e.call('handlePwaSync_', { postData: { contents: JSON.stringify(body) } }).body);
 
-    assert.equal(out.error, 'not_on_whitelist');
+    assert.equal(out.error, 'inactive');
     assert.equal(tasks.toRecords().length, 1);
   });
 });

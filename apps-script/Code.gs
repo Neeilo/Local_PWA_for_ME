@@ -1,29 +1,13 @@
 /**
  * Neil OS — PWA ↔ Google Sheets 同步（Apps Script 端）
  * ---------------------------------------------------------------------------
- * doGet  : 讀取一張分頁。ADR-010 過渡期（AUTH_MODE=dual）照舊不驗證；
- *          AUTH_MODE=token_only 之後整個關閉，回 { error: 'gone' }
+ * doGet  : 已關閉（ADR-010 第 3 段，2026-10-01），一律回 { error: 'gone' }
  * doPost : 由 line-router.gs 依 payload 形狀分流後呼叫 handlePwaSync_
  *
  * 讀寫都過 line_users 白名單（ADR-008 Part D → ADR-010 D-1）。身份不再由前端宣告，
  * 而是由 LINE 配對換來的裝置 token 證明（ADR-010 D-2）；token 放在 POST body 裡，
  * 因為 Apps Script 讀不到 HTTP Header。讀取改走 POST 的理由也是這個。
  */
-
-/**
- * 同步密鑰改讀指令碼屬性，不寫在原始碼裡。
- *
- * 這份程式碼鏡像進公開的 GitHub repo，寫死等於把鑰匙貼在大門上，而且 git
- * history 洗不掉。比照 LINE_CHANNEL_ACCESS_TOKEN 與 GEMINI_API_KEY 的既有
- * 慣例：伺服器端用得到的密鑰，一律放指令碼屬性。
- *
- * 設定：專案設定 → 指令碼屬性 → CLOUD_SECRET = 與 GitHub Secret 同一個值
- * （從網頁複製常會帶到換行或空白，前後修掉，比照 LINE 權杖的處理）
- */
-function cloudSecret_() {
-  const raw = PropertiesService.getScriptProperties().getProperty('CLOUD_SECRET');
-  return raw ? String(raw).trim() : '';
-}
 
 /* ========================================================================== */
 /* line_users 白名單（ADR-008 Part D）                                         */
@@ -273,24 +257,23 @@ function diagnoseLineUsers() {
   return roster;
 }
 
-// ===== 讀取：GET /exec?sheet=tasks（ADR-010 過渡期的舊門） =====
+// ===== 讀取：GET /exec?sheet=… 已關閉（ADR-010 D-9，2026-10-01 關門） =====
 /**
- * AUTH_MODE=token_only 之後整個關掉（ADR-010 D-9）。只留 console 不寫 logs：
- * 舊版前端每 15 秒輪詢五張表，每一次都寫一列會把 logs 灌爆——「還有沒有舊版
- * App 在跑」看寫入被擋的那幾列就夠了（見 pwaCaller_）。
+ * 匿名讀取的門。exec 網址在公開的 index.html 裡，這扇門開著就等於誰都讀得走全部分頁。
+ * 讀取一律改走帶 token 的 POST read。
+ *
+ * 留一支回 gone 的 doGet 而不是整支刪掉：刪掉的話 Google 會回一頁 HTML 錯誤，
+ * 還沒更新的舊版 App 只會看到「讀不到雲端」，猜不出是門關了。只留 console 不寫 logs：
+ * 舊版前端每 15 秒輪詢五張表，每一次都寫一列會把 logs 灌爆。
  */
 function doGet(e) {
   const params = (e && e.parameter) || {};
-  if (authMode_() === 'token_only') {
-    console.log('🚫 doGet 已關閉（AUTH_MODE=token_only）：sheet=' + (params.sheet || '?'));
-    return jsonOut({ error: 'gone' });
-  }
-  return jsonOut(readSheetResponse_(params.sheet, params.only, params.key_field));
+  console.log('🚫 doGet 已關閉：sheet=' + (params.sheet || '?'));
+  return jsonOut({ error: 'gone' });
 }
 
 /**
- * 讀一張分頁的回應本體。doGet（舊門）與 POST read／readTombstones（新門）共用這一份，
- * 兩扇門回的形狀才不會漂移——前端換門的時候，不必連資料的解讀方式一起換。
+ * 讀一張分頁的回應本體。POST read／readTombstones 共用這一份。
  *
  * 墓碑由**後端**濾掉，不指望前端自己 filter（ADR-009 待其他環境知道的事 #4）。
  *
@@ -342,12 +325,6 @@ function readSheetResponse_(sheetName, only, keyFieldParam) {
   return { data: withoutTombstones_(rows) };
 }
 
-/**
- * 只收 token、不收舊密鑰的 action（ADR-010 D-9）。
- * 全是新開的門，沒有任何舊版前端會送它們，所以不必進 dual 的相容範圍。
- */
-var TOKEN_ACTIONS = ['read', 'readTombstones', 'listDevices', 'revokeDevice', 'archiveMail', 'setMyEmail'];
-
 // ===== 所有 PWA 請求：POST body = { token, sheet, action, ... } =====
 function handlePwaSync_(e) {
   const body = JSON.parse(e.postData.contents);
@@ -379,10 +356,7 @@ function handlePwaSync_(e) {
   const sheet = ss.getSheetByName(body.sheet);
   if (!sheet) return jsonOut({ error: 'sheet_not_found' });
 
-  // 'upsert' 是 ADR-009 之後的正名，'append' 是 ADR-007／008 留下的舊名。
-  // 兩個都收：PWA 是快取在使用者裝置上的，舊版前端會存活到他下次開啟 App 為止，
-  // 這段期間送上來的仍然是 'append'。改名不該讓那些人的同步安靜地壞掉。
-  if (body.action === 'upsert' || body.action === 'append') {
+  if (body.action === 'upsert') {
     const headers = sheetHeaders_(sheet);
     // key_field 可以是字串或陣列：line_users 用 'line_id'，reviews 用
     // ['review_date','line_id']（那張表沒有 id 欄，ADR-009 §一.5）
@@ -1114,19 +1088,6 @@ var PAIR_LOCK_TTL = 600;
 /** logs 的 source。前端 LOG 頁有同名的篩選鈕 */
 var DEVICE_LOG_SOURCE = '配對';
 
-/**
- * 過渡期開關（D-10、交棒票 1-5）。讀不到或值不認得一律當 dual。
- *
- * 這不是安全邊界，是讓「第 3 段關門」不必重新部署的開關：Neil 在指令碼屬性把它
- * 改成 token_only 就生效。為什麼缺值要當 dual 而不是 fail-closed：它只決定舊門
- * 開不開，新門（token）永遠在驗；當成 token_only 的話，一個打錯字的屬性會讓
- * 還沒配對的家人全部斷線，而那正是第 2 段驗證完成之前不該發生的事。
- */
-function authMode_() {
-  var raw = PropertiesService.getScriptProperties().getProperty('AUTH_MODE');
-  return String(raw == null ? '' : raw).trim().toLowerCase() === 'token_only' ? 'token_only' : 'dual';
-}
-
 /** LINE 官方帳號 ID（例如 @123abcde），給前端組「開啟 LINE 傳送」按鈕。沒設就回空，前端退回複製 */
 function lineOaId_() {
   var raw = PropertiesService.getScriptProperties().getProperty('LINE_OA_ID');
@@ -1381,48 +1342,17 @@ function authDevice_(rawToken, what, now) {
 }
 
 /**
- * 這個請求是誰（ADR-010 D-1／D-2）。line_id 一律由後端換出來。
+ * 這個請求是誰（ADR-010 D-1／D-2）。line_id 一律由後端從 token 換出來。
  *
- * 帶了 token 就只看 token；新開的 action（TOKEN_ACTIONS）沒帶也當成 token 驗，
- * 會落在 no_token。只有舊版前端會送的那幾個動作、而且 AUTH_MODE=dual 時，才退回
- * 舊的「密鑰＋自稱 line_id」——那是過渡期給還沒更新的 App 用的，第 3 段關門。
+ * 2026-10-01 關門：舊的「CLOUD_SECRET＋自稱 line_id」整條退場，沒有 token 一律 no_token。
+ * 密鑰只證明「這是我們家的 App」，而它就寫在公開的 index.html 裡；line_id 是自稱的，
+ * 而名單可以被讀走——兩樣湊起來誰都能冒充誰。
  */
 function pwaCaller_(body) {
   var what = 'PWA ' + (body.action || '?') + ' → ' + (body.sheet || '?');
-
-  if (body.token || TOKEN_ACTIONS.indexOf(body.action) !== -1) {
-    var auth = authDevice_(body.token, what);
-    if (!auth.ok) return { ok: false, error: auth.reason };
-    return { ok: true, line_id: auth.line_id, user: auth.user, device: auth.device };
-  }
-
-  if (authMode_() !== 'dual') {
-    // 看得出是不是還有舊版 App 在跑（交棒票 1-5）
-    console.log('🚫 舊寫法已停用（AUTH_MODE=token_only）：' + what);
-    try {
-      logTransaction_('同步', '失敗', what, '舊版寫法已停用，拒絕',
-        'AUTH_MODE=token_only 之後只收裝置 token；這筆多半來自還沒更新的 App，請它重開 App 並配對',
-        '', String(body.line_id || ''));
-    } catch (err) {
-      console.log('寫 logs 失敗（不影響拒絕的結果）：' + err);
-    }
-    return { ok: false, error: 'token_required' };
-  }
-
-  var secret = cloudSecret_();
-  if (!secret) {
-    // 讀不到就一律拒絕。fail-open 等於把門直接拆掉——寧可同步壞掉讓人發現，
-    // 也不能安靜地變成「誰都能寫」。
-    console.log('❌ 指令碼屬性 CLOUD_SECRET 不存在或是空字串，所有寫入一律拒絕');
-    return { ok: false, error: 'server_misconfigured' };
-  }
-  if (body.secret !== secret) return { ok: false, error: 'unauthorized' };
-
-  // 白名單閘門（ADR-008 D-2）。密鑰只證明「這是我們家的 App」，證明不了「這是誰」；
-  // line_id 才回答後者。兩道門串聯，過不了任一道就不寫。
-  var gate = writeGate_(body.line_id, what);
-  if (!gate.allowed) return { ok: false, error: gate.error };
-  return { ok: true, line_id: String(body.line_id).trim(), user: gate.user, device: null };
+  var auth = authDevice_(body.token, what);
+  if (!auth.ok) return { ok: false, error: auth.reason };
+  return { ok: true, line_id: auth.line_id, user: auth.user, device: auth.device };
 }
 
 /** session：這把 token 現在是什麼狀態（前端開機、回前景、續期輪詢都問這個） */

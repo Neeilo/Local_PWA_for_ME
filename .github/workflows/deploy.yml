@@ -28,13 +28,12 @@ jobs:
       - name: Run the tests before publishing
         run: npm test
 
-      - name: Inject cloud sync secrets into index.html
+      # CLOUD_SECRET 已於 ADR-010 關門時退場（身份改由裝置 token 證明），只剩網址要注入
+      - name: Inject cloud URL into index.html
         env:
           CLOUD_URL: ${{ secrets.CLOUD_URL }}
-          CLOUD_SECRET: ${{ secrets.CLOUD_SECRET }}
         run: |
           sed -i "s|__CLOUD_URL__|${CLOUD_URL}|g" index.html
-          sed -i "s|__CLOUD_SECRET__|${CLOUD_SECRET}|g" index.html
 
       # 白名單發布：只上傳 scripts/site-files.mjs 列出的檔案。
       # 原本是整包上傳、只排除 apps-script/ 的黑名單制，新增的檔案預設公開——

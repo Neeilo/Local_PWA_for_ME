@@ -215,13 +215,23 @@ class FakeSpreadsheet {
  * 回傳的 call() 直接呼叫原始碼裡的函式，read() 讀得到頂層的 const
  * （vm 的頂層 const 不會變成全域屬性，但同一個 context 裡的後續運算看得見）。
  */
-export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [], cache = false, overrides = {}, mailImpl = null } = {}) {
+export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [], cache = false, overrides = {}, mailImpl = null, tokens = {} } = {}) {
   const logs = [];              // console.log 的內容
   const transactions = [];      // logTransaction_ 收到的參數
   const pushes = [];            // linePush_ 收到的 (userId, text)
   const mails = [];             // MailApp.sendEmail 收到的參數
   const lock = { held: false, busy: false };   // busy=true 模擬「另一個封存正在跑」
   const triggers = [];          // ScriptApp 建出來的觸發器
+  // 預先發好的裝置 token：{ 'tok-neil': 'Uneil' }。ADR-010 關門後每個 PWA 請求都要帶 token，
+  // 不在這裡發的話，每支測試都得先走一遍 LINE 配對。只存雜湊，跟正式的 pairClaim_ 一樣。
+  const tokenIds = Object.keys(tokens);
+  if (tokenIds.length && !sheets.line_devices) {
+    const now = new Date().toISOString();
+    sheets.line_devices = new FakeSheet('line_devices', [
+      ['device_id', 'token_hash', 'line_id', 'device_label', 'created_at', 'last_used_at', 'revoked_at', 'revoked_by'],
+      ...tokenIds.map((t, i) => ['dev-' + i, createHash('sha256').update(t, 'utf8').digest('hex'), tokens[t], '測試裝置', now, now, '', ''])
+    ]);
+  }
   const ss = new FakeSpreadsheet(sheets);
 
   // 快取預設關著（getScriptCache 丟例外），既有測試的行為一個字都不變。
