@@ -46,6 +46,9 @@ function guideRegistry_() {
     { sheet: LINE_DEVICES_SHEET, category: '系統', purpose: '已配對的裝置（token 只存雜湊）',
       writers: 'PWA 配對、LINE「驗證裝置」、管理頁撤銷（皆由 GAS 寫）', readers: '只有 GAS（PWA 不可讀）',
       key: 'device_id', adr: '010' },
+    { sheet: PERFORMANCE_SHEET, category: '系統', purpose: '每次請求的耗時（不存 token、不存資料內容）',
+      writers: '只有 GAS（PWA 請求回應前寫）', readers: '管理頁「效能紀錄」（雲端算好摘要，PWA 不可讀原始列）',
+      key: 'id', adr: '012' },
     { sheet: GUIDE_SHEET, category: '系統', purpose: '本導覽表',
       writers: '只有 refreshGuide()', readers: 'Neil',
       key: '分頁名稱', adr: '' }
