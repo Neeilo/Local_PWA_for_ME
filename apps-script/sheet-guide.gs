@@ -40,7 +40,7 @@ function guideRegistry_() {
     { sheet: 'logs', category: '系統', purpose: 'LINE 與系統的交易記錄，唯讀',
       writers: '只有 GAS', readers: 'PWA 的 LOG 頁',
       key: 'id', adr: '006' },
-    { sheet: 'line_users', category: '系統', purpose: '白名單＋功能權限矩陣',
+    { sheet: 'line_users', category: '系統', purpose: '白名單＋功能權限矩陣＋email（管理者收封存備份信）',
       writers: '註冊指令、管理頁', readers: 'GAS 閘門、PWA',
       key: 'line_id', adr: '008' },
     { sheet: LINE_DEVICES_SHEET, category: '系統', purpose: '已配對的裝置（token 只存雜湊）',

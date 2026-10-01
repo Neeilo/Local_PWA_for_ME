@@ -439,3 +439,9 @@ Apps Script 與 Pages 分成兩個 job：認證與 scriptId 完全不會進到 P
   - ✅ 裁決（2026-09-30，Neil）：收到 `inactive` 時**保留 token**（依 ADR D-7），顯示「等管理者重新啟用」，重新啟用後自動恢復。交棒票原寫「清掉 token」，以此裁決為準
   - ⏳ 第 3 段（Neil 操作）：`AUTH_MODE=token_only` → 家人配對 → 穩定一週後另開 PR 拔掉 dual 與 `CLOUD_SECRET`
   - ⏳ 另開票、須 Neil 明確同意：`交接.md` 從 git 歷史移除（改寫歷史不可逆）
+- **封存改寄信＋DATA-05 日期修正**（2026-10-01，Neil 裁決；**待補 ADR**）：🔧 程式完成，待部署驗證
+  - ✅ 日期少一天：Sheet 的日期格子讀回來是 UTC ISO 字串，前端切前 10 字少一天，月初的帳掉到上個月。新增 `localDateKey()`，記帳日期、任務到期日、日誌鍵都改用它
+  - ✅ 封存：後端一次做完「① 整理 JSON → ② 寄給所有啟用中且有 email 的管理者 → ③ 寄出成功才刪」，任一步失敗就停並回報階段與原因；③ 刪到一半失敗會把已刪的列補回去。只有管理者看得到、按得到。取代 ADR-009 §一.4 的「下載＋人工確認」
+  - ✅ `line_users.email`：首頁對還沒填的人顯示設定卡；後端 `setMyEmail` 只改自己那一格（不走整列 upsert，避免舊名單蓋回權限）
+  - 📌 舊的 `readTombstones`／`archivePurge` 後端動作保留：`AUTH_MODE=dual` 期間舊版前端仍可能呼叫
+  - ⚠️ 部署後要在 Apps Script 編輯器執行一次 `authorizeArchiveMail()` 授權寄信（見 `apps-script/README.md`）

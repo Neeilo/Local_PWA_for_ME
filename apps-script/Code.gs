@@ -76,7 +76,7 @@ var LINE_USERS_FEATURES = ['feat_expense', 'feat_tasks', 'feat_review',
 
 /** 建表用的完整表頭（ADR-008 D-1 的欄序） */
 var LINE_USERS_HEADERS = ['line_id', 'display_name', 'is_active', 'is_admin']
-  .concat(LINE_USERS_FEATURES).concat(['created_at', 'updated_at']);
+  .concat(LINE_USERS_FEATURES).concat(['created_at', 'updated_at', 'email']);
 
 /**
  * 確保 line_users 有表可寫。只有「註冊」這條路徑會呼叫。
@@ -346,7 +346,7 @@ function readSheetResponse_(sheetName, only, keyFieldParam) {
  * 只收 token、不收舊密鑰的 action（ADR-010 D-9）。
  * 全是新開的門，沒有任何舊版前端會送它們，所以不必進 dual 的相容範圍。
  */
-var TOKEN_ACTIONS = ['read', 'readTombstones', 'listDevices', 'revokeDevice'];
+var TOKEN_ACTIONS = ['read', 'readTombstones', 'listDevices', 'revokeDevice', 'archiveMail', 'setMyEmail'];
 
 // ===== 所有 PWA 請求：POST body = { token, sheet, action, ... } =====
 function handlePwaSync_(e) {
@@ -367,6 +367,8 @@ function handlePwaSync_(e) {
   }
   if (body.action === 'listDevices') return jsonOut(listDevices_(caller, body.line_id));
   if (body.action === 'revokeDevice') return jsonOut(revokeDevices_(caller, body.device_id, body.all_of));
+  if (body.action === 'archiveMail') return jsonOut(archiveByMail_(caller));
+  if (body.action === 'setMyEmail') return jsonOut(setMyEmail_(caller, body.email));
 
   if (NO_PWA_WRITE.indexOf(body.sheet) !== -1) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');
@@ -1690,3 +1692,216 @@ function revokeDevices_(caller, deviceId, allOf) {
   } catch (err) {}
   return { success: true, revoked: revoked, matched: targets.length };
 }
+
+/* ========================================================================== */
+/* 封存改寄信（2026-10-01 Neil 裁決，取代 ADR-009 §一.4 的「下載＋人工確認」）   */
+/*                                                                            */
+/*   管理者按確認 → ① 整理：撈出所有墓碑、打包成 JSON                            */
+/*                → ② 寄信：附件寄給所有啟用中的管理者                          */
+/*                → ③ 刪除：寄出成功才刪                                        */
+/*   任一步失敗就停，回報是哪一步、錯誤訊息是什麼。①② 失敗時雲端一列都沒動；    */
+/*   ③ 刪到一半失敗，就把已刪的列補回去（信已經寄出，資料兩邊都在）。             */
+/*                                                                            */
+/* 為什麼搬到後端一次做完：舊流程是前端逐張分頁各打一次請求，五張表各自成敗，     */
+/* 「全部成功或全部不動」在那個形狀裡做不到。瀏覽器也沒有「下載成功」這個事件，   */
+/* 只能靠人按確定當訊號；「寄出成功」是程式拿得到的真訊號。                       */
+/* ========================================================================== */
+
+/** line_users 上的 email 欄。家人都讀得到這張表，所以 email 在家人之間是公開的（Neil 已知悉） */
+var EMAIL_FIELD = 'email';
+
+/** 要封存的分頁與各自的鍵。reviews 沒有 id，用「日期＋寫的人」（ADR-009 §一.5） */
+var ARCHIVE_TARGETS = [
+  { sheet: 'tasks', key: 'id' },
+  { sheet: 'moods', key: 'id' },
+  { sheet: 'notes', key: 'id' },
+  { sheet: 'expenses', key: 'id' },
+  { sheet: 'reviews', key: ['review_date', 'line_id'] }
+];
+
+/** 同一時間只准一個封存在跑：兩個封存交錯刪列，列號會互相踩 */
+var ARCHIVE_LOCK_MS = 30000;
+
+function isEmail_(s) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || ''));
+}
+
+/**
+ * 收封存信的人：所有啟用中、而且填了 email 的管理者。
+ * 不走 5 分鐘快取：管理者剛在 App 填好 email 就按封存，要讀得到那一格。
+ */
+function adminEmails_() {
+  var roster = readLineUsers_();
+  if (!roster.ok) return { ok: false, reason: roster.reason, emails: [] };
+  var emails = [];
+  Object.keys(roster.users).forEach(function (id) {
+    var u = roster.users[id];
+    var mail = String(u[EMAIL_FIELD] == null ? '' : u[EMAIL_FIELD]).trim();
+    if (truthy_(u.is_active) && truthy_(u.is_admin) && isEmail_(mail) && emails.indexOf(mail) === -1) {
+      emails.push(mail);
+    }
+  });
+  return { ok: true, emails: emails };
+}
+
+/**
+ * 本人設定自己的 email。只改自己那一列的 email 欄（＋ updated_at），其他欄一格都不碰——
+ * 不走整列 upsert：前端手上的那份名單可能是舊的，整列送回來會把管理者剛改的權限蓋回去。
+ * email 欄不存在就補在表頭最右邊（比照 ensureColumnsOnSheet_ 的慣例）。
+ */
+function setMyEmail_(caller, raw) {
+  var email = String(raw == null ? '' : raw).trim();
+  if (!isEmail_(email)) return { error: 'invalid_email' };
+
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LINE_USERS_SHEET);
+  if (!sheet) return { error: 'sheet_not_found' };
+  ensureColumnsOnSheet_(sheet, [EMAIL_FIELD]);
+  var headers = sheetHeaders_(sheet);
+  var rows = findRowsByKey_(sheet, [headers.indexOf('line_id') + 1], caller.line_id);
+  if (!rows.length) return { error: 'not_on_whitelist' };
+
+  sheet.getRange(rows[0], headers.indexOf(EMAIL_FIELD) + 1, 1, 1).setValues([[email]]);
+  var updated = headers.indexOf('updated_at');
+  if (updated !== -1) sheet.getRange(rows[0], updated + 1, 1, 1).setValues([[new Date().toISOString()]]);
+  invalidateLineUsersCache_();
+  return { success: true, email: email };
+}
+
+/** 封存失敗：寫一列 logs（不可靜默失敗），回報階段與原因 */
+function archiveFail_(stage, message, extra) {
+  console.log('❌ 封存失敗（' + stage + '）：' + message);
+  try {
+    logTransaction_('同步', '失敗', '封存寄信', '失敗於「' + stage + '」階段', message, '', '');
+  } catch (err) {}
+  var out = { error: 'archive_failed', stage: stage, message: message };
+  Object.keys(extra || {}).forEach(function (k) { out[k] = extra[k]; });
+  return out;
+}
+
+/** 刪到一半失敗時把已刪的列補回去。回報補回幾列、有沒有全部補回 */
+function rollbackArchive_(deleted) {
+  var count = 0;
+  var ok = true;
+  deleted.forEach(function (d) {
+    try { d.sheet.appendRow(d.values); count++; } catch (err) {
+      ok = false;
+      console.log('補回失敗（' + d.sheet.getName() + '）：' + err);
+    }
+  });
+  return { ok: ok, count: count };
+}
+
+function archiveMailBody_(plan, total) {
+  var lines = ['Neil OS 封存備份：共 ' + total + ' 筆已刪除的資料，完整內容在附件 JSON。', ''];
+  plan.forEach(function (p) { lines.push('・' + p.target.sheet + '：' + p.keys.length + ' 筆'); });
+  lines.push('', '寄出成功之後，這些資料已從雲端永久刪除。這封信就是唯一的備份，請保留。');
+  return lines.join('\n');
+}
+
+/**
+ * archiveMail → { success, total, deleted, skipped, recipients } 或 archiveFail_ 的形狀
+ *
+ * ③ 刪除前會再讀一次：寄信那幾秒裡，某一列若被人取消刪除（del 清掉），它就不再是墓碑，
+ * 放過它（計入 skipped）。它的內容仍在信裡，多備份一份不會壞事。
+ */
+function archiveByMail_(caller) {
+  if (!truthy_((caller.user || {}).is_admin)) return archiveFail_('permission', '只有管理者可以封存');
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(ARCHIVE_LOCK_MS)) return archiveFail_('lock', '另一個封存正在進行，請稍後再試');
+  try {
+    // ① 整理
+    var plan = [];
+    var total = 0;
+    var json = '';
+    var stamp = keyValue_(new Date());
+    try {
+      var ss = SpreadsheetApp.getActiveSpreadsheet();
+      ARCHIVE_TARGETS.forEach(function (t) {
+        var sheet = ss.getSheetByName(t.sheet);
+        if (!sheet) return;
+        var headers = sheetHeaders_(sheet);
+        var tombs = tombstoneRows_(sheet, headers, t.key).filter(function (c) { return c.key; });
+        if (!tombs.length) return;
+        plan.push({
+          target: t, sheet: sheet, headers: headers,
+          keys: tombs.map(function (c) { return c.key; }),
+          records: tombs.map(function (c) { return c.record; })
+        });
+        total += tombs.length;
+      });
+      if (!total) return { success: true, total: 0, deleted: 0, skipped: 0, recipients: 0 };
+      json = JSON.stringify({
+        exported_at: new Date().toISOString(),
+        total: total,
+        sheets: plan.map(function (p) { return { sheet: p.target.sheet, rows: p.records }; })
+      }, null, 2);
+    } catch (err) {
+      return archiveFail_('collect', String(err && err.message || err));
+    }
+
+    // ② 寄信
+    var to = adminEmails_();
+    if (!to.ok) return archiveFail_('mail', '成員名單讀不到（' + to.reason + '）');
+    if (!to.emails.length) return archiveFail_('mail', '沒有任何啟用中的管理者填了 email，請先到首頁填寫');
+    try {
+      MailApp.sendEmail({
+        to: to.emails.join(','),
+        subject: 'Neil OS 封存備份 ' + stamp + '（' + total + ' 筆）',
+        body: archiveMailBody_(plan, total),
+        attachments: [Utilities.newBlob(json, 'application/json', 'neil-os-archive-' + stamp + '.json')]
+      });
+    } catch (err) {
+      return archiveFail_('mail', String(err && err.message || err));
+    }
+
+    // ③ 刪除：失敗就把已刪的補回去
+    var deleted = [];
+    var skipped = 0;
+    try {
+      plan.forEach(function (p) {
+        var wanted = {};
+        p.keys.forEach(function (k) { wanted[k] = true; });
+        var fresh = tombstoneRows_(p.sheet, p.headers, p.target.key).filter(function (c) { return c.key && wanted[c.key]; });
+        skipped += p.keys.length - fresh.length;
+        // 由下往上刪，否則刪掉一列之後下面的列號會整個位移，刪錯人
+        fresh.map(function (c) { return c.row; }).sort(function (a, b) { return b - a; }).forEach(function (r) {
+          var values = p.sheet.getRange(r, 1, 1, p.headers.length).getValues()[0];
+          p.sheet.deleteRow(r);
+          deleted.push({ sheet: p.sheet, values: values });
+        });
+      });
+    } catch (err) {
+      var back = rollbackArchive_(deleted);
+      return archiveFail_('delete', String(err && err.message || err) +
+        (back.ok ? '；已刪的 ' + back.count + ' 列已補回' : '；⚠️ 補回只成功 ' + back.count + '／' + deleted.length + ' 列'),
+        { mailed: true, rolled_back: back.ok, restored: back.count });
+    }
+
+    logCleanup_('封存寄信 ' + stamp,
+      '已寄出備份並刪除 ' + deleted.length + ' 列（寄給 ' + to.emails.length + ' 位管理者）',
+      plan.map(function (p) { return p.target.sheet + ' ' + p.keys.length; }).join('、') +
+        (skipped ? '；寄信期間被取消刪除而放過 ' + skipped + ' 列' : ''));
+    return { success: true, total: total, deleted: deleted.length, skipped: skipped, recipients: to.emails.length };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * 寄信權限授權——部署後在 Apps Script 編輯器選這支按「執行」一次。
+ *
+ * 封存改用 MailApp 之後，專案多了「代表你寄信」的權限範圍。web app 以部署者身份執行，
+ * 這個權限要由部署者本人在編輯器裡同意一次；沒同意之前，寄信會失敗（可能連帶其他請求）。
+ * 跑完看執行記錄：印出今天剩餘的寄信額度就代表授權完成。
+ */
+function authorizeArchiveMail() {
+  var left = MailApp.getRemainingDailyQuota();
+  console.log('✅ 寄信權限已授權。今天剩餘寄信額度：' + left);
+  var to = adminEmails_();
+  console.log(to.emails.length
+    ? '封存信會寄給：' + to.emails.join('、')
+    : '⚠️ 還沒有任何啟用中的管理者填 email，封存會在「寄信」階段停下來');
+  return { quota: left, recipients: to.emails };
+}
+

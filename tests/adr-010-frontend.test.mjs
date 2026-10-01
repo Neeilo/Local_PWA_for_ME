@@ -227,19 +227,27 @@ describe('每個請求都帶 token、都走 POST', () => {
 
   test('讀、寫、封存、週期完成、名單、LOG：body 都有 token，沒有 secret，也沒有 GET', async () => {
     const e = env((b) => {
-      if (b.action === 'readTombstones') return { data: [{ id: '7' }], keys: ['7'] };
+      if (b.action === 'archiveMail') return { success: true, total: 1, deleted: 1 };
+      if (b.action === 'setMyEmail') return { success: true, email: b.email };
       if (b.action === 'completeRecurring') return { success: true, spawned: false };
       return null;
     });
+    e.raw('roster = [{ line_id: "' + ME + '", is_active: "TRUE", is_admin: "TRUE" }]');   // 封存只給管理者
     await e.callRaw('pullFromCloud');
     await e.callRaw('refreshRoster');
     await e.callRaw('fetchLogs');
     await e.callRaw('queueUpsert', 'tasks', { id: '1', text: 'x' }, 'id');
+    e.raw('roster = [{ line_id: "' + ME + '", is_active: "TRUE", is_admin: "TRUE" }]');   // refreshRoster 換掉了名單
     await e.callRaw('archiveTombstones');
+    e.raw('renderMeCard = function(){}; renderEmailCard = function(){}');   // 畫面不是這裡要驗的
+    e.set('document', Object.assign({}, e.context.document, { getElementById: () => ({ value: 'neil@example.com', hidden: false }) }));
+    await e.callRaw('saveMyEmail');
     await e.callRaw('completeRecurringTask', { id: 2, txt: 'y', done: true, ts: 1, due: '2026-09-30', recurN: '1', recurUnit: '月' });
     await settle();
 
     assert.ok(e.calls.length >= 10);
+    assert.ok(e.calls.some((c) => c.body.action === 'archiveMail'), '前提：封存真的有送出去');
+    assert.ok(e.calls.some((c) => c.body.action === 'setMyEmail'), '前提：email 真的有送出去');
     for (const c of e.calls) {
       assert.equal(c.options && c.options.method, 'POST', '不該再有 GET：' + c.url);
       assert.equal(c.url.includes('?'), false, '參數都在 body，不在網址');

@@ -622,6 +622,15 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
     <!-- ⓪ 目前身份（ADR-008 B-2／C-3） -->
     <div class="me-card" id="meCard" hidden></div>
 
+    <!-- Email（2026-10-01）：還沒填的人在首頁看到這張卡；填了就收起，從身份卡的「修改 Email」再打開。
+         存在 line_users.email，家人之間看得到；管理者的 email 用來收封存備份信。 -->
+    <div class="card" id="emailCard" hidden>
+      <h2>設定你的 Email</h2>
+      <p class="dash-sub" style="margin:0 0 10px">會記在成員名單上（家人看得到）。管理者的 email 用來收「封存已刪除資料」的備份信。</p>
+      <input type="text" id="emailInput" inputmode="email" autocomplete="email" placeholder="you@example.com">
+      <div style="margin-top:10px"><button class="btn" onclick="saveMyEmail()">儲存</button></div>
+    </div>
+
     <!-- ① 記帳狀況（feat_expense 關掉時整張卡收起，見 renderDashboard） -->
     <div class="card" id="dashExpenseCard">
       <h2>本月支出</h2>
@@ -826,10 +835,11 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       <h2>雜記清單</h2>
       <div id="noteList"></div>
     </div>
-    <div class="card">
+    <div class="card" id="archiveCard" hidden>
       <h2>資料備份</h2>
-      <!-- 月結算：把已刪除的資料匯出到裝置，確認之後才從雲端清掉（ADR-009 §一.4）。
-           刻意做成手動觸發、且刪除前一定要人按確認——不設自動清理，也不先斬後奏。 -->
+      <!-- 月結算（只有管理者看得到）：已刪除的資料打包成 JSON 寄到管理者信箱，寄出成功才從雲端清掉。
+           刻意做成手動觸發、且一定要人按確認——不設自動清理，也不先斬後奏。 -->
+      <p class="dash-sub" style="margin:0 0 10px">把已刪除的資料寄到管理者信箱備份，寄出成功之後才從雲端清掉。</p>
       <button class="btn" onclick="archiveTombstones()">封存已刪除的資料</button>
     </div>
   </section>
@@ -1086,6 +1096,8 @@ async function refreshRoster(){
 function applyIdentity(){
   applyNavPlacement();
   renderMeCard();
+  renderEmailCard();
+  renderArchiveCard();
   renderAdminCard();
   renderScopeBars();
   renderAll();
@@ -1296,7 +1308,38 @@ function renderMeCard(){
   el.innerHTML=`<span class="me-who">👤 ${esc(rosterName(myUser())||myLineId)}
       <span class="sub">${isAdmin()?'管理者・':''}之後記的東西會標記成你的</span></span>
     ${n?`<button class="link" onclick="claimOrphans()">認領舊資料 ${n}</button>`:''}
+    ${myEmail()?'<button class="link" onclick="editMyEmail()">修改 Email</button>':''}
     <button class="link" onclick="unpairThisDevice()">解除這台裝置的配對</button>`;
+}
+
+/* ---------- 自己的 Email（2026-10-01） ----------
+   走專用的 setMyEmail，後端只改自己那一格——不走整列 upsert：手上這份名單可能是舊的，
+   整列送回去會把管理者剛改的權限蓋回去。 */
+let emailEditing=false;
+function myEmail(){ return String((myUser()||{}).email||'').trim(); }
+function isEmailText(v){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v||'').trim()); }
+function renderEmailCard(){
+  const el=document.getElementById('emailCard');
+  if(!el) return;
+  // 名單還沒讀到（離線、剛開機）時不催：那時 myEmail() 是空的，不代表他真的沒填
+  const show = !!myLineId && !!myUser() && (emailEditing || !myEmail());
+  el.hidden=!show;
+  const inp=document.getElementById('emailInput');
+  if(show && inp && !inp.value) inp.value=myEmail();
+}
+function editMyEmail(){ emailEditing=true; renderEmailCard(); }
+async function saveMyEmail(){
+  const inp=document.getElementById('emailInput');
+  const email=String((inp&&inp.value)||'').trim();
+  if(!isEmailText(email)){ toast('Email 格式不對'); return false; }
+  let r=null;
+  try{ r=await cloudPost({action:'setMyEmail', email}); }catch(e){ r=null; }
+  if(!r || !r.success){ toast('⚠️ 沒存成功'+(r&&r.error?'（'+r.error+'）':'，稍後再試')); return false; }
+  const u=myUser(); if(u) u.email=r.email;
+  emailEditing=false;
+  renderEmailCard(); renderMeCard();
+  toast('Email 已儲存');
+  return true;
 }
 
 /* 取代 ADR-008 的「換人」：身份綁在配對上，換人＝這台解除配對、由另一個人重新配對。
@@ -1990,90 +2033,57 @@ async function pullFromCloud(){
   renderConnState(); renderAll();
 }
 
-/* ---------- 備份 ---------- */
-function downloadJson(filename, payload){
-  const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);
-  a.download=filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
+/* ---------- 封存：寄信給管理者（2026-10-01 Neil 裁決，取代 ADR-009 §一.4 的下載流程） ----------
+   整件事在後端一次做完：① 整理 JSON → ② 寄給管理者 → ③ 寄出成功才刪。任何一步失敗就停，
+   回報是哪一步、錯誤訊息是什麼；①② 失敗時雲端沒動，③ 刪到一半失敗會把已刪的補回去。
 
-/* ---------- 封存：兩段式（ADR-009 §一.4） ----------
-   標記 → 匯出 → 確認 → 刪除。不先斬後奏：雲端那一份在檔案確定到手之前不會消失。
+   舊流程是前端逐張分頁各打一次請求、再靠人按「確定」當「下載成功」的訊號：五張表各自成敗，
+   做不到全有全無；瀏覽器也沒有「下載成功」這個事件。「寄出成功」是程式拿得到的真訊號。 */
+const ARCHIVE_STAGE_LABEL={permission:'權限檢查', lock:'排隊', collect:'整理資料', mail:'寄信', delete:'刪除'};
 
-   ⚠️ 一個 ADR 沒料到的現實：**瀏覽器沒有「下載成功」這個事件**。a.click() 之後
-   你不知道使用者按了儲存、按了取消、還是根本沒看到那個對話框。所以這裡的
-   「下載成功訊號」只能由人給——下載完跳一個確認框，請他確認檔案真的在手上，
-   按下去才刪。人就是那個訊號，這是誠實的做法，不是偷懶。 */
-const ARCHIVE_SHEETS=[
-  {sheet:'tasks',    key:'id'},
-  {sheet:'moods',    key:'id'},
-  {sheet:'notes',    key:'id'},
-  {sheet:'expenses', key:'id'},
-  {sheet:'reviews',  key:['review_date','line_id']}
-];
-
-/* 鍵由後端算好一起回傳，前端**不自己算**。
-   回應走 JSON.stringify，Date 會變成 UTC ISO 字串，這裡自己切出來的日期在
-   UTC+8 可能差一天；鍵一對不上，archivePurge 會安靜地一筆都刪不掉——沒有錯誤
-   訊息，只是沒有效果。同一套規則只留一份實作在後端，就沒有對不上的可能。 */
-function cloudTombstones(sheet, keyField){
-  return cloudPost({action:'readTombstones', sheet, key_field:keyField}).then(j=>{
-    if(!j) throw new Error('empty_response');
-    if(j.error){ if(j.error==='sheet_not_found') return {rows:[], keys:[]}; throw new Error(j.error); }
-    return {rows:j.data||[], keys:j.keys||[]};
-  });
-}
-
-function cloudArchivePurge(sheet, keyField, keys){
-  return cloudPost({sheet, action:'archivePurge', key_field:keyField, keys})
-    .catch(()=>({error:'network'}));
+function archiveFailMessage(r){
+  if(!r || r.error!=='archive_failed') return '封存沒有完成（'+((r&&r.error)||'未知錯誤')+'）。\n雲端資料沒有任何變動。';
+  const stage=ARCHIVE_STAGE_LABEL[r.stage]||r.stage||'未知';
+  let tail;
+  if(r.stage==='delete'){
+    tail = r.rolled_back
+      ? '備份信已寄出；已刪掉的 '+(r.restored||0)+' 筆已經補回雲端，資料沒有遺失，可以再試一次。'
+      : '⚠️ 沒能全部補回。備份信已寄出，請用信裡的 JSON 對照雲端資料。';
+  }else{
+    tail='雲端資料沒有任何變動。';
+  }
+  return '封存失敗（階段：'+stage+'）\n'+(r.message||'')+'\n\n'+tail;
 }
 
 async function archiveTombstones(){
   if(!myLineId){ toast('先配對這台裝置才能封存'); return; }
-
-  // 第一段：撈出所有已軟刪除的列
-  let batches;
-  try{
-    batches=await Promise.all(ARCHIVE_SHEETS.map(s=>cloudTombstones(s.sheet, s.key)));
-  }catch(e){
-    toast('⚠️ 讀不到雲端，這次不封存');      // 讀不到就什麼都不做，絕不猜
+  if(!isAdmin()){ toast('只有管理者可以封存'); return; }
+  if(!confirm('封存已刪除的資料？\n\n'+
+      '1. 把所有已刪除的資料打包成 JSON\n'+
+      '2. 寄到管理者的信箱\n'+
+      '3. 寄出成功之後，才從雲端永久刪除\n\n'+
+      '任何一步失敗都會停下來，不會刪掉沒備份到的資料。')){
+    toast('已取消，雲端資料原封不動'); return;
+  }
+  toast('封存中…');
+  let r=null;
+  try{ r=await cloudPost({action:'archiveMail'}); }catch(e){ r=null; }
+  if(!r){
+    // 請求可能已經在雲端跑完、只是回應沒傳回來——不能說「沒有變動」
+    alert('封存沒有收到回應（可能是連線中斷）。\n\n不確定是否已完成：請看信箱有沒有收到備份信，'+
+          '或重新整理後再按一次封存（再按一次是安全的）。');
     return;
   }
-
-  const plan=[];
-  let total=0;
-  ARCHIVE_SHEETS.forEach((s,i)=>{
-    const b=batches[i]||{rows:[], keys:[]};
-    const keys=(b.keys||[]).filter(k=>k);        // 鍵不完整的列後端已回空字串，跳過
-    if(keys.length){ plan.push({sheet:s.sheet, key:s.key, keys, rows:b.rows}); total+=keys.length; }
-  });
-
-  if(!total){ toast('沒有已刪除的資料需要封存'); return; }
-
-  // 第二段：先匯出
-  const payload={exported_at:new Date().toISOString(), total,
-                 sheets:plan.map(p=>({sheet:p.sheet, rows:p.rows}))};
-  downloadJson('neil-os-archive-'+todayKey()+'.json', payload);
-
-  // 第三段：人來當「下載成功」的訊號
-  const ok=confirm('已匯出 '+total+' 筆已刪除的資料。\n\n' +
-    '請先確認檔案真的存到裝置上了，再按「確定」。\n' +
-    '按下確定之後，這些資料會從雲端永久刪除，無法復原。');
-  if(!ok){ toast('已取消，雲端資料原封不動'); return; }
-
-  // 第四段：確認之後才真的刪
-  let deleted=0, failed=0;
-  for(const p of plan){
-    const res=await cloudArchivePurge(p.sheet, p.key, p.keys);
-    if(res && res.success) deleted+=res.deleted||0; else failed++;
+  if(r.success){
+    toast(r.total ? '已寄出備份並刪除 '+r.deleted+' 筆' : '沒有已刪除的資料需要封存');
+    syncFromCloud();
+    return;
   }
-  if(failed) toast('⚠️ 已刪除 '+deleted+' 筆，有 '+failed+' 張分頁失敗，可再試一次');
-  else toast('已封存並清除 '+deleted+' 筆');
-  syncFromCloud();
+  alert(archiveFailMessage(r));
+}
+function renderArchiveCard(){
+  const el=document.getElementById('archiveCard');
+  if(el) el.hidden=!isAdmin();
 }
 
 /* ---------- 導覽 ---------- */
