@@ -1601,6 +1601,18 @@ function todayKey(d = new Date()){
   const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), dd=String(d.getDate()).padStart(2,'0');
   return `${y}-${m}-${dd}`;
 }
+/* 雲端日期欄 → 本地 YYYY-MM-DD（DATA-05）。
+   Sheet 會把我們送上去的 '2026-10-01' 自動轉成日期格子，讀回來時被 JSON 化成 UTC：
+   台灣的 10/1 變成 '2026-09-30T16:00:00.000Z'。直接切前 10 個字會少一天——月初那天
+   記的帳因此掉到上個月，在「本月」整筆看不見。帶時間的一律換回本地日期再用；
+   本來就是 YYYY-MM-DD 的（Sheet 沒轉、或待送佇列裡的）原樣使用。 */
+function localDateKey(v){
+  const s=String(v==null?'':v).trim();
+  if(!s) return '';
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d=new Date(s);
+  return isNaN(d.getTime()) ? s.slice(0,10) : todayKey(d);
+}
 function thisWeekKey(){
   const d = new Date();
   const day = d.getDay();
@@ -1798,7 +1810,7 @@ function taskFromCloud(r){
           ts:r.created_at?new Date(r.created_at).getTime():Date.now(),
           priority:PRIORITIES.includes(p)?p:DEFAULT_PRIORITY,
           line_id:String(r.line_id||'').trim(),
-          board:truthy(r.board), due:String(r.due_date||'').slice(0,10),
+          board:truthy(r.board), due:localDateKey(r.due_date),
           recurN:r.recur_interval||'', recurUnit:String(r.recur_unit||'').trim(),
           notified:truthy(r.notified)};
 }
@@ -1809,7 +1821,7 @@ function expenseToCloud(e){
 }
 function expenseFromCloud(r){
   return {id:Number(r.id)||Date.now(),
-          date:String(r.expense_date||'').slice(0,10)||todayKey(),
+          date:localDateKey(r.expense_date)||todayKey(),
           type:r.type==='income'?'income':'expense',
           category:EXPENSE_CATEGORIES.includes(r.category)?r.category:'其他',
           amount:Number(r.amount)||0, note:r.note||'',
