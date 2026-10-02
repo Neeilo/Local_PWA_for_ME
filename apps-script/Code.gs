@@ -59,10 +59,50 @@ var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET];
 
 /**
  * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
- * 這裡只在「建表」與「註冊」時用到——閘門不看 feat_*（ADR-008 E-2）。
+ * 用在「建表」與「註冊」；權限判斷走下面的 canUse_（ADR-012 D-3）。
  */
 var LINE_USERS_FEATURES = ['feat_expense', 'feat_tasks', 'feat_review',
                            'feat_notes', 'feat_mood', 'feat_log'];
+
+/**
+ * 分頁 ↔ 功能（ADR-012 D-3）。只寫這一份：PWA 讀寫、LINE 前綴、「查/」都查這張表。
+ * 不在表上的分頁（line_users、performance…）不受 feat_* 管，由各自的規則把關。
+ */
+var FEATURE_BY_SHEET = {
+  tasks: 'feat_tasks', expenses: 'feat_expense', reviews: 'feat_review',
+  notes: 'feat_notes', moods: 'feat_mood', logs: 'feat_log'
+};
+
+/** LINE 回覆與「查/」的提示詞要講人話。名稱與前端導覽列一致 */
+var FEATURE_LABEL = {
+  feat_tasks: '任務', feat_expense: '記帳', feat_review: '日誌',
+  feat_notes: '雜記', feat_mood: '心情', feat_log: 'LOG'
+};
+
+/**
+ * 這個人能不能用這個功能（ADR-012 D-3：feat_* 從「藏畫面」升級為雲端權限）。
+ *
+ * 規則與前端 featureAllowed／hasFeatureMatrix 一字不差（有測試把兩邊釘在一起）：
+ *  - 這一列完全沒有 feat_ 欄 → 開放。矩陣還沒佈到 Sheet 上，全關只會讓人以為壞了
+ *  - 有欄但留空 → 關閉（ADR-008 E-2b）
+ * 身份與白名單由 authDevice_／writeGate_ 先把關；走到這裡的 user 已經是 active 成員。
+ */
+function canUse_(user, feature) {
+  if (!feature) return true;
+  if (!user || !Object.keys(user).some(function (k) { return k.indexOf('feat_') === 0; })) return true;
+  return truthy_(user[feature]);
+}
+
+function canUseSheet_(user, sheetName) {
+  return canUse_(user, FEATURE_BY_SHEET[sheetName]);
+}
+
+/** LINE 這一側拿得到的只有 userId，從（有快取的）名單找回那一列。找不到回 null */
+function lineUserById_(rawId) {
+  var roster = lineUsersRoster_();
+  var id = String(rawId == null ? '' : rawId).trim();
+  return (roster.ok && roster.users[id]) || null;
+}
 
 /** 建表用的完整表頭（ADR-008 D-1 的欄序） */
 var LINE_USERS_HEADERS = ['line_id', 'display_name', 'is_active', 'is_admin']
@@ -183,8 +223,8 @@ function readLineUsers_() {
  * 一律 fail-closed（ADR-008 F-1）：這次是「新增」一道門，不是「維護」既有可用性。
  * 一出狀況就自動變回全開的門，跟沒有門是同一件事。寧可同步壞掉讓人當場發現。
  *
- * 功能權限（feat_*）刻意不在這裡驗——那一層只做前端隱藏（ADR-008 E-2）。
- * 被繞過的代價僅止於「多看了一個空白分頁」，跟寫入資格不是同一個量級。
+ * 功能權限（feat_*）不在這裡驗：這道門只回答「這個人能不能進來」，
+ * 「進來之後能用哪些功能」由 canUse_ 依分頁判斷（ADR-012 D-3）。
  */
 function writeGate_(rawLineId, what) {
   var id = String(rawLineId == null ? '' : rawLineId).trim();
@@ -290,30 +330,19 @@ function doGet(e) {
  * only='tombstones' 反過來只回墓碑，那是封存第一段要匯出的東西——它們被預設
  * 過濾掉之後，前端再也看不到，所以得留一扇專門的門。
  */
-function readSheetResponse_(sheetName, only, keyFieldParam, perf) {
+function readSheetResponse_(sheetName, only, keyFieldParam, perf, user) {
   if (NO_PWA_READ.indexOf(sheetName) !== -1) {
     console.log('🚫 拒絕讀取分頁「' + sheetName + '」：它不對 PWA 開放');
     return { error: 'sheet_not_readable', sheet: sheetName };
   }
+  if (!canUseSheet_(user, sheetName)) return { error: 'forbidden', sheet: sheetName };
   perf = perf || {};
   var opened = Date.now();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(sheetName);
   perf.open_ms = Date.now() - opened;
-  if (!sheet) return { error: 'sheet_not_found', sheet: sheetName };
-
-  var reading = Date.now();
-  const values = sheet.getDataRange().getValues();
-  perf.read_ms = Date.now() - reading;
-  perf.rows = Math.max(values.length - 1, 0);
-  if (values.length < 2) return { data: [] };
-
-  const headers = values[0];
-  const rows = values.slice(1).map(row => {
-    const obj = {};
-    headers.forEach((h, i) => obj[h] = row[i]);
-    return obj;
-  });
+  var read = sheetRecords_(ss, sheetName, perf);
+  if (read.error) return read;
+  const rows = read.rows;
 
   if (String(only || '').trim() === 'tombstones') {
     var tombs = rows.filter(isTombstone_);
@@ -335,6 +364,94 @@ function readSheetResponse_(sheetName, only, keyFieldParam, perf) {
     };
   }
   return { data: withoutTombstones_(rows) };
+}
+
+/**
+ * 一張分頁讀成物件陣列（含墓碑，過濾交給呼叫端）。read、readMany、boot 共用，
+ * 讓「開表 → 讀值 → 對表頭」只有一份。perf 的時間與列數用累加：boot 一次讀好幾張。
+ */
+function sheetRecords_(ss, sheetName, perf) {
+  var opened = Date.now();
+  var sheet = ss.getSheetByName(sheetName);
+  perf.open_ms = (perf.open_ms || 0) + (Date.now() - opened);
+  if (!sheet) return { error: 'sheet_not_found', sheet: sheetName };
+
+  var reading = Date.now();
+  var values = sheet.getDataRange().getValues();
+  perf.read_ms = (perf.read_ms || 0) + (Date.now() - reading);
+  perf.rows = (perf.rows || 0) + Math.max(values.length - 1, 0);
+  if (values.length < 2) return { rows: [] };
+
+  var headers = values[0];
+  return {
+    rows: values.slice(1).map(function (row) {
+      var obj = {};
+      headers.forEach(function (h, i) { obj[h] = row[i]; });
+      return obj;
+    })
+  };
+}
+
+/**
+ * 一次讀好幾張表（ADR-012 D-1／D-4）。不開放（NO_PWA_READ）或沒有功能權限的表
+ * 放進 denied，不報錯——前端把它當成「明確沒權限」，跟「讀取失敗」是兩件事。
+ * 分頁還不存在回空陣列，與 read 的 sheet_not_found 同義（前端一直當成「真的空」）。
+ */
+function readManyFrom_(ss, user, sheets, perf) {
+  var data = {};
+  var denied = [];
+  (Array.isArray(sheets) ? sheets : []).forEach(function (name) {
+    if (typeof name !== 'string' || data.hasOwnProperty(name) || denied.indexOf(name) !== -1) return;
+    if (NO_PWA_READ.indexOf(name) !== -1 || !canUseSheet_(user, name)) { denied.push(name); return; }
+    var read = sheetRecords_(ss, name, perf);
+    data[name] = read.error ? [] : withoutTombstones_(read.rows);
+  });
+  return { data: data, denied: denied };
+}
+
+/** 開機時一起帶回的資料表（line_users 另外放，它不是「資料」，是名單） */
+var BOOT_SHEETS = ['tasks', 'reviews', 'moods', 'notes', 'expenses'];
+
+/**
+ * boot（ADR-012 D-1／D-2）：一個請求帶回 session、名單、有權限的各表。
+ * 進到這裡之前 pwaCaller_ 已經驗過 token——驗證沒過，一張資料表都不會讀。
+ * 試算表只開一次。
+ */
+function bootResponse_(caller, perf) {
+  var opened = Date.now();
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  perf.open_ms = Date.now() - opened;
+
+  var users = sheetRecords_(ss, LINE_USERS_SHEET, perf);
+  var many = readManyFrom_(ss, caller.user, BOOT_SHEETS, perf);
+  perf.sheets = [LINE_USERS_SHEET].concat(BOOT_SHEETS).join(',');
+
+  var isAdmin = truthy_((caller.user || {}).is_admin);
+  var out = {
+    session: {
+      status: 'ok',
+      line_id: caller.line_id,
+      display_name: String((caller.user && caller.user.display_name) || '').trim(),
+      device_id: caller.device ? caller.device.device_id : '',
+      device_label: caller.device ? caller.device.device_label : '',
+      is_admin: isAdmin
+    },
+    line_users: users.error ? [] : withoutTombstones_(users.rows),
+    data: many.data,
+    denied: many.denied
+  };
+  if (isAdmin) out.perf_rows = perfRowCount_();
+  return out;
+}
+
+/** 沒有功能權限的寫入：擋下並留一列 logs（ADR-008 F-1「不可靜默失敗」的同一套做法） */
+function featureForbidden_(caller, action, sheetName) {
+  var feature = FEATURE_BY_SHEET[sheetName];
+  console.log('🚫 沒有功能權限：' + action + ' → ' + sheetName + ' / line_id=' + caller.line_id);
+  logTransaction_('同步', '失敗', 'PWA ' + action + ' → ' + sheetName,
+    '沒有「' + (FEATURE_LABEL[feature] || feature) + '」功能的權限，拒絕',
+    'code=forbidden｜' + feature, '', caller.line_id);
+  return { error: 'forbidden', sheet: sheetName };
 }
 
 // ===== 所有 PWA 請求：POST body = { token, sheet, action, ... } =====
@@ -368,9 +485,17 @@ function routePwaSync_(body, perf) {
   if (!caller.ok) return jsonOut({ error: caller.error, reason: caller.error });
   perf.who = { line_id: caller.line_id, device_id: caller.device ? caller.device.device_id : '' };
 
-  if (body.action === 'read') return jsonOut(readSheetResponse_(body.sheet, '', '', perf));
+  if (body.action === 'boot') return jsonOut(bootResponse_(caller, perf));
+  if (body.action === 'readMany') {
+    perf.sheets = Array.isArray(body.sheets) ? body.sheets.filter(function (x) { return typeof x === 'string'; }).join(',') : '';
+    var openedMany = Date.now();
+    var ssMany = SpreadsheetApp.getActiveSpreadsheet();
+    perf.open_ms = Date.now() - openedMany;
+    return jsonOut(readManyFrom_(ssMany, caller.user, body.sheets, perf));
+  }
+  if (body.action === 'read') return jsonOut(readSheetResponse_(body.sheet, '', '', perf, caller.user));
   if (body.action === 'readTombstones') {
-    return jsonOut(readSheetResponse_(body.sheet, 'tombstones', body.key_field, perf));
+    return jsonOut(readSheetResponse_(body.sheet, 'tombstones', body.key_field, perf, caller.user));
   }
   if (body.action === 'listDevices') return jsonOut(listDevices_(caller, body.line_id));
   if (body.action === 'revokeDevice') return jsonOut(revokeDevices_(caller, body.device_id, body.all_of));
@@ -383,6 +508,7 @@ function routePwaSync_(body, perf) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');
     return jsonOut({ error: 'sheet_not_writable', sheet: body.sheet });
   }
+  if (!canUseSheet_(caller.user, body.sheet)) return jsonOut(featureForbidden_(caller, body.action, body.sheet));
 
   var opened = Date.now();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1948,7 +2074,7 @@ function recordPerf_(body, perf, serverMs) {
       rows.push({
         action: String(body.action || ''), trigger: trigger, server_ms: serverMs,
         auth_ms: perf.auth_ms, open_ms: perf.open_ms, read_ms: perf.read_ms,
-        sheets: typeof body.sheet === 'string' ? body.sheet : '', rows: perf.rows
+        sheets: perf.sheets || (typeof body.sheet === 'string' ? body.sheet : ''), rows: perf.rows
       });
     }
     rows = rows.concat(clientPerfRows_(body.perf));

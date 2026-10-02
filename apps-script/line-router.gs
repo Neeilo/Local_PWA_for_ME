@@ -427,6 +427,14 @@ function routeLineMessage_(rawText, userId) {
   if (!route) {
     return '沒有這個前綴喔。\n' + supportedPrefixesMessage_() + '\n' + versionLine_();
   }
+
+  // 功能權限（ADR-012 D-3）：跟 PWA 同一張對照表、同一個 canUse_
+  var feature = FEATURE_BY_SHEET[route.sheetName];
+  if (!canUse_(lineUserById_(userId), feature)) {
+    var label = FEATURE_LABEL[feature] || feature;
+    logTransaction_(prefix, '失敗', text, '沒有「' + label + '」功能的權限', 'code=forbidden｜' + feature, '', userId);
+    return '你沒有「' + label + '」功能的權限。\n需要的話請管理者到 App 的「成員與權限」打開。';
+  }
   if (slash === -1) {
     var missing = '「' + prefix + '」後面要接內容喔。\n格式：' + route.usage;
     logTransaction_(prefix, '失敗', text, '缺少內容', '', '', userId);
@@ -646,7 +654,7 @@ function handleQuery_(question, rawText, userId) {
 
   var context;
   try {
-    context = buildQueryContext_();
+    context = buildQueryContext_(userId);
   } catch (err) {
     console.log('查詢組資料失敗：' + err);
     logTransaction_(QUERY_LOG_SOURCE, '失敗', rawText, '讀取資料失敗',
@@ -725,26 +733,35 @@ function windowStartKey_() {
  * 資料卻不知道自己拿的是半個月，然後自信地回答「這個月花了 X 元」——那個數字是錯的。
  * 答錯比答不出來更糟。彙總在 Apps Script 端算完再送，總額永遠精確，也只佔十來行。
  * 代價是問不了「上週四那筆 120 是什麼」這種單筆細節，這是已知且接受的取捨。
+ *
+ * 只組發話者有功能權限的模組（ADR-012 D-3）：沒權限的那張表連讀都不讀，
+ * 對應欄位是 null，提示詞那一段整段不出現。
  */
-function buildQueryContext_() {
+var QUERY_SHEETS = ['expenses', 'tasks', 'reviews', 'moods'];
+
+function buildQueryContext_(userId) {
   var since = windowStartKey_();
   var today = dateKey_(new Date());
-  var expenseRows = readSheet_('expenses');
+  var user = lineUserById_(userId);
+  var allowed = {};
+  QUERY_SHEETS.forEach(function (name) { allowed[name] = canUseSheet_(user, name); });
+  var expenseRows = allowed.expenses ? readSheet_('expenses') : [];
 
   return {
     since: since,
     today: today,
     monthStart: monthStartKey_(),
+    allowed: allowed,
     // 兩組期間都給：使用者最自然的問法是「這個月」，但 ADR 的窗口是「近 30 天」。
     // 只給後者的話，AI 會拿近 30 天的合計去回答「這個月」——數字包含上個月下旬，
     // 而且跟 App 首頁的「本月支出」對不起來。多算一組的成本只有幾行。
-    expenses: {
+    expenses: allowed.expenses ? {
       month: sumExpensesSince_(expenseRows, monthStartKey_()),
       window: sumExpensesSince_(expenseRows, since)
-    },
-    tasks: collectTasks_(readSheet_('tasks'), since),
-    reviews: collectReviews_(readSheet_('reviews'), since),
-    moods: summarizeMoods_(readSheet_('moods'), since)
+    } : null,
+    tasks: allowed.tasks ? collectTasks_(readSheet_('tasks'), since) : null,
+    reviews: allowed.reviews ? collectReviews_(readSheet_('reviews'), since) : null,
+    moods: allowed.moods ? summarizeMoods_(readSheet_('moods'), since) : null
   };
 }
 
@@ -841,6 +858,10 @@ function summarizeMoods_(rows, since) {
 
 function buildQueryPrompt_(ctx, question) {
   var lines = [];
+  // 舊的呼叫端沒有 allowed：當成全開，提示詞與改版前一字不差
+  var allowed = ctx.allowed || { expenses: true, tasks: true, reviews: true, moods: true };
+  var visible = QUERY_SHEETS.filter(function (name) { return allowed[name]; })
+    .map(function (name) { return FEATURE_LABEL[FEATURE_BY_SHEET[name]]; });
 
   lines.push('你是 Neil 個人系統的查詢助理。以下是他的資料，請用繁體中文回答最後的問題。');
   lines.push('');
@@ -849,39 +870,52 @@ function buildQueryPrompt_(ctx, question) {
   lines.push('- 回答控制在 5 行以內，這則訊息會顯示在 LINE 上。');
   lines.push('- 金額用阿拉伯數字加千分位，不要加貨幣符號以外的修飾。');
   lines.push('- 不要重複問題本身，直接給答案。');
-  lines.push('- 記帳有「本月」與「近 30 天」兩組統計，期間不同，絕對不可混用或相加：');
-  lines.push('  問「這個月」「本月」「九月」→ 用【本月】那組。');
-  lines.push('  問「最近」「這 30 天」「這陣子」→ 用【近 30 天】那組。');
-  lines.push('  問法沒有指明期間時，用【本月】那組，並在回答中說明是本月。');
+  if (visible.length < QUERY_SHEETS.length) {
+    // 沒權限的模組整段不給。不講清楚的話，AI 會把「沒資料」說成「花了 0 元」
+    lines.push('- 你只看得到以下模組：' + (visible.length ? visible.join('、') : '（無）') + '。' +
+      '其他模組的資料你看不到；被問到時回答「你沒有權限查看這個模組」，不要說成 0 或沒有記錄。');
+  }
+  if (allowed.expenses) {
+    lines.push('- 記帳有「本月」與「近 30 天」兩組統計，期間不同，絕對不可混用或相加：');
+    lines.push('  問「這個月」「本月」「九月」→ 用【本月】那組。');
+    lines.push('  問「最近」「這 30 天」「這陣子」→ 用【近 30 天】那組。');
+    lines.push('  問法沒有指明期間時，用【本月】那組，並在回答中說明是本月。');
+  }
   lines.push('');
   lines.push('今天是 ' + ctx.today + '。');
   lines.push('');
 
-  lines.push('【記帳彙總】以下兩組都是完整統計，未經截斷，可直接引用');
-  lines.push('');
-  lines.push('▍本月（' + ctx.monthStart + ' ~ ' + ctx.today + '）');
-  lines.push(expenseBlock_(ctx.expenses.month.expense, '支出'));
-  lines.push(expenseBlock_(ctx.expenses.month.income, '收入'));
-  lines.push('');
-  lines.push('▍近 ' + QUERY_WINDOW_DAYS + ' 天（' + ctx.since + ' ~ ' + ctx.today + '）');
-  lines.push(expenseBlock_(ctx.expenses.window.expense, '支出'));
-  lines.push(expenseBlock_(ctx.expenses.window.income, '收入'));
-  lines.push('');
+  if (allowed.expenses) {
+    lines.push('【記帳彙總】以下兩組都是完整統計，未經截斷，可直接引用');
+    lines.push('');
+    lines.push('▍本月（' + ctx.monthStart + ' ~ ' + ctx.today + '）');
+    lines.push(expenseBlock_(ctx.expenses.month.expense, '支出'));
+    lines.push(expenseBlock_(ctx.expenses.month.income, '收入'));
+    lines.push('');
+    lines.push('▍近 ' + QUERY_WINDOW_DAYS + ' 天（' + ctx.since + ' ~ ' + ctx.today + '）');
+    lines.push(expenseBlock_(ctx.expenses.window.expense, '支出'));
+    lines.push(expenseBlock_(ctx.expenses.window.income, '收入'));
+    lines.push('');
+  }
 
   // 逐筆的部分共用同一個上限：任務吃不完的額度才輪到複盤
+  var tasks = allowed.tasks ? ctx.tasks : { open: [], done: [] };
+  var allReviews = allowed.reviews ? ctx.reviews : [];
   var budget = QUERY_MAX_TOTAL_RECORDS;
-  var openTasks = ctx.tasks.open.slice(0, budget);
+  var openTasks = tasks.open.slice(0, budget);
   budget -= openTasks.length;
-  var doneTasks = ctx.tasks.done.slice(0, Math.max(0, Math.min(budget, 5)));
+  var doneTasks = tasks.done.slice(0, Math.max(0, Math.min(budget, 5)));
   budget -= doneTasks.length;
-  var reviews = ctx.reviews.slice(0, Math.max(0, budget));
+  var reviews = allReviews.slice(0, Math.max(0, budget));
 
-  lines.push('【未完成任務】共 ' + ctx.tasks.open.length + ' 筆' +
-    (ctx.tasks.open.length > openTasks.length ? '，以下列出優先度最高的 ' + openTasks.length + ' 筆' : ''));
-  lines.push(openTasks.length
-    ? openTasks.map(function (t) { return '・[' + t.priority + '] ' + t.text; }).join('\n')
-    : '（沒有未完成的任務）');
-  lines.push('');
+  if (allowed.tasks) {
+    lines.push('【未完成任務】共 ' + tasks.open.length + ' 筆' +
+      (tasks.open.length > openTasks.length ? '，以下列出優先度最高的 ' + openTasks.length + ' 筆' : ''));
+    lines.push(openTasks.length
+      ? openTasks.map(function (t) { return '・[' + t.priority + '] ' + t.text; }).join('\n')
+      : '（沒有未完成的任務）');
+    lines.push('');
+  }
 
   if (doneTasks.length) {
     lines.push('【近 ' + QUERY_WINDOW_DAYS + ' 天內已完成的任務】');
@@ -889,19 +923,21 @@ function buildQueryPrompt_(ctx, question) {
     lines.push('');
   }
 
-  lines.push('【近 ' + QUERY_WINDOW_DAYS + ' 天的複盤】共 ' + ctx.reviews.length + ' 則' +
-    (ctx.reviews.length > reviews.length ? '，以下列出最近 ' + reviews.length + ' 則' : ''));
-  lines.push(reviews.length
-    ? reviews.map(function (r) {
-        return '・' + toDateKey_(r.review_date) +
-          '｜做得好：' + truncate_(String(r.good || '—'), 60) +
-          '｜卡住：' + truncate_(String(r.stuck || '—'), 60) +
-          '｜最重要：' + truncate_(String(r.most_important || '—'), 60);
-      }).join('\n')
-    : '（期間內沒有複盤記錄）');
-  lines.push('');
+  if (allowed.reviews) {
+    lines.push('【近 ' + QUERY_WINDOW_DAYS + ' 天的複盤】共 ' + allReviews.length + ' 則' +
+      (allReviews.length > reviews.length ? '，以下列出最近 ' + reviews.length + ' 則' : ''));
+    lines.push(reviews.length
+      ? reviews.map(function (r) {
+          return '・' + toDateKey_(r.review_date) +
+            '｜做得好：' + truncate_(String(r.good || '—'), 60) +
+            '｜卡住：' + truncate_(String(r.stuck || '—'), 60) +
+            '｜最重要：' + truncate_(String(r.most_important || '—'), 60);
+        }).join('\n')
+      : '（期間內沒有複盤記錄）');
+    lines.push('');
+  }
 
-  if (ctx.moods.count) {
+  if (allowed.moods && ctx.moods.count) {
     lines.push('【心情】近 ' + QUERY_WINDOW_DAYS + ' 天記錄 ' + ctx.moods.count + ' 次，平均 ' + ctx.moods.avg + ' 分（1 最低、5 最高）');
     lines.push('');
   }
