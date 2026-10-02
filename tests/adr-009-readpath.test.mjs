@@ -16,7 +16,8 @@ import { loadFrontend } from './fake-browser.mjs';
 
 const ME = 'Uneil';
 
-/** 依分頁餵資料的假雲端。sheets 沒列到的分頁回空陣列（ADR-010 起讀取走 POST action=read） */
+/** 依分頁餵資料的假雲端。sheets 沒列到的分頁回空陣列。
+    ADR-012 起 pull 走 readMany；測試環境會拿這裡逐張的回答拼成 readMany（見 fake-browser.mjs） */
 function cloudWith(sheets, { failOn = null } = {}) {
   return ({ body }) => {
     if (!body || body.action !== 'read') return null;   // 不是讀取，交給預設（寫入一律成功）
@@ -41,28 +42,29 @@ const TASK = (id, text) => ({ id, text, is_completed: '', created_at: '2026-09-1
 describe('⚠️ 讀取失敗不可以偽裝成空表', () => {
 
   test('整批讀取失敗時原地不動，不會把資料清光', async () => {
-    const e = env(cloudWith({ tasks: [TASK('1', '原有的')] }));
+    let offline = false;
+    const cloud = cloudWith({ tasks: [TASK('1', '原有的')] });
+    const e = env((req) => (offline ? { json: () => Promise.reject(new Error('offline')) } : cloud(req)));
     await e.callRaw('pullFromCloud');
     assert.equal(e.read('state.tasks.length'), 1, '先確認正常時讀得到');
 
     // 現在斷線
-    e.raw('cloudGet = function(){ return Promise.reject(new Error("offline")); }');
+    offline = true;
     await e.callRaw('pullFromCloud');
 
     assert.equal(e.read('state.tasks.length'), 1, '讀不到就原地不動——這是最貴的那個錯');
     assert.equal(e.read('cloudOnline'), false);
   });
 
-  test('只要有一張表讀失敗，整次 pull 就不算數', async () => {
+  test('回應缺了一張表，整次 pull 就不算數（ADR-012 起五張表一個請求）', async () => {
     const e = env(cloudWith({ tasks: [TASK('1', '原有的')] }));
     await e.callRaw('pullFromCloud');
 
-    // notes 掛掉，其餘正常——不可以只更新一半
-    const half = cloudWith({ tasks: [] }, { failOn: 'notes' });
-    e.set('fetch', (url, options) => {
-      const r = half({ url: String(url), body: JSON.parse(options.body), options });
-      return Promise.resolve(r || { json: () => Promise.resolve({ success: true }) });
-    });
+    // notes 不見了，其餘正常——不可以只更新一半，更不可以把 notes 當成空的
+    e.set('fetch', (url, options) => Promise.resolve({ json: () => Promise.resolve(
+      JSON.parse(options.body).action === 'readMany'
+        ? { data: { tasks: [], reviews: [], moods: [], expenses: [] }, denied: [] }
+        : { success: true }) }));
     await e.callRaw('pullFromCloud');
 
     assert.equal(e.read('state.tasks.length'), 1, 'tasks 回了空陣列，但整次不算數，所以不該被清掉');
@@ -86,7 +88,7 @@ describe('⚠️ 讀取失敗不可以偽裝成空表', () => {
     await e.callRaw('pullFromCloud');
 
     e.set('fetch', (url, options) => Promise.resolve(
-      JSON.parse(options.body).action === 'read'
+      JSON.parse(options.body).action === 'readMany'
         ? { json: () => Promise.resolve({ error: 'server_misconfigured' }) }
         : { json: () => Promise.resolve({ success: true }) }
     ));
@@ -101,16 +103,13 @@ describe('⚠️ 讀取失敗不可以偽裝成空表', () => {
 describe('雲端是真相：pull 是覆蓋不是合併', () => {
 
   test('別人刪掉的東西會消失——這是改版前做不到的', async () => {
-    const e = env(cloudWith({ tasks: [TASK('1', '甲'), TASK('2', '乙')] }));
+    const sheets = { tasks: [TASK('1', '甲'), TASK('2', '乙')] };
+    const e = env(cloudWith(sheets));
     await e.callRaw('pullFromCloud');
     assert.equal(e.read('state.tasks.length'), 2);
 
     // 另一支手機把「乙」軟刪除了，後端的讀取從此不再回傳它
-    e.set('fetch', (url, options) => Promise.resolve(
-      JSON.parse(options.body).sheet === 'tasks'
-        ? { json: () => Promise.resolve({ data: [TASK('1', '甲')] }) }
-        : { json: () => Promise.resolve({ data: [] }) }
-    ));
+    sheets.tasks = [TASK('1', '甲')];
     await e.callRaw('pullFromCloud');
 
     assert.deepEqual(e.read('state.tasks').map(t => t.txt), ['甲'],

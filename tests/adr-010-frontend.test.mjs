@@ -35,6 +35,7 @@ function env(handler = () => null, { storage = {} } = {}) {
     fetchImpl: ({ body }) => {
       const out = handler(body || {});
       if (out) return json(out);
+      if (body && body.action === 'readMany') return null;   // 交給測試環境拿逐張 read 的回答拼（fake-browser.mjs）
       return json(body && body.action === 'read' ? { data: [] } : { success: true });
     }
   });
@@ -50,7 +51,10 @@ const actions = (e, name) => e.calls.filter((c) => c.body && c.body.action === n
 /* ========================================================================== */
 describe('⚠️ 認證失敗不可以偽裝成空表', () => {
 
-  for (const code of ['token_expired', 'revoked', 'inactive', 'unknown_token']) {
+  // 過期與停用是「暫時進不來」：畫面原地不動。
+  // 撤銷與認不得的 token 是「這台不再屬於誰」：ADR-012 D-8 起 forgetDevice 會刻意清掉畫面與待送，
+  // 那是明確的決定，不是把讀取失敗當成空表——見下一組測試。
+  for (const code of ['token_expired', 'inactive']) {
     test(code + '：pull 原地不動，畫面上的資料不會被清掉', async () => {
       let fail = false;
       const e = env((b) => {
@@ -70,10 +74,28 @@ describe('⚠️ 認證失敗不可以偽裝成空表', () => {
     });
   }
 
-  test('cloudGet 在認證失敗時是 reject，不是 resolve([])', async () => {
-    const e = env((b) => (b.action === 'read' ? { error: 'revoked' } : null));
-    await assert.rejects(e.callRaw('cloudGet', 'tasks'), /revoked/);
-  });
+  for (const code of ['revoked', 'unknown_token']) {
+    test(code + '：這次讀取不算數；畫面與待送佇列由 forgetDevice 刻意清掉（ADR-012 D-8）', async () => {
+      let fail = false;
+      const e = env((b) => {
+        if (b.action === 'read' && fail) return { error: code };
+        if (b.action === 'read' && b.sheet === 'tasks') return { data: [TASK('1', '原有的')] };
+        return null;
+      });
+      await e.callRaw('pullFromCloud');
+      e.raw('outbox = [{sheet:"notes", key_field:"id", seq:1, record:{id:"9", text:"還沒送"}}]; persistOutbox()');
+
+      fail = true;
+      const ok = await e.callRaw('pullFromCloud');
+      await settle();
+      assert.equal(ok, false, '認證失敗不算一次成功的讀取');
+      assert.equal(e.read('cloudOnline'), false);
+      assert.equal(e.read('gateMode'), 'pair');
+      assert.equal(e.read('state.tasks.length'), 0, '被撤銷的手機不該留著資料副本');
+      assert.equal(e.call('pendingCount'), 0, '也不該替下一個配對的人補送前一個人的東西');
+      assert.equal(e.localStorage.getItem('personal-os-outbox-v1'), '[]');
+    });
+  }
 
   test('LOG 頁：認證失敗算讀取失敗，不畫成「還沒有任何記錄」', async () => {
     const e = env((b) => (b.action === 'read' ? { error: 'token_expired' } : null));
@@ -144,7 +166,7 @@ describe('認證失敗的去向', () => {
     test(code + ' → 清掉 token 與快取的身份，回配對畫面', async () => {
       const e = env((b) => (b.action === 'read' ? { error: code } : null));
       e.localStorage.setItem('personal-os-line-id', ME);
-      await e.callRaw('cloudGet', 'tasks').catch(() => {});
+      await e.callRaw('pullFromCloud');
       assert.equal(e.read('gateMode'), 'pair');
       assert.equal(e.read('deviceToken'), null);
       assert.equal(e.read('myLineId'), null);
@@ -155,7 +177,7 @@ describe('認證失敗的去向', () => {
 
   test('inactive → 「等管理者」畫面，但 token 留著：停用＝暫停，重新啟用就自動恢復（D-7）', async () => {
     const e = env((b) => (b.action === 'read' ? { error: 'inactive' } : null));
-    await e.callRaw('cloudGet', 'tasks').catch(() => {});
+    await e.callRaw('pullFromCloud');
     assert.equal(e.read('gateMode'), 'inactive');
     assert.equal(e.read('deviceToken'), TOKEN);
     assert.equal(e.localStorage.getItem('personal-os-device-token'), TOKEN);
@@ -182,10 +204,12 @@ describe('認證失敗的去向', () => {
 /* ========================================================================== */
 describe('身份只從雲端的回應來', () => {
 
-  test('session 說你是誰就是誰；localStorage 裡的舊 line_id 不算數', async () => {
-    const e = env((b) => (b.action === 'session' ? { status: 'ok', line_id: ME, device_id: 'd9' } : null));
+  test('boot 說你是誰就是誰；localStorage 裡的舊 line_id 不算數', async () => {
+    const e = env((b) => (b.action === 'boot'
+      ? { session: { status: 'ok', line_id: ME, device_id: 'd9' }, line_users: [], data: { tasks: [], reviews: [], moods: [], notes: [], expenses: [] }, denied: [] }
+      : null));
     e.raw('myLineId = "Usomeone_else"');
-    const ok = await e.callRaw('checkSession');
+    const ok = await e.callRaw('startSession');
     assert.equal(ok, true);
     assert.equal(e.read('myLineId'), ME);
     assert.equal(e.read('myDeviceId'), 'd9');
@@ -210,14 +234,14 @@ describe('身份只從雲端的回應來', () => {
     const e = loadFrontend();
     e.raw('applyIdentity = function(){}');
     e.call('loadIdentity');
-    await e.callRaw('checkSession');
+    await e.callRaw('startSession', 'cold');
     assert.equal(e.read('gateMode'), 'pair');
     assert.equal(e.calls.length, 0, '沒有 token 就不必問雲端');
 
     e.call('useLocalOnly');
     assert.equal(e.read('gateMode'), null);
     e.call('loadIdentity');
-    await e.callRaw('checkSession');
+    await e.callRaw('startSession', 'cold');
     assert.equal(e.read('gateMode'), null);
   });
 });
@@ -245,9 +269,11 @@ describe('每個請求都帶 token、都走 POST', () => {
     await e.callRaw('completeRecurringTask', { id: 2, txt: 'y', done: true, ts: 1, due: '2026-09-30', recurN: '1', recurUnit: '月' });
     await settle();
 
-    assert.ok(e.calls.length >= 10);
-    assert.ok(e.calls.some((c) => c.body.action === 'archiveMail'), '前提：封存真的有送出去');
-    assert.ok(e.calls.some((c) => c.body.action === 'setMyEmail'), '前提：email 真的有送出去');
+    // ADR-012 起五張表合成一個 readMany，請求數變少了；改成點名每一種都真的送出去
+    const sent = new Set(e.calls.map((c) => c.body.action));
+    for (const a of ['readMany', 'read', 'upsert', 'archiveMail', 'setMyEmail', 'completeRecurring']) {
+      assert.ok(sent.has(a), '前提：' + a + ' 真的有送出去');
+    }
     for (const c of e.calls) {
       assert.equal(c.options && c.options.method, 'POST', '不該再有 GET：' + c.url);
       assert.equal(c.url.includes('?'), false, '參數都在 body，不在網址');

@@ -24,6 +24,12 @@ const TOKEN = 'tok-test-device';
 const DATA_SHEETS = ['tasks', 'reviews', 'moods', 'notes', 'expenses'];
 
 const json = (v) => ({ json: () => Promise.resolve(v) });
+const BOOT_OK = (extra = {}) => Object.assign({
+  session: { status: 'ok', line_id: ME, device_id: 'dev-0' },
+  line_users: [{ line_id: ME, display_name: 'Neil', is_active: 'TRUE', is_admin: 'TRUE' }],
+  data: { tasks: [], reviews: [], moods: [], notes: [], expenses: [] },
+  denied: []
+}, extra);
 
 async function settle(rounds = 50) {
   for (let i = 0; i < rounds; i++) await new Promise((r) => setImmediate(r));
@@ -36,6 +42,8 @@ function env(handler = () => null) {
       const out = handler(body || {});
       if (out) return out.__reject ? Promise.reject(new Error('offline')) : json(out);
       if (body && body.action === 'session') return json({ status: 'ok', line_id: ME, device_id: 'dev-0' });
+      if (body && body.action === 'boot') return json(BOOT_OK());
+      if (body && body.action === 'readMany') return null;   // 測試環境拿逐張 read 的回答拼
       return json(body && body.action === 'read' ? { data: [] } : { success: true });
     }
   });
@@ -51,20 +59,16 @@ const pending = (e) => e.read('perfPending');
 /* ========================================================================== */
 describe('請求帶 trigger', () => {
 
-  test('開 App：session、名單、五張表都帶 cold；完成後記一筆 startup', async () => {
+  test('開 App：只發一個 boot（帶 cold），完成後記一筆 boot/cold', async () => {
     const e = env();
     await e.callRaw('startSession', 'cold');
     await settle();
-    const s = bodies(e, (b) => b.action === 'session');
-    assert.equal(s.length, 1);
-    assert.equal(s[0].trigger, 'cold');
-    const reads = bodies(e, (b) => b.action === 'read');
-    assert.deepEqual(reads.map((b) => b.sheet).sort(), ['line_users'].concat(DATA_SHEETS).sort());
-    assert.ok(reads.every((b) => b.trigger === 'cold'), '每個讀取都帶 cold');
+    assert.deepEqual(e.calls.map((c) => c.body.action), ['boot'], 'ADR-012：3 輪 7 個請求 → 1 個');
+    assert.equal(e.calls[0].body.trigger, 'cold');
 
     const p = pending(e);
     assert.equal(p.length, 1);
-    assert.equal(p[0].action, 'startup');
+    assert.equal(p[0].action, 'boot');
     assert.equal(p[0].trigger, 'cold');
     assert.equal(typeof p[0].client_ms, 'number');
   });
@@ -76,12 +80,13 @@ describe('請求帶 trigger', () => {
     assert.match(init, /startSession\('foreground'\)/);
   });
 
-  test('手動刷新：五張表帶 manual，記一筆 pull/manual', async () => {
+  test('手動刷新：一個 readMany（五張表，不含名單）帶 manual，記一筆 pull/manual', async () => {
     const e = env();
     await e.callRaw('manualRefresh');
     await settle();
-    const reads = bodies(e, (b) => b.action === 'read');
-    assert.equal(reads.length, 5);
+    const reads = bodies(e, (b) => b.action === 'readMany');
+    assert.equal(reads.length, 1);
+    assert.deepEqual(reads[0].sheets, DATA_SHEETS);
     assert.ok(reads.every((b) => b.trigger === 'manual' && !('perf_sample' in b)));
     assert.deepEqual(pending(e).map((p) => p.action + '/' + p.trigger), ['pull/manual']);
   });
@@ -119,19 +124,20 @@ describe('請求帶 trigger', () => {
 /* ========================================================================== */
 describe('輪詢取樣：20 次記 1 次', () => {
 
-  test('20 輪：每輪 5 個讀取都帶 poll；只有第 20 輪帶 perf_sample，也只記一筆', async () => {
+  test('20 輪：每輪一個 readMany 帶 poll；只有第 20 輪帶 perf_sample，也只記一筆', async () => {
     const e = env();
     for (let i = 0; i < 20; i++) {
       await e.callRaw('pollTick');
       await settle();
       // 夾帶的紀錄由下一個請求帶走；這裡把它取回來數，免得被下一輪帶走
     }
-    const reads = bodies(e, (b) => b.action === 'read');
-    assert.equal(reads.length, 100);
+    const reads = bodies(e, (b) => b.action === 'readMany');
+    assert.equal(reads.length, 20, '輪詢一輪只發 1 個請求（ADR-012 D-4）');
     assert.ok(reads.every((b) => b.trigger === 'poll'));
+    assert.ok(reads.every((b) => !b.sheets.includes('line_users')), '名單不放進輪詢');
     const sampled = reads.filter((b) => b.perf_sample === true);
-    assert.equal(sampled.length, 5, '只有一輪（五張表）帶 perf_sample');
-    assert.deepEqual(reads.slice(95).map((b) => b.perf_sample), [true, true, true, true, true], '是第 20 輪');
+    assert.equal(sampled.length, 1, '只有一輪帶 perf_sample');
+    assert.equal(reads[19].perf_sample, true, '是第 20 輪');
 
     const carried = e.calls.flatMap((c) => (c.body && c.body.perf) || []);
     const all = carried.concat(pending(e));
@@ -139,7 +145,7 @@ describe('輪詢取樣：20 次記 1 次', () => {
   });
 
   test('讀取失敗的那輪：不記耗時', async () => {
-    const e = env((b) => (b.action === 'read' ? { __reject: true } : null));
+    const e = env((b) => (b.action === 'readMany' ? { __reject: true } : null));
     e.raw('perfPollCount = 19');
     await e.callRaw('pollTick');
     await settle();
@@ -215,10 +221,9 @@ describe('夾在下一個請求裡', () => {
 /* ========================================================================== */
 describe('管理員：門檻提醒與效能頁', () => {
 
-  test('session 回的 perf_rows 記下來；超過 5,000 才提醒，而且只提醒管理員', async () => {
-    const e = env((b) => (b.action === 'session' ? { status: 'ok', line_id: ME, device_id: 'dev-0', perf_rows: 5001 } : null));
-    e.raw('roster = [{line_id:"' + ME + '", display_name:"Neil", is_active:"TRUE", is_admin:"TRUE"}]');
-    await e.callRaw('checkSession', 'cold');
+  test('boot 回的 perf_rows 記下來；超過 5,000 才提醒，而且只提醒管理員', async () => {
+    const e = env((b) => (b.action === 'boot' ? BOOT_OK({ perf_rows: 5001 }) : null));
+    await e.callRaw('startSession', 'cold');
     assert.equal(e.read('perfRows'), 5001);
     assert.equal(e.call('perfAlertNeeded'), true);
     assert.equal(e.read('PERF_ALERT_ROWS'), 5000);

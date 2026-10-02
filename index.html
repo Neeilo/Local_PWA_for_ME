@@ -557,6 +557,13 @@
 .due-pick summary{ cursor:pointer; opacity:.75; }
 .due-row{ display:flex; align-items:center; gap:6px; margin-top:8px; flex-wrap:wrap; }
 .due-row input[type=number]{ width:64px; }
+.boot-progress{ position:absolute; left:0; right:0; top:0; height:3px; overflow:hidden; }
+.boot-progress .bar{ height:100%; width:0; background:var(--accent); }
+.boot-progress-msg{ margin-top:6px; font-size:12px; color:var(--muted); }
+.skel i{ display:block; height:12px; border-radius:6px; background:var(--line); margin:10px 0; animation:skel-pulse 1.2s ease-in-out infinite; }
+.skel i:nth-child(2){ width:80%; }
+.skel i:nth-child(3){ width:55%; }
+@keyframes skel-pulse{ 50%{ opacity:.45; } }
 .conn-banner{
   margin-top:6px; padding:6px 12px; border-radius:10px; font-size:13px; line-height:1.5;
   background:rgba(255,92,92,.14); color:#b03030; border:1px solid rgba(255,92,92,.3);
@@ -610,12 +617,14 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
 </div>
 
 <header>
+  <div class="boot-progress" id="bootProgress" hidden><div class="bar"></div></div>
   <div class="eyebrow" id="todayLabel"></div>
   <h1 id="viewTitle">首頁</h1>
   <!-- 送不出去的東西要看得見。改版前整包 replaceAll 天生有重試，失敗是無感的；
        改成單筆之後，沒有這一行就沒有人知道有東西卡著（DATA-02）。 -->
   <div class="sync-badge" id="syncBadge" hidden></div>
   <div class="conn-banner" id="connBanner" hidden></div>
+  <div class="boot-progress-msg" id="bootProgressMsg" hidden></div>
   <button class="refresh-btn" id="refreshBtn" onclick="manualRefresh()" title="重新整理">↻</button>
   <div class="pulse" id="pulse"></div>
   <div class="pulse-label" id="pulseLabel">近 14 天心情脈搏</div>
@@ -709,7 +718,7 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       </div>
       <div class="slot-fixed">改動即時寫回 <b>line_users</b>，其他人最多等 5 分鐘生效。</div>
       <div id="adminRows"></div>
-      <p class="slot-hint">功能權限只控制導覽列顯不顯示，擋不住直接打 API 的人——家人之間夠用，不是資安邊界。</p>
+      <p class="slot-hint">功能權限由雲端把關：關掉的模組讀不到、寫不進，LINE 的前綴與「查/」也一樣。</p>
     </div>
 
     <!-- ⑥ 效能紀錄（僅 is_admin，ADR-012 D-7）。摘要由雲端算好，按了才抓——平常開 App 不為它多發請求。
@@ -898,7 +907,9 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
 <div class="toast" id="toast"></div>
 
 <script>
-const STORAGE_KEY = 'personal-os-state-v1'; // 保持相同 key，向下相容
+/* 舊版的整份本機快照。ADR-009 起不再讀回，ADR-012 D-8 起也不再寫：開機時刪掉，
+   被撤銷的手機才不會一直留著一份資料副本。待送佇列（personal-os-outbox-v1）另外存，不受影響 */
+const STORAGE_KEY = 'personal-os-state-v1';
 const CLOUD_URL = '__CLOUD_URL__';
 const MOOD_EMOJI = ['😞','😕','😐','🙂','😄'];
 
@@ -936,8 +947,9 @@ let navPlacement = Object.assign({}, DEFAULT_PLACEMENT);
                     myLineId 一律由後端的 session 回答。
      白名單（D-1）  「誰能讀寫」。把關在 Apps Script：token 先換出 line_id，
                     再過 writeGate_。前端這邊沒有任何可以自己宣告的東西。
-     功能矩陣（E-2）「誰看得到哪些分頁」。**只做前端隱藏**，後端不驗證。
-                    被繞過的代價僅止於「多看了一個空白分頁」。 */
+     功能矩陣（ADR-012 D-3）「誰能用哪些模組」。雲端的 canUse_ 把關：關掉的表
+                    讀不到、寫不進。前端的 featureAllowed 只負責把導覽藏好，
+                    兩邊的判斷一字不差（有測試釘住）。 */
 const DEVICE_TOKEN_KEY = 'personal-os-device-token';
 // session 回傳後的快取，只為了開機時先把名字畫上去；沒有 token 時不算數
 const LINE_ID_KEY = 'personal-os-line-id';
@@ -954,6 +966,11 @@ const FEATURE_BY_VIEW = {
 };
 // 標籤直接沿用 NAV_ITEMS，避免同一個名字在兩個地方各寫一次、改了一邊忘了另一邊
 const FEATURE_KEYS = NAV_ITEMS.map(function(it){ return FEATURE_BY_VIEW[it.view]; });
+/* 導覽頁 ↔ 雲端分頁。雲端回的 denied 是分頁名（ADR-012 D-4） */
+const SHEET_BY_VIEW = { expenses:'expenses', notes:'notes', tasks:'tasks', review:'reviews', logs:'logs', mood:'moods' };
+const DATA_SHEETS = ['tasks','reviews','moods','notes','expenses'];
+/* 雲端明說「沒權限」的分頁。跟讀取失敗是兩件事：這裡的會被清空、待送的會被丟掉 */
+let cloudDenied=[];
 const FEATURE_LABEL = {};
 NAV_ITEMS.forEach(function(it){ FEATURE_LABEL[FEATURE_BY_VIEW[it.view]] = it.icon + ' ' + it.label; });
 
@@ -1005,6 +1022,7 @@ function hasFeatureMatrix(u){
 }
 function featureAllowed(view){
   if(view==='home') return true;
+  if(cloudDenied.includes(SHEET_BY_VIEW[view])) return false;   // 雲端明說沒權限（名單快取可能還沒跟上）
   const key=FEATURE_BY_VIEW[view];
   if(!key) return true;
   const u=myUser();
@@ -1025,7 +1043,7 @@ function loadIdentity(){
 /* ---------- 雲端請求的唯一出口（ADR-010 D-9） ----------
    讀寫都是 POST、token 都放 body（Apps Script 讀不到 Header）。認證錯誤在這裡
    統一轉進配對／續期畫面，呼叫端只要知道「這次不算數」——**絕不能把它當成空資料**，
-   cloudGet 上方那段註解說的事，換了門也一樣。
+   pullFromCloud 上方那段註解說的事，換了門也一樣。
 
    配對、續期、查狀態這三個動作的錯誤是它們自己的畫面在處理，不在這裡轉場。 */
 const AUTH_ERRORS = ['no_token','unknown_token','revoked','inactive','token_expired'];
@@ -1088,45 +1106,64 @@ const FORGET_NOTICE = {
 function forgetDevice(reason){
   deviceToken=null; myLineId=null; myDeviceId=null;
   try{ localStorage.removeItem(DEVICE_TOKEN_KEY); localStorage.removeItem(LINE_ID_KEY); }catch(e){}
+  // 這台不再屬於誰了：手上的資料與還沒送的工作一起清掉（ADR-012 D-8），
+  // 不然被撤銷的手機還留著一份別人看得到的副本，下一個配對的人還會替前一個人補送
+  outbox=[]; persistOutbox();
+  state=EMPTY_STATE(); cloudDenied=[]; firstLoadDone=false;
   stopRenewPoll();
   applyIdentity();
   openAuthGate('pair', FORGET_NOTICE[reason]||'');
 }
 
-/* 開機、回前景都先問一次「這把 token 現在是什麼狀態」。身份由它決定。
-   離線問不到就沿用快取的 line_id 先畫畫面——同步本來就送不出去，連線橫幅會講清楚。 */
-async function checkSession(trigger){
+/* 開機、回前景：一個 boot 請求帶回身份、名單、資料（ADR-012 D-1，3 輪 → 1 輪）。
+   沒有 token 就直接叫出配對蓋版，不必問雲端。
+
+   同一時間只跑一趟：冷啟動還沒回來、回前景又觸發的話，等同一趟就好。
+   2026-10-01 的效能紀錄裡有一筆開機 38 秒，就是兩趟疊在一起跑。 */
+let bootPromise=null;
+function startSession(trigger){
+  if(gateMode==='renew') return pollRenewal();
   if(!deviceToken){
     applyIdentity();
     if(!localOnly) openAuthGate('pair');
-    return false;
+    return Promise.resolve(false);
   }
-  let j=null;
-  try{ j=await cloudPost({action:'session', trigger}); }catch(e){ return false; }
-  if(!j) return false;
-  if(j.status==='ok'){
-    myLineId=j.line_id; myDeviceId=j.device_id||null;
-    perfRows = typeof j.perf_rows==='number' ? j.perf_rows : 0;   // 只有管理員會拿到
-    try{ localStorage.setItem(LINE_ID_KEY, myLineId); }catch(e){}
-    if(gateMode) closeAuthGate();
-    return true;
-  }
-  if(AUTH_ERRORS.includes(j.status)) handleAuthError(j.status);
-  return false;
+  if(bootPromise) return bootPromise;
+  const started=Date.now();
+  const showBar = trigger==='cold' || trigger==='foreground';
+  if(showBar) progressStart();
+  bootPromise=runBoot(trigger).then(ok=>{
+    if(ok && trigger) perfNote('boot', trigger, Date.now()-started);
+    return ok;
+  }).finally(()=>{
+    bootPromise=null; lastPullAt=Date.now();
+    if(showBar) progressDone();
+  });
+  return bootPromise;
 }
 
-/* 身份確定之後的標準流程：名單 → 資料 → 補送。蓋版開著（要配對、在續期、被停用）就先不動。
-   trigger（cold／foreground）有給才記耗時：從問 session 到畫面更新，人等了多久 */
-function startSession(trigger){
-  if(gateMode==='renew') return pollRenewal();
-  const started=Date.now();
-  return checkSession(trigger).then(()=>{
-    if(gateMode) return;
-    return refreshRoster(trigger).then(()=>syncFromCloud(trigger?{trigger}:undefined)).then(ok=>{
-      if(ok && trigger) perfNote('startup', trigger, Date.now()-started);
-      return flushOutbox();
-    });
-  });
+/* 套用順序：身份 → 名單 → 資料 → 補送。
+   失敗、被擋、回應缺欄位，一律「這次不算數、原地不動」——**絕不能變成空陣列清掉畫面**
+   （見 pullFromCloud 上方的註解）。認證錯誤 cloudPost 已經帶去對的畫面了。 */
+async function runBoot(trigger){
+  let j=null;
+  try{ j=await cloudPost(trigger ? {action:'boot', trigger} : {action:'boot'}); }catch(e){ j=null; }
+  const s=j && j.session;
+  if(!s || s.status!=='ok' || !s.line_id || !Array.isArray(j.line_users) || !j.data || typeof j.data!=='object'){
+    rosterStatus='unavailable';
+    applyIdentity();
+    return pullFailed();
+  }
+  myLineId=s.line_id; myDeviceId=s.device_id||null;
+  try{ localStorage.setItem(LINE_ID_KEY, myLineId); }catch(e){}
+  perfRows = typeof j.perf_rows==='number' ? j.perf_rows : 0;   // 只有管理員會拿到
+  if(gateMode) closeAuthGate();
+  roster=j.line_users.filter(u=>rosterId(u));
+  rosterStatus = activeUsers().length ? 'ok' : 'empty';
+  const ok=applyCloudData(j.data, j.denied);
+  applyIdentity();
+  if(ok) flushOutbox();
+  return ok;
 }
 
 /**
@@ -1453,7 +1490,7 @@ function claimOrphans(){
     state.reviews[nk]=r;
     pushReview(nk);
   });
-  save(); applyIdentity(); toast(`已認領 ${n} 筆`);
+  applyIdentity(); toast(`已認領 ${n} 筆`);
 }
 
 /* ---------- 只看我的／全部（ADR-008 C-3） ----------
@@ -1592,7 +1629,7 @@ function renderAdminCard(){
           <button class="${on?'on':''}" onclick="toggleAdminFlag(${i},'is_active')">✅ 可寫入</button>
           <button class="danger ${truthy(u.is_admin)?'on':''}" onclick="toggleAdminFlag(${i},'is_admin')">🔐 管理者</button>
         </div>
-        <div class="adm-sec">可用功能（關掉只是藏起導覽入口，不擋寫入）</div>
+        <div class="adm-sec">可用功能（關掉＝讀不到也寫不進，LINE 也一樣）</div>
         <div class="adm-grid">${feats}</div>
         <div class="adm-sec">已配對的裝置</div>
         ${adminDevicesHtml(i, id)}
@@ -1775,48 +1812,11 @@ function reviewOwnerOf(key){
 }
 /* 既有任務首次載入補上預設優先度 M（ADR-004 §3） */
 function migrate(){
-  let changed=false;
   state.tasks.forEach(t=>{
-    if(!PRIORITIES.includes(t.priority)){ t.priority=DEFAULT_PRIORITY; changed=true; }
-  });
-  if(changed){
-    try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); }catch(e){}
-  }
-}
-let saveTimer=null;
-/* 只寫本機了——雲端那一半改由各模組自己送單筆 upsert（ADR-009 §一.2）。
-   localStorage 從「權威來源」降級成「還沒送出去的東西的落腳處」：畫面的真相
-   在雲端，但你剛打的字在送出去之前只存在這支手機上，那一段不能沒有地方放。 */
-function save(){
-  clearTimeout(saveTimer);
-  saveTimer=setTimeout(()=>{
-    try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); }
-    catch(e){ toast('⚠️ 儲存失敗，空間可能已滿'); }
-  },250);
-}
-
-/* ---------- 雲端讀取（tasks／reviews／moods／notes／expenses） ---------- */
-/* ⚠️ 這支函式的錯誤處理是整個改版最危險的一處，改之前先讀完這段。
-
-   改版前它把任何失敗都吞掉、回傳空陣列，那時無所謂——合併規則是「只補不刪」，
-   回空陣列什麼事都不會發生。現在雲端是真相、pull 是覆蓋式的，「回空陣列」的
-   意思變成「這張表本來就沒東西」，於是一次網路抖動就會把五張表全部清空。
-
-   所以失敗一律往上拋，讓 pullFromCloud 知道這次讀取不算數、原地不動。
-   唯一被當成「真的空」的是 sheet_not_found：那張分頁還沒被建出來，確實沒東西。
-
-   ADR-010 之後多了一類失敗：認證（過期、撤銷、停用）。規則一樣——往上拋，
-   **絕不能變成空陣列**。cloudPost 已經把人帶去續期／配對畫面，這裡只負責不算數。 */
-function cloudGet(sheet, meta){
-  return cloudPost(Object.assign({action:'read', sheet}, meta)).then(j=>{
-    if(!j) throw new Error('empty_response');
-    if(j.error){
-      if(j.error==='sheet_not_found') return [];     // 分頁還沒建，真的是空的
-      throw new Error(j.error);
-    }
-    return j.data||[];
+    if(!PRIORITIES.includes(t.priority)) t.priority=DEFAULT_PRIORITY;
   });
 }
+
 /* ---------- 待送佇列（ADR-009 §一.2 的落地方式） ----------
    即時單筆 upsert 解掉了 DATA-01（多裝置整包覆蓋互相抹除），但它自己帶來一個
    新問題：送不出去的時候怎麼辦。舊架構是整包 replaceAll，下一次存檔會把先前
@@ -1870,9 +1870,10 @@ function queueUpsert(sheet, record, keyField){
   return flushOutbox();
 }
 
+/* 回 true（送到了）、false（這次沒送到，下次再試）或 'forbidden'（永遠送不上去：沒有功能權限） */
 function sendJob(job){
   return cloudPost({sheet:job.sheet, action:'upsert', key_field:job.key_field, record:job.record, trigger:'write'})
-    .then(j=>!!(j&&j.success)).catch(()=>false);
+    .then(j=>(j&&j.success) ? true : (j&&j.error==='forbidden' ? 'forbidden' : false)).catch(()=>false);
 }
 
 /** 一次送一筆、依序送。刻意不併發：同一張 Sheet 併發寫入正是這次要根治的那類問題。 */
@@ -1882,6 +1883,10 @@ function flushOutbox(){
   const job=outbox[0];
   return sendJob(job).then(ok=>{
     outboxFlushing=false;
+    if(ok==='forbidden'){
+      toast(`⚠️ 你沒有「${sheetLabel(job.sheet)}」的權限，這筆沒有送出`);
+      ok=true;                                         // 從佇列拿掉，不讓它卡住後面的
+    }
     if(!ok){ renderSyncBadge(); return false; }
     outbox=outboxRemove(outbox, job);
     persistOutbox();
@@ -1997,7 +2002,8 @@ function pollTick(){
 function manualRefresh(){
   toast('更新中…');
   flushOutbox();
-  return timedPull('manual', true);
+  progressStart();
+  return timedPull('manual', true).finally(progressDone);
 }
 
 /* pull 一次並記耗時。poll 沒抽中的那幾輪仍帶 trigger，但不帶 perf_sample，
@@ -2064,29 +2070,45 @@ function applyPendingOverlay(){
   });
 }
 
-async function pullFromCloud(meta){
-  let fetched;
-  try{
-    fetched=await Promise.all([
-      cloudGet('tasks',meta), cloudGet('reviews',meta), cloudGet('moods',meta), cloudGet('notes',meta), cloudGet('expenses',meta)
-    ]);
-  }catch(e){
-    // 讀不到就原地不動。把讀取失敗當成「雲端是空的」會清光所有資料——
-    // 那是這次改版最容易犯、也最貴的一個錯。
-    cloudOnline=false;
-    renderConnState(); renderAll();
-    return false;
-  }
+/* ⚠️ 這段的錯誤處理是整個同步最危險的一處，改之前先讀完。
 
-  const [cTasks,cReviews,cMoods,cNotes,cExpenses]=fetched;
+   雲端是真相、pull 是覆蓋式的，「回空陣列」的意思是「這張表本來就沒東西」——
+   所以讀取失敗（網路、認證、回應缺欄位）絕不能被當成空表，一次抖動就會清光畫面。
+   一律「這次不算數、原地不動」。
+
+   唯一會清空某張表的是雲端明說「沒權限」（denied，ADR-012 D-4）：那是確定的事實，
+   不是讀不到。分頁還沒建出來，後端回的是空陣列，也是真的空。 */
+async function pullFromCloud(meta){
+  let j=null;
+  try{ j=await cloudPost(Object.assign({action:'readMany', sheets:DATA_SHEETS}, meta)); }catch(e){ j=null; }
+  if(!j || j.error || !j.data || typeof j.data!=='object') return pullFailed();
+  return applyCloudData(j.data, j.denied);
+}
+
+function pullFailed(){
+  cloudOnline=false;
+  renderConnState(); renderAll();
+  return false;
+}
+
+/** boot 與 readMany 共用：雲端回來的各表整張換進 state。回傳這次算不算數 */
+function applyCloudData(data, denied){
+  const deniedList=(Array.isArray(denied)?denied:[]).filter(x=>DATA_SHEETS.includes(x));
+  const c={};
+  for(const sheet of DATA_SHEETS){
+    if(deniedList.includes(sheet)){ c[sheet]=[]; continue; }
+    if(!Array.isArray(data[sheet])) return pullFailed();     // 回應缺一張表：整次不算數，不是只更新一半
+    c[sheet]=data[sheet];
+  }
+  applyDenied(deniedList);
 
   // 整張換掉。後端已經濾掉 del=true 的列，所以「別人刪掉的」在這裡自然消失
-  state.tasks    = cTasks.map(taskFromCloud);
-  state.moods    = cMoods.map(moodFromCloud);
-  state.notes    = cNotes.map(noteFromCloud);
-  state.expenses = cExpenses.filter(r=>r.id).map(expenseFromCloud);
+  state.tasks    = c.tasks.map(taskFromCloud);
+  state.moods    = c.moods.map(moodFromCloud);
+  state.notes    = c.notes.map(noteFromCloud);
+  state.expenses = c.expenses.filter(r=>r.id).map(expenseFromCloud);
   state.reviews  = {};
-  cReviews.forEach(row=>{
+  c.reviews.forEach(row=>{
     if(!row.review_date) return;
     const owner=String(row.line_id||'').trim();
     // compass 只活在本機（它不上雲端），所以覆蓋時要留住原本那一份
@@ -2103,10 +2125,29 @@ async function pullFromCloud(meta){
   sortExpenses();
 
   migrate();
-  try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); }catch(e){}
+  firstLoadDone=true;
   cloudOnline=true;
   renderConnState(); renderAll();
   return true;
+}
+
+/* 雲端明說沒權限的模組：導覽藏起、待送佇列裡那張表的工作丟掉並告知。
+   丟掉是因為它們永遠送不上去——留著只會卡住後面每一筆。 */
+function sheetLabel(sheet){
+  const view=Object.keys(SHEET_BY_VIEW).find(v=>SHEET_BY_VIEW[v]===sheet);
+  return FEATURE_LABEL[FEATURE_BY_VIEW[view]] || sheet;
+}
+function applyDenied(list){
+  const changed = list.join(',')!==cloudDenied.join(',');
+  cloudDenied=list;
+  const dropped=outbox.filter(j=>list.includes(j.sheet));
+  if(dropped.length){
+    outbox=outbox.filter(j=>!list.includes(j.sheet));
+    persistOutbox(); renderSyncBadge();
+    const names=[...new Set(dropped.map(j=>sheetLabel(j.sheet)))].join('、');
+    toast(`⚠️ 你沒有「${names}」的權限，${dropped.length} 筆還沒送出的資料已捨棄`);
+  }
+  if(changed) applyNavPlacement();
 }
 
 /* ---------- 封存：寄信給管理者（2026-10-01 Neil 裁決，取代 ADR-009 §一.4 的下載流程） ----------
@@ -2272,13 +2313,13 @@ function addTask(){
   inp.value='';
   ['newTaskDue','newTaskRecurN'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
   const us=document.getElementById('newTaskRecurUnit'); if(us) us.value='';
-  save(); pushTask(t); renderTasks(); toast('已加入任務');
+  pushTask(t); renderTasks(); toast('已加入任務');
 }
 function toggleTask(id){
   const t=state.tasks.find(t=>t.id===id);
   if(!t) return;
   t.done=!t.done;
-  save(); renderTasks();
+  renderTasks();
 
   // 週期任務打勾時走 completeRecurring：後端會把週期交給新的一期，原列從此
   // 不是週期任務。下一期的日期算法只留在後端一份，前端不重算（ADR-009 §四）。
@@ -2306,7 +2347,7 @@ function cyclePriority(id){
   if(!t) return;
   const i=PRIORITIES.indexOf(t.priority||DEFAULT_PRIORITY);
   t.priority=PRIORITIES[(i+1)%PRIORITIES.length];
-  save(); pushTask(t); renderTasks();
+  pushTask(t); renderTasks();
   toast('優先度：'+PRIORITY_LABEL[t.priority]);
 }
 /* 軟刪除（ADR-009 §一.3）：先標記 del 送上去，再從本機陣列移除。
@@ -2318,7 +2359,7 @@ function delTask(id){
   t.del=true;
   pushTask(t);
   state.tasks=state.tasks.filter(x=>x.id!==id);
-  save(); renderTasks();
+  renderTasks();
 }
 /* 紅→黃→綠；同色內 created_at 舊者優先（ADR-004 §2） */
 function byPriority(a,b){
@@ -2365,7 +2406,7 @@ function saveReview(){
   if(!compass&&!good&&!stuck&&!next){toast('先寫點什麼吧 ✍️'); return;}
   const k=myReviewKey();
   state.reviews[k]={compass,good,stuck,next,line_id:(state.reviews[k]||{}).line_id||myLineId||'',ts:Date.now()};
-  save(); pushReview(k); renderReviews(); loadTodayReview(); toast('今日日誌已儲存');
+  pushReview(k); renderReviews(); loadTodayReview(); toast('今日日誌已儲存');
 }
 function renderReviews(){
   // 只濾掉「自己今天那筆」——它正在上面的表單裡編輯，列出來會像有兩份。
@@ -2403,7 +2444,7 @@ function addMood(){
   state.moods.unshift(m);
   document.getElementById('moodNote').value='';
   selectedMood=null;
-  save(); pushMood(m); renderMoodBtns(); renderMoods(); renderPulse(); toast('心情已記錄');
+  pushMood(m); renderMoodBtns(); renderMoods(); renderPulse(); toast('心情已記錄');
 }
 function delMood(id){
   const m=state.moods.find(x=>x.id===id);
@@ -2411,7 +2452,7 @@ function delMood(id){
   m.del=true;
   pushMood(m);
   state.moods=state.moods.filter(x=>x.id!==id);
-  save(); renderMoods(); renderPulse();
+  renderMoods(); renderPulse();
 }
 function renderMoods(){
   const el=document.getElementById('moodList');
@@ -2465,7 +2506,7 @@ function addNote(){
   inp.value='';
   selectedNoteTag=null;
   renderNoteTagRow();
-  save(); pushNote(n); renderNotes(); toast(tag ? '已記下這個'+tag : '已存入雜記');
+  pushNote(n); renderNotes(); toast(tag ? '已記下這個'+tag : '已存入雜記');
 }
 function delNote(id){
   const n=state.notes.find(x=>x.id===id);
@@ -2473,7 +2514,7 @@ function delNote(id){
   n.del=true;
   pushNote(n);
   state.notes=state.notes.filter(x=>x.id!==id);
-  save(); renderNotes();
+  renderNotes();
 }
 function renderNotes(){
   const el=document.getElementById('noteList');
@@ -2565,7 +2606,6 @@ function submitExpense(){
   sortExpenses();
   expMonth=date.slice(0,7); // 跳到這筆所屬月份，才看得到剛記的紀錄
   resetExpenseForm();
-  save();
   if(touched) pushExpense(touched);
   renderExpenseView();
 }
@@ -2591,7 +2631,7 @@ function delExpense(id){
   e.del=true;
   pushExpense(e);
   state.expenses=state.expenses.filter(x=>x.id!==id);
-  save(); renderExpenseView(); toast('已刪除');
+  renderExpenseView(); toast('已刪除');
 }
 function shiftMonth(n){
   const [y,m]=expMonth.split('-').map(Number);
@@ -2686,15 +2726,61 @@ function toggleTaskFromHome(id){
 }
 /* 儀表板的卡片也要跟著功能矩陣走。
    少了這一段，功能被關掉的人首頁還是看得到那張卡，點「前往記帳 →」卻被
-   switchView 擋下來——看起來就像壞了。功能矩陣本來就只做前端隱藏
-   （ADR-008 E-2），那就該藏得徹底，不要漏掉首頁這一塊。
+   switchView 擋下來——看起來就像壞了。雲端已經不給那個模組的資料
+   （ADR-012 D-3），畫面也該藏得徹底，不要漏掉首頁這一塊。
 
    只處理記帳與任務兩張；其餘模組的儀表板 UI 待重新設計。 */
+/* 雲端讀到過一次才算數。在那之前首頁三張卡畫骨架——「還沒有支出紀錄」這類空狀態
+   只在「真的讀到了、而且是空的」時出現（ADR-012 D-5），不然開機那幾秒會先騙人一次。
+   沒有配對（先在本機用）的人不等雲端，照常畫本機的東西——不然會永遠卡在骨架 */
+let firstLoadDone=false;
 function renderDashboard(){
   toggleDashCard('dashExpenseCard','expenses');
   toggleDashCard('dashTasksCard','tasks');
+  if(!firstLoadDone && deviceToken){ renderSkeletons(); return; }
   renderDashExpense(); renderDashTasks();
   renderBoard(); renderDue();
+}
+function renderSkeletons(){
+  ['dashExpense','dashTasks','boardList','dueList'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el) el.innerHTML='<div class="skel" aria-label="讀取中"><i></i><i></i><i></i></div>';
+  });
+}
+
+/* ---------- 等待進度條（ADR-012 D-5） ----------
+   GAS 沒辦法一邊讀一邊回報進度，所以這是「估計」的：先快後慢衝到 90% 停住，
+   資料到齊跳 100% 淡出。超過 10 秒改講「比平常慢」，至少讓人知道不是當掉。
+   預估秒數之後依 performance 的開機中位數調整。輪詢不顯示：背景更新不該打擾人。 */
+const BOOT_EXPECTED_MS=7000;
+const BOOT_SLOW_MS=10000;
+let progressTimers=[];
+function progressClear(){ progressTimers.forEach(clearTimeout); progressTimers=[]; }
+function progressStart(){
+  const wrap=document.getElementById('bootProgress');
+  if(!wrap) return;
+  const bar=wrap.querySelector('.bar'), msg=document.getElementById('bootProgressMsg');
+  progressClear();
+  wrap.hidden=false;
+  bar.style.transition='none'; bar.style.width='0%'; bar.style.opacity='1';
+  if(msg){ msg.hidden=true; msg.textContent=''; }
+  progressTimers.push(setTimeout(()=>{
+    bar.style.transition='width '+(BOOT_EXPECTED_MS/1000)+'s cubic-bezier(.1,.75,.25,1)';
+    bar.style.width='90%';
+  },30));
+  progressTimers.push(setTimeout(()=>{
+    if(msg){ msg.hidden=false; msg.textContent='比平常慢，仍在等雲端回應…'; }
+  },BOOT_SLOW_MS));
+}
+function progressDone(){
+  const wrap=document.getElementById('bootProgress');
+  if(!wrap) return;
+  const bar=wrap.querySelector('.bar'), msg=document.getElementById('bootProgressMsg');
+  progressClear();
+  if(msg){ msg.hidden=true; msg.textContent=''; }
+  bar.style.transition='width .25s ease-out, opacity .4s ease .25s';
+  bar.style.width='100%'; bar.style.opacity='0';
+  progressTimers.push(setTimeout(()=>{ wrap.hidden=true; },700));
 }
 
 /* ---------- 共用白板（ADR-009 §三） ----------
@@ -2713,7 +2799,6 @@ function toggleBoard(kind, id){
   const r=list.find(x=>x.id===id);
   if(!r) return;
   r.board=!r.board;
-  save();
   ({tasks:pushTask, expenses:pushExpense, notes:pushNote})[kind](r);
   renderAll();
 }
@@ -2971,7 +3056,7 @@ function logFromCloud(r){
     targetRow: (r.target_row===0||r.target_row) ? String(r.target_row) : ''
   };
 }
-/* 這裡不用 cloudGet()：它把 sheet_not_found 當成空的，而 LOG 頁要把「連線失敗」
+/* LOG 頁自己讀，不走 readMany：它要把「連線失敗」
    跟「真的沒記錄」分開講——這兩件事該給使用者完全不同的訊息。
    任何錯誤回應（包含認證失敗）都算讀取失敗，不能畫成「還沒有任何記錄」。 */
 function fetchLogs(){
@@ -3111,10 +3196,11 @@ function renderAll(){
   loadIdentity();
   applyNavPlacement();
   renderScopeBars();
+  try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}   // 舊版的本機快照（ADR-012 D-8）
   load();
 
-  /* 先問 session，再讀名單，最後才同步。順序是有意義的：身份由 session 決定，
-     待送佇列需要身份才送得動；沒有 token 時 checkSession() 會叫出配對蓋版。
+  /* 一個 boot 帶回身份、名單、資料（ADR-012 D-1）。身份由雲端決定，待送佇列
+     需要身份才送得動；沒有 token 時 startSession() 會叫出配對蓋版。
      離線問不到不會擋住本機使用——待送佇列照樣收，連線恢復再送。 */
   startSession('cold');
 

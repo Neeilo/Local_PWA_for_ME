@@ -228,6 +228,7 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
   const mails = [];             // MailApp.sendEmail 收到的參數
   const lock = { held: false, busy: false };   // busy=true 模擬「另一個封存正在跑」
   const triggers = [];          // ScriptApp 建出來的觸發器
+  const counters = { opens: 0 }; // getActiveSpreadsheet 被呼叫的次數
   // 預先發好的裝置 token：{ 'tok-neil': 'Uneil' }。ADR-010 關門後每個 PWA 請求都要帶 token，
   // 不在這裡發的話，每支測試都得先走一遍 LINE 配對。只存雜湊，跟正式的 pairClaim_ 一樣。
   const tokenIds = Object.keys(tokens);
@@ -279,7 +280,8 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
       log: (...args) => logs.push(args.join(' ')),
       error: (...args) => logs.push(args.join(' '))
     },
-    SpreadsheetApp: { getActiveSpreadsheet: () => ss },
+    // 開了幾次試算表（ADR-012：boot 要「只開一次」，這裡數得出來）
+    SpreadsheetApp: { getActiveSpreadsheet: () => { counters.opens++; return ss; } },
     PropertiesService: {
       getScriptProperties: () => ({ getProperty: (k) => (k in properties ? properties[k] : null) })
     },
@@ -354,6 +356,7 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
     mails,
     lock,
     clock,
+    counters,
     /** 呼叫 Code.gs 裡的函式，回傳值搬回這一側的 realm */
     call: (name, ...args) => toHost(context[name].apply(null, args)),
     /** 讀 Code.gs 裡的頂層宣告（含 const） */

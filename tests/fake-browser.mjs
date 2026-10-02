@@ -88,8 +88,38 @@ export function loadFrontend({ storage = {}, fetchImpl = null, now = null } = {}
     calls.push({ url: String(url), body, options });
     const custom = fetchImpl && fetchImpl({ url: String(url), body, options, calls });
     if (custom) return Promise.resolve(custom);
+    if (body && body.action === 'readMany') return Promise.resolve(readManyFromReads(body, url, options));
     return Promise.resolve({ json: () => Promise.resolve({ success: true, data: [] }) });
   };
+
+  /**
+   * readMany（ADR-012）沒被測試直接回答時，拿測試對「逐張 read」的回答拼出來。
+   *
+   * 很多測試寫在 readMany 之前，用「哪張表回什麼」描述雲端；改走 readMany 之後
+   * 它們要驗的事（失敗不清空、雲端覆蓋本機、日期換算…）一個字都沒變，只是運輸方式變了。
+   * 拼法照後端的契約：
+   *   - 某張表回 sheet_not_found → 那張是空陣列（後端 readMany 就是這樣回）
+   *   - 某張表回其他錯誤 → 整個請求就是那個錯誤（後端的錯誤都在整個請求的層級，例如認證）
+   *   - 某張表的回應 reject（斷線）→ 整個請求 reject
+   * 這裡拼出來的不會被記進 calls：真的送出去的只有那一個 readMany。
+   */
+  const readManyFromReads = (body, url, options) => ({
+    json: () => {
+      const sheets = Array.isArray(body.sheets) ? body.sheets : [];
+      return Promise.all(sheets.map((sheet) => {
+        const one = Object.assign({}, body, { action: 'read', sheet });
+        delete one.sheets;
+        const r = fetchImpl && fetchImpl({ url: String(url), body: one, options, calls });
+        return r ? r.json() : Promise.resolve({ data: [] });
+      })).then((results) => {
+        const failed = results.find((r) => r && r.error && r.error !== 'sheet_not_found');
+        if (failed) return failed;
+        const data = {};
+        sheets.forEach((sheet, i) => { data[sheet] = results[i] && !results[i].error ? (results[i].data || []) : []; });
+        return { data, denied: [] };
+      });
+    }
+  });
 
   const documentStub = {
     getElementById: () => makeElement(),
