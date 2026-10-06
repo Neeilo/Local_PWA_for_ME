@@ -19,7 +19,9 @@
  *    記帳/120/外食/午餐           → 只打細項也行，自動推回大類：飲食＞外食，備註午餐
  *    記帳/120/飲食/外食/午餐      → 同上（第 4 段剛好是該大類的細項才算細項）
  *    收入/50000/其他/九月薪水     → 同格式，只是 type 記成 income
+ *    記帳/120                     → 跳大類按鈕（Quick Reply）→ 細項按鈕 → 記下（ADR-013 T6）
  *    分類                         → 回傳整張分類表（大類、細項、對象）
+ *    （群組裡同樣的指令要過三道門，見檔尾「群組入口」；不是指令的訊息不回）
  *
  * 【設計約束】
  *  - 純規則式字串切分，不接 AI 判讀（ADR-006：查詢型 AI 為獨立分支，不走 ROUTE_TABLE）
@@ -230,6 +232,16 @@ function handleLineEvent_(event) {
     handleJoin_(event);
     return;
   }
+  // bot 被踢出／離開群組（ADR-013 D-15）
+  if (event.type === 'leave') {
+    handleLeave_(event);
+    return;
+  }
+  // Quick Reply 按鈕（ADR-013 D-11／T6）：資料全在 postback data 裡，無狀態
+  if (event.type === 'postback') {
+    handlePostback_(event);
+    return;
+  }
 
   if (event.type !== 'message') return;
   if (!event.message || event.message.type !== 'text') return;
@@ -256,6 +268,13 @@ function handleLineEvent_(event) {
   if (maybePrefix === REGISTER_PREFIX) {
     var arg = slash === -1 ? '' : text.slice(slash + 1).trim();
     lineReply_(event.replyToken, handleRegister_(arg, userId, text));
+    return;
+  }
+
+  // 群組／多人聊天室走自己的三道門（ADR-013 D-13）；一對一的行為完全不變
+  if (isGroupSource_(event.source)) {
+    var groupReply = groupMessageReply_(text, event.source, userId);
+    if (groupReply !== null) lineReply_(event.replyToken, groupReply);
     return;
   }
 
@@ -401,9 +420,16 @@ function handleJoin_(event) {
     chatId, '', '');
 
   if (chatId) {
+    try {
+      registerGroup_(src, chatId);
+    } catch (err) {
+      console.log('記錄群組失敗：' + err);
+      logTransaction_(JOIN_LOG_SOURCE, '失敗', type + '/' + chatId, '寫入 ' + LINE_GROUPS_SHEET + ' 失敗', String(err), '', '');
+    }
     lineReply_(event.replyToken,
       '👋 已加入' + (SOURCE_LABELS[type] || '') + '\n' +
-      (type === 'group' ? 'groupId' : 'roomId') + '：\n' + chatId);
+      (type === 'group' ? 'groupId' : 'roomId') + '：\n' + chatId + '\n' +
+      '要在這裡用 Neil OS，請管理者到 ' + LINE_GROUPS_SHEET + ' 分頁把這個群組的 is_active 打勾。');
   }
 }
 
@@ -463,6 +489,14 @@ function routeLineMessage_(rawText, userId) {
     return parsed.error;
   }
 
+  // 「記帳/金額」沒給分類：跳大類按鈕（ADR-013 T6），不是打回錯誤
+  if (parsed.needCategory) return quickCategoryPrompt_(prefix, parsed.amount, userId);
+
+  return recordRoute_(prefix, route, parsed, userId, text);
+}
+
+/** 解析好的一筆寫進分頁、寫 logs、回成功訊息。打字記帳與 Quick Reply 按鈕共用這一份 */
+function recordRoute_(prefix, route, parsed, userId, text) {
   try {
     var record = route.build(parsed, route);
     // 資料歸屬（ADR-008 C-1）。蓋在這裡而不是各 build 函式裡：路由表每新增一個
@@ -612,6 +646,8 @@ function parseExpense_(rest, route) {
 
   var category = String(parts[1] || '').trim();
   if (!category) {
+    // 只打了「記帳/金額」：交給呼叫端跳分類按鈕（T6）。「記帳/120/」這種多打一個斜線的也算
+    if (parts.slice(2).join('').trim() === '') return { needCategory: true, amount: amount };
     return { error: '要指定分類喔。\n' + categoryListMessage_(cfg) + '\n格式：' + route.usage };
   }
   // 第 3 段：大類、大類別名、或細項（細項自動推回大類）——ADR-013 D-10
@@ -1239,7 +1275,8 @@ function extractGeminiText_(parsed) {
  */
 function handleRegister_(claimedId, userId, rawText) {
   if (!userId) {
-    // 群組訊息的 source 沒有 userId，註冊的對象會是空的
+    // 取不到發話者（例如電腦版 LINE 在群組裡可能不附 userId），註冊的對象會是空的。
+    // （舊註解說「群組訊息一律沒有 userId」，2026-09-23 實測推翻：手機版會附上）
     return '這裡取不到你的 userId（訊息可能來自群組）。\n請在跟 bot 的一對一聊天室裡再試一次。';
   }
   if (!claimedId) {
@@ -1376,6 +1413,7 @@ function supportedPrefixesMessage_() {
     }
   }
   lines.push('・' + QUERY_USAGE);
+  lines.push('・記帳/金額（不打分類會跳出分類按鈕）');
   lines.push('・' + CATEGORY_COMMAND + '（看記帳可用的大類、細項、對象）');
   lines.push('・' + INIT_COMMAND + '（管理者：部署後的安裝步驟，可重複執行）');
   lines.push('・' + REGISTER_USAGE);
@@ -1468,7 +1506,10 @@ function lineReply_(replyToken, text) {
       headers: { Authorization: 'Bearer ' + token },
       payload: JSON.stringify({
         replyToken: replyToken,
-        messages: [{ type: 'text', text: text }]
+        // 帶按鈕的回覆是 { text, quickReply }（ADR-013 T6），其餘是純文字
+        messages: [(text && typeof text === 'object')
+          ? { type: 'text', text: text.text, quickReply: text.quickReply }
+          : { type: 'text', text: text }]
       }),
       muteHttpExceptions: true
     });
@@ -1756,4 +1797,322 @@ function diagnoseGemini() {
     console.log('');
     console.log('✅ 目前設定的模型在可用清單內，查詢應該可以正常運作。');
   }
+}
+
+
+/* ========================================================================== */
+/* 群組入口（ADR-013 D-13～D-15，交棒票 T5）                                     */
+/*                                                                            */
+/* 群組裡的指令過三道門，依序：                                                  */
+/*   1. 群組 is_active 為 TRUE 且 left_at 空白（Neil 在 line_groups 打勾）        */
+/*   2. 這個群組有開放這類指令（cmd_expense／cmd_tasks／cmd_query，新列預設全開） */
+/*   3. 發話者本人過白名單（writeGate_）＋功能權限（canUse_，在 routeLineMessage_）*/
+/* whoami 與註冊在所有門之前（不變）；配對、驗證裝置在群組照樣拒絕（不變）。     */
+/*                                                                            */
+/* ⚠️ 不是指令的訊息一律不回、不寫 logs：家族群組裡大部分的話是聊天，            */
+/* 一對一那套「沒有這個前綴喔」搬進群組，bot 會對每一句話插嘴。                   */
+/* ========================================================================== */
+
+var LINE_GROUPS_HEADERS = ['group_id', 'name', 'is_active', 'cmd_expense', 'cmd_tasks', 'cmd_query',
+  'joined_at', 'left_at', 'created_at', 'updated_at'];
+var GROUP_CMD_FIELDS = ['cmd_expense', 'cmd_tasks', 'cmd_query'];
+/** 前綴 → 群組的指令開關。「分類」是記帳的一部分；初始化不在這裡（只限一對一） */
+var GROUP_CMD_BY_PREFIX = { '記帳': 'cmd_expense', '收入': 'cmd_expense', '任務': 'cmd_tasks' };
+GROUP_CMD_BY_PREFIX[QUERY_PREFIX] = 'cmd_query';
+var GROUP_CMD_LABEL = { cmd_expense: '記帳', cmd_tasks: '任務', cmd_query: '查詢' };
+var GROUP_LOG_SOURCE = '群組';
+/** join 之後這麼快就 leave：多半是群組裡已經有別的官方帳號（LINE 一個群組只能有一個） */
+var GROUP_QUICK_LEAVE_MS = 60000;
+
+function isGroupSource_(source) {
+  return !!source && (source.type === 'group' || source.type === 'room');
+}
+
+/** 建表方式比照 ensureLineUsersSheet_：只建表頭 */
+function ensureLineGroupsSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(LINE_GROUPS_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(LINE_GROUPS_SHEET);
+    sheet.appendRow(LINE_GROUPS_HEADERS);
+    return sheet;
+  }
+  if (sheet.getLastRow() === 0) sheet.appendRow(LINE_GROUPS_HEADERS);
+  return sheet;
+}
+
+/** 整張讀進來 → { ok, sheet, headers, rows:[{row, record}] }。分頁不存在＝還沒有任何群組（ok） */
+function readLineGroups_() {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LINE_GROUPS_SHEET);
+    if (!sheet) return { ok: true, sheet: null, headers: [], rows: [] };
+    var headers = sheetHeaders_(sheet);
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 2 || !headers.length) return { ok: true, sheet: sheet, headers: headers, rows: [] };
+    var values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+    var rows = [];
+    values.forEach(function (line, i) {
+      var rec = {};
+      headers.forEach(function (h, c) { rec[h] = line[c]; });
+      if (String(rec.group_id || '').trim()) rows.push({ row: i + 2, record: rec });
+    });
+    return { ok: true, sheet: sheet, headers: headers, rows: rows };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+function findGroup_(all, chatId) {
+  var hit = null;
+  (all.rows || []).some(function (r) {
+    if (String(r.record.group_id).trim() === chatId) { hit = r; return true; }
+    return false;
+  });
+  return hit;
+}
+
+/** 群組名稱（群組摘要 API）。多人聊天室沒有名稱；取不到就留空，不讓 join 因此失敗 */
+function lineGroupName_(source) {
+  if (!source || source.type !== 'group' || !source.groupId) return '';
+  var token = lineToken_();
+  if (!token) return '';
+  try {
+    var res = UrlFetchApp.fetch('https://api.line.me/v2/bot/group/' + encodeURIComponent(source.groupId) + '/summary', {
+      method: 'get', headers: { Authorization: 'Bearer ' + token }, muteHttpExceptions: true
+    });
+    if (res.getResponseCode() !== 200) return '';
+    return String(JSON.parse(res.getContentText()).groupName || '').trim();
+  } catch (err) {
+    console.log('取群組名稱失敗：' + err);
+    return '';
+  }
+}
+
+/**
+ * join（或 bot 已在群組裡、這個功能上線前就加入的群組第一次下指令）：
+ * 有這一列 → 清掉 left_at、更新 joined_at，**保留原本的啟用與指令設定**（重新邀回沿用，D-15）；
+ * 沒有 → 新增待審列（is_active 空白，cmd_* 預設全開，D-14）。
+ */
+function registerGroup_(source, chatId) {
+  var all = readLineGroups_();
+  if (!all.ok) throw new Error('讀不到 ' + LINE_GROUPS_SHEET + '：' + all.error);
+  var now = new Date().toISOString();
+  var name = lineGroupName_(source);
+  var hit = findGroup_(all, chatId);
+  if (hit) {
+    var patch = { left_at: '', joined_at: now, updated_at: now };
+    if (name) patch.name = name;
+    setDeviceFields_(all.sheet, all.headers, hit.row, patch);
+    return { created: false };
+  }
+  var sheet = all.sheet || ensureLineGroupsSheet_();
+  var headers = all.headers.length ? all.headers : sheetHeaders_(sheet);
+  var row = { group_id: chatId, name: name, is_active: '', joined_at: now, left_at: '', created_at: now, updated_at: now };
+  GROUP_CMD_FIELDS.forEach(function (f) { row[f] = 'TRUE'; });
+  sheet.appendRow(headers.map(function (h) { return row[h] == null ? '' : row[h]; }));
+  return { created: true };
+}
+
+/** leave（D-15）：寫 left_at＋logs。離開＝停用（第一道門看 left_at）；1 分鐘內秒退另外標 ⚠️ */
+function handleLeave_(event) {
+  var src = event.source || {};
+  var chatId = chatIdOf_(src);
+  var all = readLineGroups_();
+  var hit = all.ok ? findGroup_(all, chatId) : null;
+  var now = Date.now();
+  var quick = false;
+  if (hit) {
+    var joined = toTime_(hit.record.joined_at);
+    quick = isFinite(joined) && now - joined <= GROUP_QUICK_LEAVE_MS;
+    setDeviceFields_(all.sheet, all.headers, hit.row, { left_at: new Date(now).toISOString(), updated_at: new Date(now).toISOString() });
+  }
+  logTransaction_(JOIN_LOG_SOURCE, quick ? '失敗' : '成功', (src.type || '') + '/' + (chatId || '(沒有 ID)'),
+    quick ? '⚠️ 加入 1 分鐘內就離開：疑似群組已有其他官方帳號（LINE 一個群組只能有一個官方帳號）' : '已離開' + (SOURCE_LABELS[src.type] || ''),
+    hit ? '' : '（' + LINE_GROUPS_SHEET + ' 沒有這個群組的紀錄）', '', '');
+}
+
+/** 群組裡這句話是哪一類指令：回 cmd_* 欄名；只限一對一的回 ''；不是指令（閒聊）回 null */
+function groupCommandOf_(text) {
+  var t = String(text || '').trim();
+  if (t === CATEGORY_COMMAND) return 'cmd_expense';
+  if (t === INIT_COMMAND) return '';
+  var slash = t.indexOf('/');
+  if (slash === -1) return null;
+  var prefix = t.slice(0, slash).trim();
+  return Object.prototype.hasOwnProperty.call(GROUP_CMD_BY_PREFIX, prefix) ? GROUP_CMD_BY_PREFIX[prefix] : null;
+}
+
+/**
+ * 三道門。過了回 null；沒過回要給使用者看的那句話（D-13）。
+ * 第一、二道擋下來寫 logs；第三道的 logs 由 writeGate_ 自己寫（denyWrite_）。
+ */
+function groupGate_(source, cmd, text, userId) {
+  var chatId = chatIdOf_(source);
+  var all = readLineGroups_();
+  if (!all.ok) {
+    logTransaction_(GROUP_LOG_SOURCE, '失敗', text, LINE_GROUPS_SHEET + ' 讀不到，擋下', all.error, '', userId);
+    return '群組設定暫時讀不到，先擋下來以策安全。';
+  }
+  var g = findGroup_(all, chatId);
+  if (!g) {
+    // 這個功能上線前就加入的群組：補一列待審，Neil 打勾就能用
+    try { registerGroup_(source, chatId); } catch (err) { console.log('補群組列失敗：' + err); }
+  }
+  if (!g || !truthy_(g.record.is_active) || String(g.record.left_at == null ? '' : g.record.left_at).trim()) {
+    logTransaction_(GROUP_LOG_SOURCE, '失敗', text, '群組還沒啟用', 'group=' + chatId, '', userId);
+    return '這個群組還沒啟用 Neil OS。\n請管理者到 ' + LINE_GROUPS_SHEET + ' 分頁把這個群組的 is_active 打勾。';
+  }
+  if (!truthy_(g.record[cmd])) {
+    logTransaction_(GROUP_LOG_SOURCE, '失敗', text, '群組沒有開放' + GROUP_CMD_LABEL[cmd], 'group=' + chatId + '｜' + cmd, '', userId);
+    return '這個群組沒有開放「' + GROUP_CMD_LABEL[cmd] + '」。';
+  }
+  if (!userId) return '取不到你的 userId（電腦版 LINE 在群組裡可能不會附上），請改用手機再傳一次。';
+  var w = writeGate_(userId, 'LINE 群組 ' + firstLine_(text));
+  if (!w.allowed) {
+    // 未註冊者給一句友善的指路，不是冷冰冰的「沒有權限」（D-13）
+    if (w.error === 'not_on_whitelist' || w.error === 'missing_line_id') {
+      return '你還沒註冊 Neil OS，私訊我傳 whoami 就能開始。';
+    }
+    return lineDeniedMessage_(w.error);
+  }
+  return null;
+}
+
+/** 群組裡的一句話 → 要回的訊息；null＝不回（不是指令） */
+function groupMessageReply_(text, source, userId) {
+  // 配對／驗證裝置：在群組一律拒絕（它自己會講原因），不必過門
+  var device = handleDeviceCommand_(text, source, userId);
+  if (device !== null) return device;
+  var cmd = groupCommandOf_(text);
+  if (cmd === null) return null;
+  if (cmd === '') return '「' + String(text).trim() + '」只能在跟 bot 的一對一聊天室用。';
+  var denied = groupGate_(source, cmd, text, userId);
+  if (denied !== null) return denied;
+  return routeLineMessage_(text, userId);
+}
+
+/* ========================================================================== */
+/* Quick Reply 記帳（ADR-013 D-11，交棒票 T6）                                    */
+/*                                                                            */
+/* 「記帳/120」→ 大類按鈕 → （有細項就）細項按鈕＋略過 → 記下來。                  */
+/* 無狀態：金額、類型、大類、細項都放 postback data，不在伺服器上記「做到哪一步」。 */
+/* ⚠️ 防重複點擊：data 帶一次性 nonce，記下來那一刻在 CacheService 標記 10 分鐘，  */
+/* 同一個 nonce 第二次只回「這筆已經記過了」——不加的話手指多點一下就是兩筆帳。     */
+/* ========================================================================== */
+
+/** LINE 一則訊息最多 13 個 Quick Reply 按鈕；標籤最多 20 字 */
+var QUICK_REPLY_MAX = 13;
+var QUICK_LABEL_MAX = 20;
+var QUICK_NONCE_PREFIX = 'adr013_qr_';
+var QUICK_NONCE_TTL = 600;
+var QUICK_SKIP = '-';
+var QUICK_LOCK_MS = 5000;
+
+function quickData_(o) {
+  return Object.keys(o).filter(function (k) { return o[k] !== undefined && o[k] !== null; })
+    .map(function (k) { return k + '=' + encodeURIComponent(String(o[k])); }).join('&');
+}
+
+function parseQuickData_(raw) {
+  var out = {};
+  String(raw || '').split('&').forEach(function (pair) {
+    var i = pair.indexOf('=');
+    if (i <= 0) return;
+    try { out[pair.slice(0, i)] = decodeURIComponent(pair.slice(i + 1)); } catch (err) {}
+  });
+  return out;
+}
+
+/** 按鈕清單 → quickReply.items。超過上限就截斷，最後一顆換成「其他」（請打完整格式） */
+function quickItems_(buttons, base) {
+  var list = buttons.slice();
+  if (list.length > QUICK_REPLY_MAX) {
+    list = list.slice(0, QUICK_REPLY_MAX - 1);
+    list.push({ label: '其他', data: { qr: 1, more: 1, k: base.k } });
+  }
+  return list.map(function (b) {
+    var label = String(b.label).slice(0, QUICK_LABEL_MAX);
+    return { type: 'action', action: { type: 'postback', label: label, data: quickData_(b.data), displayText: label } };
+  });
+}
+
+/**
+ * 第一步：大類按鈕。nonce 在這裡發，跟著這筆帳一路走到記下來。
+ * u＝叫出按鈕的人：群組裡每個人都看得到按鈕，別人按下去的話，帳會記在按的人名下
+ */
+function quickCategoryPrompt_(prefix, amount, userId) {
+  var cfg = expenseConfig_();
+  var base = { qr: 1, k: prefix, a: amount, u: userId || '', n: Utilities.getUuid().replace(/-/g, '').slice(0, 16) };
+  var buttons = (cfg.categories || []).filter(function (c) { return c.active; }).map(function (c) {
+    return { label: c.name, data: Object.assign({}, base, { c: c.name }) };
+  });
+  return {
+    text: '選一個分類（' + prefix + ' $' + formatAmount_(amount) + '）',
+    quickReply: { items: quickItems_(buttons, base) }
+  };
+}
+
+/** postback 事件：先過門（群組三道、一對一白名單），再走下一步 */
+function handlePostback_(event) {
+  var data = parseQuickData_(event.postback && event.postback.data);
+  if (String(data.qr) !== '1') return;
+  var src = event.source || {};
+  var userId = src.userId || '';
+  var input = (data.k || '?') + '/' + (data.a || '?') + '（按鈕' + (data.c ? '：' + data.c + (data.s && data.s !== QUICK_SKIP ? '＞' + data.s : '') : '') + '）';
+
+  var denied = null;
+  if (isGroupSource_(src)) {
+    denied = groupGate_(src, 'cmd_expense', input, userId);
+  } else {
+    var w = writeGate_(userId, 'LINE ' + input);
+    if (!w.allowed) denied = lineDeniedMessage_(w.error);
+  }
+  lineReply_(event.replyToken, denied !== null ? denied : quickExpenseStep_(data, userId, input));
+}
+
+/** 按了某顆按鈕之後：還要選細項就再給一排按鈕，否則記下來 */
+function quickExpenseStep_(data, userId, input) {
+  var route = ROUTE_TABLE[data.k];
+  if (!route || !route.expenseType) return '這個按鈕看不懂，請重新記一次。';
+  if (data.more) return '其他分類請打完整格式：' + route.usage + '\n傳「' + CATEGORY_COMMAND + '」看全部分類。';
+
+  var feature = FEATURE_BY_SHEET[route.sheetName];
+  if (!canUse_(lineUserById_(userId), feature)) {
+    logTransaction_(data.k, '失敗', input, '沒有「' + FEATURE_LABEL[feature] + '」功能的權限', 'code=forbidden｜' + feature, '', userId);
+    return '你沒有「' + FEATURE_LABEL[feature] + '」功能的權限。\n需要的話請管理者到 App 的「成員與權限」打開。';
+  }
+  var amount = Number(data.a);
+  if (!(isFinite(amount) && amount > 0) || !data.n) return '這個按鈕看不懂，請重新記一次。';
+  if (data.u && data.u !== userId) return '這組按鈕是別人叫出來的，請他自己點。\n你要記帳的話，自己傳一次「' + data.k + '/金額」。';
+
+  var cfg = expenseConfig_();
+  var cat = (cfg.categories || []).filter(function (c) { return c.active && c.name === data.c; })[0];
+  if (!cat) return '「' + (data.c || '') + '」這個分類已經不能用了，請重新記一次。';
+
+  // 有細項、還沒選：給細項按鈕＋略過（同一個 nonce 帶下去）
+  if (data.s === undefined && cat.subs.length) {
+    var base = { qr: 1, k: data.k, a: data.a, u: data.u, n: data.n, c: cat.name };
+    var buttons = cat.subs.map(function (s) { return { label: s, data: Object.assign({}, base, { s: s }) }; });
+    buttons.push({ label: '略過', data: Object.assign({}, base, { s: QUICK_SKIP }) });
+    return { text: '選細項（' + cat.name + '，可以略過）', quickReply: { items: quickItems_(buttons, base) } };
+  }
+  var sub = (data.s && data.s !== QUICK_SKIP) ? data.s : '';
+  if (sub && cat.subs.indexOf(sub) === -1) return '「' + sub + '」這個細項已經不能用了，請重新記一次。';
+
+  // 一次性 nonce：檢查與標記包在同一把鎖裡，兩次幾乎同時的點擊也只會記一筆
+  var cache = scriptCache_();
+  if (!cache) return '暫時沒辦法用按鈕記帳，請改用完整格式：' + route.usage;
+  var key = QUICK_NONCE_PREFIX + data.n;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(QUICK_LOCK_MS)) return '有點忙，請再按一次。';
+  try {
+    if (cache.get(key)) return '這筆已經記過了 👌';
+    cache.put(key, '1', QUICK_NONCE_TTL);
+  } finally {
+    lock.releaseLock();
+  }
+  var reply = recordRoute_(data.k, route, { amount: amount, category: cat.name, subcategory: sub, alias: '', note: '' }, userId, input);
+  // 寫入失敗就把 nonce 放回去：讓使用者可以再按一次，而不是被說「已經記過了」
+  if (/^寫入失敗/.test(String(reply))) { try { cache.remove(key); } catch (err) {} }
+  return reply;
 }
