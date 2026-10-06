@@ -30,6 +30,19 @@
 公開，而且 git history 洗不掉。`npm run pull` 後面掛了掃描閘門，CI 也會掃，
 就是為了防止哪次 pull 把它們帶回來。
 
+### ⚠️ 記帳分類設定：部署後執行一次 `installAdr013`（ADR-013，2026-10-06 起）
+
+分類、細項、對象改由分頁 `_expense_config` 維護（取代前後端各寫死一份的清單）。merge 後在
+Apps Script 編輯器選 `installAdr013` 按「執行」一次，它會（全部可重複執行）：
+
+1. `expenses` 往右補 `subcategory`／`targets`／`plan_id`／`plan_seq` 四欄——**沒跑之前細項與對象寫不進 Sheet**
+2. `_expense_config` 不存在就建表寫初版；已存在不覆蓋
+3. 把舊的「餐飲」改成「飲食」（只改 category 那一格，寫 logs）
+
+之後直接在 Sheet 上改分類，最多 5 分鐘生效（快取）。改名＝新增一列＋把舊的 `is_active` 取消，
+不要改字（舊資料存的是名稱）。設定有問題（細項重複、大類不存在、顏色重複）會標在 `_guide` 的「狀態」欄，
+也可以跑 `diagnoseExpenseConfig` 看。設定整張讀不到時記帳**照常**，退回內建初版並寫 logs。
+
 ### ⚠️ 封存寄信：部署後先授權一次（2026-10-01 起）
 
 封存改成用 `MailApp` 把備份寄給管理者，專案因此多了「代表你寄信」的權限範圍。web app 以部署者身份

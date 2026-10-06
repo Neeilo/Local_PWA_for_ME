@@ -23,6 +23,9 @@ var LINE_DEVICES_SHEET = 'line_devices';
 /** 效能紀錄（ADR-012 D-6）。欄位與規則見檔尾「效能紀錄」那一段 */
 var PERFORMANCE_SHEET = 'performance';
 
+/** 記帳分類設定（ADR-013 D-3）。欄位與規則見檔尾「ADR-013」那一段 */
+var EXPENSE_CONFIG_SHEET = '_expense_config';
+
 /**
  * 不歸前端 state 管的分頁：archivePurge 動不得。
  *
@@ -32,7 +35,7 @@ var PERFORMANCE_SHEET = 'performance';
  *
  * 原名 NO_REPLACE_ALL；replaceAll 於 ADR-009 退場後改名，規則不變。
  */
-var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs', PERFORMANCE_SHEET];
+var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs', PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET];
 
 /**
  * PWA 連一筆都不准寫的分頁（任何 action 都一樣，包括 upsert）。
@@ -40,9 +43,11 @@ var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs', PERFORMANCE_SHEET];
  * _guide 是 refreshGuide() 依 repo 登記表產生出來的（sheet-guide.gs），沒有任何
  * 前端功能需要寫它；寫進去的東西下次更新也會被蓋掉，放行只會製造「明明存了卻
  * 不見」的假象。它比 NOT_FRONTEND_SHEETS 更嚴，所以擋在所有 action 之前，不另外列進去。
+ *
+ * _expense_config（ADR-013）同理：分類由 Neil 在 Sheet 上改，前端只拿 boot 解析好的結構。
  */
 var GUIDE_SHEET = '_guide';
-var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET];
+var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET];
 
 /**
  * PWA 連讀都不准讀的分頁（ADR-010 D-8）。
@@ -441,6 +446,8 @@ function bootResponse_(caller, perf) {
     denied: many.denied
   };
   if (isAdmin) out.perf_rows = perfRowCount_();
+  // 分類設定只給有記帳權限的人（ADR-013 D-3）。用同一個 ss：boot 只開一次試算表
+  if (canUseSheet_(caller.user, 'expenses')) out.expense_config = expenseConfigPublic_(expenseConfig_(ss));
   return out;
 }
 
@@ -2235,4 +2242,380 @@ function perfPurge_(caller, days, now) {
   } finally {
     lock.releaseLock();
   }
+}
+
+
+/* ========================================================================== */
+/* ADR-013 — 記帳分類設定：大類 × 細項 × 對象（交棒票 T1／T2）                   */
+/*                                                                            */
+/* 取代 index.html 與 line-router.gs 各寫死一份的分類清單（D-3）。Neil 在 Sheet  */
+/* 的 _expense_config 上改，PWA 從 boot 拿解析好的結構，LINE 讀同一份。          */
+/* 改名的規則是「新增＋停用舊項」，不改字——舊資料存的是名稱，改了字就對不上。    */
+/* ========================================================================== */
+
+/**
+ * 每一列是一個大類、細項或對象（kind 決定）。
+ *  - parent  ：細項 → 所屬大類；對象 → 群組名（家人／車輛）
+ *  - targets ：只對大類有效，可選的對象群組（群組名／全部／空白＝不顯示對象）
+ *  - aliases ：只對大類有效，逗號分隔
+ *  - color   ：只對大類有效，c1～c8（前端 :root 的 --c1～--c8）
+ *  - is_active：空白或 TRUE＝啟用；其他（FALSE、取消勾選）＝停用
+ */
+var EXPENSE_CONFIG_HEADERS = ['kind', 'name', 'parent', 'targets', 'aliases', 'color', 'sort', 'is_active'];
+var EXPENSE_CONFIG_CACHE_KEY = 'adr013_expense_config_v1';
+var EXPENSE_CONFIG_CACHE_TTL = 300;      // 5 分鐘，比照白名單：Neil 改完 Sheet 最多等這麼久
+var EXPENSE_COLOR_SLOTS = ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8'];
+var EXPENSE_TARGETS_ALL = '全部';
+/** 沒填細項的帳在統計裡的名字（「查/」兩層彙總用） */
+var EXPENSE_UNSORTED = '未細分';
+/** expenses 這次新增的欄位（交棒票 2-1）。plan_* 給分期（PR-B）用，這次先一起補上 */
+var ADR013_EXPENSE_COLUMNS = ['subcategory', 'targets', 'plan_id', 'plan_seq'];
+/** 一次性遷移：舊的「餐飲」改名為「飲食」（D-4） */
+var EXPENSE_MIGRATE_FROM = '餐飲';
+var EXPENSE_MIGRATE_TO = '飲食';
+
+/**
+ * 初版設定（D-4）。兩個用途：分頁不存在時寫進去的內容，以及分頁讀不到時的 fail-safe。
+ * 刻意只有這一份：「內建清單」與「初版」是同一件事，分開寫遲早一邊忘了改。
+ */
+function expenseConfigSeed_() {
+  var rows = [];
+  var cat = function (name, color, targets, aliases) {
+    rows.push(['category', name, '', targets || '', aliases || '', color, (rows.length + 1) * 10, '']);
+  };
+  var subs = function (parent, names) {
+    names.forEach(function (n, i) { rows.push(['sub', n, parent, '', '', '', (i + 1) * 10, '']); });
+  };
+  var targets = function (group, names) {
+    names.forEach(function (n, i) { rows.push(['target', n, group, '', '', '', (i + 1) * 10, '']); });
+  };
+  cat('飲食', 'c1', '', '餐飲');
+  cat('交通', 'c2', '車輛');
+  cat('日常用品', 'c3');
+  cat('家庭', 'c4', '家人');
+  cat('醫療', 'c5', '家人');
+  cat('娛樂', 'c6', '家人');
+  cat('其他', 'c7', EXPENSE_TARGETS_ALL);
+  cat('教育', 'c8', '家人');
+  subs('飲食', ['外食', '買菜', '冷凍', '常備食材']);
+  subs('交通', ['加油', 'ETC', '保養']);
+  subs('教育', ['學費', '月費', '才藝']);
+  targets('家人', ['姐姐', '妹妹', '爸爸', '媽媽', '共有', '其他人']);
+  targets('車輛', ['汽車V', '汽車X', '機車G', '機車A']);
+  return rows;
+}
+
+function expenseConfigSeedRecords_() {
+  return expenseConfigSeed_().map(function (row) {
+    var o = {};
+    EXPENSE_CONFIG_HEADERS.forEach(function (h, i) { o[h] = row[i]; });
+    return o;
+  });
+}
+
+/** 空白＝啟用（Neil 新增一列不必記得打勾）；其餘只有 truthy_ 認得的才算啟用 */
+function configActive_(v) {
+  if (v === true) return true;
+  var t = String(v == null ? '' : v).trim();
+  return t === '' || truthy_(t);
+}
+
+function configSort_(v) {
+  var n = Number(v);
+  return (v === '' || v == null || !isFinite(n)) ? Infinity : n;
+}
+
+/**
+ * 原始列 → 前後端都用的結構。純函式，Sheet 與快取都不碰。
+ *
+ * 有問題的列**跳過並記進 warnings**，不讓整張設定失效：一個打錯字的細項不該讓
+ * 全家都不能記帳。warnings 會出現在 _guide 的「狀態」欄與 diagnoseExpenseConfig()。
+ * 沒有任何一個啟用中的大類才算整份不能用（ok:false），交給呼叫端退回內建清單。
+ */
+function parseExpenseConfig_(records) {
+  var warnings = [];
+  var cats = [], catByName = {}, subOwner = {}, groups = {}, aliasOwner = {}, colorOwner = {};
+  var subRows = [], aliasRows = [];
+
+  (records || []).forEach(function (r, i) {
+    var at = '第 ' + (i + 2) + ' 列';
+    var kind = String(r.kind == null ? '' : r.kind).trim().toLowerCase();
+    var name = String(r.name == null ? '' : r.name).trim();
+    if (!kind && !name) return;                         // 空列（Sheet 底部常有）
+    if (!name) { warnings.push(at + '沒有名稱'); return; }
+    var row = { name: name, parent: String(r.parent == null ? '' : r.parent).trim(),
+                sort: configSort_(r.sort), seq: i, active: configActive_(r.is_active), raw: r, at: at };
+
+    if (kind === 'category') {
+      if (catByName[name]) { warnings.push('大類「' + name + '」重複（' + at + '），只認第一個'); return; }
+      var color = String(r.color == null ? '' : r.color).trim().toLowerCase();
+      if (EXPENSE_COLOR_SLOTS.indexOf(color) === -1) {
+        warnings.push('大類「' + name + '」的 color「' + (color || '空白') + '」不是 c1～c8');
+        color = '';
+      } else if (colorOwner[color]) {
+        warnings.push('大類「' + name + '」與「' + colorOwner[color] + '」的顏色都是 ' + color);
+      } else {
+        colorOwner[color] = name;
+      }
+      row.color = color;
+      row.targetGroup = String(r.targets == null ? '' : r.targets).trim();
+      row.aliases = [];
+      catByName[name] = row;
+      cats.push(row);
+      String(r.aliases == null ? '' : r.aliases).split(/[,，、]/).forEach(function (a) {
+        a = a.trim();
+        if (a) aliasRows.push({ alias: a, cat: row });
+      });
+    } else if (kind === 'sub') {
+      subRows.push(row);
+    } else if (kind === 'target') {
+      if (!row.parent) { warnings.push('對象「' + name + '」沒有填群組（parent）'); return; }
+      (groups[row.parent] = groups[row.parent] || []).push(row);
+    } else {
+      warnings.push(at + '的 kind「' + kind + '」不認得（只能是 category／sub／target）');
+    }
+  });
+
+  // 細項名稱全表唯一（D-10）：LINE 只打細項就要推得回唯一一個大類
+  subRows.forEach(function (s) {
+    var owner = catByName[s.parent];
+    if (!owner) { warnings.push('細項「' + s.name + '」的大類「' + (s.parent || '空白') + '」不存在'); return; }
+    if (catByName[s.name]) { warnings.push('細項「' + s.name + '」跟大類同名，略過'); return; }
+    if (subOwner[s.name]) {
+      warnings.push('細項「' + s.name + '」重複（「' + subOwner[s.name] + '」與「' + s.parent + '」底下都有），只認第一個');
+      return;
+    }
+    subOwner[s.name] = s.parent;
+    (owner.subs = owner.subs || []).push(s);
+  });
+
+  aliasRows.forEach(function (a) {
+    if (catByName[a.alias] || subOwner[a.alias] || aliasOwner[a.alias]) {
+      warnings.push('別名「' + a.alias + '」跟其他大類、細項或別名撞名，略過');
+      return;
+    }
+    aliasOwner[a.alias] = a.cat.name;
+    a.cat.aliases.push(a.alias);
+  });
+
+  var bySort = function (a, b) { return a.sort === b.sort ? a.seq - b.seq : (a.sort < b.sort ? -1 : 1); };
+  var activeNames = function (list) {
+    return (list || []).filter(function (x) { return x.active; }).sort(bySort).map(function (x) { return x.name; });
+  };
+  var groupNames = Object.keys(groups);
+
+  var categories = cats.slice().sort(bySort).map(function (c) {
+    var targets = [];
+    if (c.targetGroup === EXPENSE_TARGETS_ALL) {
+      groupNames.forEach(function (g) { targets = targets.concat(activeNames(groups[g])); });
+    } else if (c.targetGroup) {
+      if (!groups[c.targetGroup]) warnings.push('大類「' + c.name + '」的對象群組「' + c.targetGroup + '」不存在');
+      targets = activeNames(groups[c.targetGroup]);
+    }
+    return { name: c.name, color: c.color, active: c.active, aliases: c.aliases,
+             subs: activeNames(c.subs), target_group: c.targetGroup, targets: targets };
+  });
+
+  var activeCount = categories.filter(function (c) { return c.active; }).length;
+  if (!activeCount) warnings.push('沒有任何啟用中的大類');
+  return { ok: activeCount > 0, categories: categories, warnings: warnings };
+}
+
+/**
+ * 分頁不存在就建表並寫入初版；已存在就**不覆蓋**（比照 ensureLineUsersSheet_）。
+ * 存在但整張空白（連表頭都沒有）視同不存在，補上表頭與初版。
+ */
+function ensureExpenseConfigSheet_(ss) {
+  ss = ss || SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(EXPENSE_CONFIG_SHEET);
+  if (sheet && sheet.getLastRow() > 0) return sheet;
+  if (!sheet) sheet = ss.insertSheet(EXPENSE_CONFIG_SHEET);
+  var rows = [EXPENSE_CONFIG_HEADERS].concat(expenseConfigSeed_());
+  sheet.getRange(1, 1, rows.length, EXPENSE_CONFIG_HEADERS.length).setValues(rows);
+  console.log('已建立分頁「' + EXPENSE_CONFIG_SHEET + '」並寫入初版分類設定');
+  logCleanup_('建立 ' + EXPENSE_CONFIG_SHEET, '已寫入初版分類設定（' + (rows.length - 1) + ' 列）',
+    '之後請直接在 Sheet 上改；改名＝新增一列＋把舊的 is_active 取消');
+  return sheet;
+}
+
+/** 讀分頁 → { ok, categories, warnings } 或 { ok:false, reason }。分頁不存在會先建 */
+function readExpenseConfig_(ss) {
+  try {
+    ss = ss || SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName(EXPENSE_CONFIG_SHEET) || ensureExpenseConfigSheet_(ss);
+    var values = sheet.getDataRange().getValues();
+    var headers = (values[0] || []).map(function (h) { return String(h).trim(); });
+    if (headers.indexOf('kind') === -1 || headers.indexOf('name') === -1) {
+      return { ok: false, reason: 'no_kind_or_name_column', warnings: [] };
+    }
+    var records = values.slice(1).map(function (row) {
+      var o = {};
+      headers.forEach(function (h, i) { o[h] = row[i]; });
+      return o;
+    });
+    var parsed = parseExpenseConfig_(records);
+    if (!parsed.ok) parsed.reason = 'no_active_category';
+    return parsed;
+  } catch (err) {
+    return { ok: false, reason: 'read_failed', error: String(err), warnings: [] };
+  }
+}
+
+/**
+ * 分類設定讀取入口：先問快取，沒有才讀 Sheet。
+ *
+ * ⚠️ 讀不到時 **fail-safe 退回內建的初版清單**並寫 logs（交棒票 1-2）——跟白名單的
+ * fail-closed 刻意相反：分類是「選項」不是「權限」，記帳不能因為設定壞掉就全停。
+ * 只快取成功的讀取（比照 lineUsersRoster_）：把退回的內建清單也快取起來，
+ * Neil 修好 Sheet 之後還要再等五分鐘才看得到。
+ */
+function expenseConfig_(ss) {
+  var cache = scriptCache_();
+  if (cache) {
+    var hit = cacheGetJson_(cache, EXPENSE_CONFIG_CACHE_KEY);
+    if (hit) return hit;
+  }
+  var read = readExpenseConfig_(ss);
+  if (read.ok) {
+    var cfg = { source: 'sheet', categories: read.categories, warnings: read.warnings };
+    if (cache) {
+      try { cache.put(EXPENSE_CONFIG_CACHE_KEY, JSON.stringify(cfg), EXPENSE_CONFIG_CACHE_TTL); } catch (err) {}
+    }
+    return cfg;
+  }
+
+  console.log('⚠️ 記帳分類設定讀不到（' + read.reason + '），暫用內建清單');
+  try {
+    logTransaction_('同步', '失敗', '讀取 ' + EXPENSE_CONFIG_SHEET, '分類設定讀不到，暫用內建清單（記帳照常）',
+      '原因：' + read.reason + (read.error ? '／' + read.error : '') +
+      ((read.warnings || []).length ? '｜' + read.warnings.join('；') : ''), '', '');
+  } catch (err) {}
+  var builtin = parseExpenseConfig_(expenseConfigSeedRecords_());
+  return { source: 'builtin', categories: builtin.categories, warnings: builtin.warnings };
+}
+
+/** 改完設定要立刻生效時用（diagnoseExpenseConfig、installAdr013） */
+function invalidateExpenseConfigCache_() {
+  var cache = scriptCache_();
+  if (cache) { try { cache.remove(EXPENSE_CONFIG_CACHE_KEY); } catch (err) {} }
+}
+
+/** 送給前端的形狀：warnings 不送（那是給 Neil 在 _guide 看的） */
+function expenseConfigPublic_(cfg) {
+  return { source: cfg.source, categories: cfg.categories };
+}
+
+/**
+ * LINE 輸入的分類欄 → { category, sub, alias }，認不得回 null（D-10）。
+ * 只認啟用中的：停用的大類／細項不出現在選單，打字也不該打得進去。
+ * 比對順序：大類名 → 大類別名 → 細項名（細項自動推回大類）。
+ */
+function resolveExpenseCategory_(cfg, raw) {
+  var t = String(raw == null ? '' : raw).trim();
+  if (!t) return null;
+  var cats = (cfg.categories || []).filter(function (c) { return c.active; });
+  var i;
+  for (i = 0; i < cats.length; i++) if (cats[i].name === t) return { category: t, sub: '', alias: '' };
+  for (i = 0; i < cats.length; i++) if (cats[i].aliases.indexOf(t) !== -1) return { category: cats[i].name, sub: '', alias: t };
+  for (i = 0; i < cats.length; i++) if (cats[i].subs.indexOf(t) !== -1) return { category: cats[i].name, sub: t, alias: '' };
+  return null;
+}
+
+/**
+ * 統計用：已存的分類名 → 現在的大類名。別名換回正名（遷移前的「餐飲」併進「飲食」），
+ * 停用的大類照樣認得（舊資料照常統計），認不得的原樣保留——不替使用者把錢搬到「其他」。
+ */
+function canonicalExpenseCategory_(cfg, raw) {
+  var t = String(raw == null ? '' : raw).trim();
+  var cats = (cfg && cfg.categories) || [];
+  for (var i = 0; i < cats.length; i++) {
+    if (cats[i].name === t || cats[i].aliases.indexOf(t) !== -1) return cats[i].name;
+  }
+  return t;
+}
+
+/**
+ * 分類表的文字版（LINE「分類」關鍵字、分類打錯時的提示）。
+ * withTargets=false 是錯誤提示用的短版：只列大類與細項。
+ */
+function expenseCategoryTable_(cfg, withTargets) {
+  var lines = [];
+  (cfg.categories || []).filter(function (c) { return c.active; }).forEach(function (c) {
+    lines.push('・' + c.name + (c.aliases.length ? '（別名：' + c.aliases.join('、') + '）' : ''));
+    if (c.subs.length) lines.push('　細項：' + c.subs.join('、'));
+    if (withTargets && c.targets.length) lines.push('　對象：' + c.targets.join('、'));
+  });
+  return lines.join('\n');
+}
+
+/**
+ * 分類設定健檢——在編輯器裡選這支按「執行」（比照 diagnoseLineUsers）。
+ * 會先清快取，看到的就是 Sheet 此刻的內容。
+ */
+function diagnoseExpenseConfig() {
+  invalidateExpenseConfigCache_();
+  var read = readExpenseConfig_();
+  if (!read.ok) {
+    console.log('❌ 分類設定不能用（' + read.reason + (read.error ? '／' + read.error : '') + '），目前記帳走內建清單');
+  } else {
+    console.log('✅ 分頁「' + EXPENSE_CONFIG_SHEET + '」讀得到');
+  }
+  (read.categories || []).forEach(function (c) {
+    console.log('   ' + (c.active ? '●' : '○') + ' ' + c.name + ' [' + (c.color || '無色') + ']' +
+      (c.subs.length ? ' 細項：' + c.subs.join('、') : '') +
+      (c.targets.length ? ' 對象：' + c.targets.join('、') : ''));
+  });
+  (read.warnings || []).forEach(function (w) { console.log('⚠️ ' + w); });
+  return read;
+}
+
+/**
+ * 一次性遷移：expenses 的 category「餐飲」→「飲食」（D-4）。可重複執行：
+ * 第二次跑找不到「餐飲」，就什麼都不改。只改 category 那一格，其他欄一格都不碰。
+ */
+function migrateExpenseDiningToFood() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('expenses');
+  if (!sheet) { console.log('⏭️ 分頁「expenses」不存在，略過'); return { changed: 0, reason: 'sheet_missing' }; }
+  var headers = sheetHeaders_(sheet);
+  var col = headers.indexOf('category') + 1;
+  var lastRow = sheet.getLastRow();
+  if (!col || lastRow < 2) return { changed: 0 };
+
+  var values = sheet.getRange(2, col, lastRow - 1, 1).getValues();
+  var rows = [];
+  values.forEach(function (v, i) {
+    if (String(v[0] == null ? '' : v[0]).trim() !== EXPENSE_MIGRATE_FROM) return;
+    sheet.getRange(i + 2, col, 1, 1).setValues([[EXPENSE_MIGRATE_TO]]);
+    rows.push(i + 2);
+  });
+  logCleanup_('遷移 expenses 分類', EXPENSE_MIGRATE_FROM + '→' + EXPENSE_MIGRATE_TO + '：' + rows.length + ' 列',
+    rows.length ? '列號：' + rows.join(', ') : '沒有要改的列（已遷移過）');
+  console.log((rows.length ? '✅ ' : '✔ ') + EXPENSE_MIGRATE_FROM + '→' + EXPENSE_MIGRATE_TO + '：改了 ' + rows.length + ' 列');
+  return { changed: rows.length, rows: rows };
+}
+
+/**
+ * ADR-013 安裝——merge 後在 Apps Script 編輯器選這支按「執行」一次（比照 ensureAdr009Columns）。
+ * 三件事，全部可重複執行：
+ *   1. expenses 往右補 subcategory／targets／plan_id／plan_seq
+ *   2. _expense_config 不存在就建表寫初版（存在不覆蓋）
+ *   3. 「餐飲」→「飲食」遷移
+ *
+ * ⚠️ 第 1 步沒跑之前，細項與對象寫不進 Sheet（寫入都依表頭對位，沒有那一欄就安靜地略過）。
+ */
+function installAdr013() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var expenses = ss.getSheetByName('expenses');
+  var columns = { added: [], reason: 'sheet_missing' };
+  if (!expenses) {
+    console.log('⏭️ 分頁「expenses」不存在，略過補欄位');
+  } else {
+    columns = ensureColumnsOnSheet_(expenses, ADR013_EXPENSE_COLUMNS);
+    console.log(columns.added.length ? '✅ expenses 補上欄位：' + columns.added.join('、') : '✔ expenses 欄位已齊備');
+  }
+  ensureExpenseConfigSheet_(ss);
+  var migrated = migrateExpenseDiningToFood();
+  var config = diagnoseExpenseConfig();
+  console.log('—— ADR-013 安裝完成。此函式可重複執行。');
+  return { columns: columns, migrated: migrated.changed, config_ok: config.ok, warnings: config.warnings || [] };
 }
