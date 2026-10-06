@@ -343,6 +343,18 @@
   .plan-actions button{flex:1;}
   .btn-ghost{background:var(--field); border:1.5px solid var(--line); border-radius:10px; padding:9px; font-weight:600; color:var(--ink);}
   .btn-ghost.danger{color:var(--danger); border-color:var(--danger);}
+  .sys-row{padding:9px 2px; border-bottom:1px solid var(--line);}
+  .sys-row:last-child{border-bottom:none;}
+  .sys-row .who{font-weight:600; font-size:14px;}
+  .sys-row .who small{color:var(--muted); font-weight:400; font-size:11px; margin-left:6px; word-break:break-all;}
+  .sys-row .meta{font-size:12px; color:var(--muted); margin-top:2px;}
+  .sys-row .adm-grid{margin-top:6px;}
+  .sys-row .row{display:flex; gap:6px; margin-top:6px; align-items:center;}
+  .sys-row .row input,.sys-row .row select{flex:1; min-width:0; padding:6px 8px; font-size:13px;}
+  .sys-warn{background:var(--danger-soft); color:var(--danger); border-radius:10px; padding:8px 10px; font-size:13px; margin-bottom:8px;}
+  .sys-add{margin-top:12px; padding-top:10px; border-top:1px dashed var(--line);}
+  .sys-add .row{display:flex; gap:6px; margin-top:6px;}
+  .sys-add .row > *{flex:1; min-width:0;}
   .exp-date{font-size:12px; color:var(--muted);}
   .exp-amt{font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; flex:none;}
   .exp-amt.income{color:var(--accent);}
@@ -753,6 +765,16 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
         <button class="btn" onclick="purgePerf()">刪除 30 天前的紀錄</button>
       </div>
       <p class="slot-hint">只記耗時，不記 token 與資料內容。超過 5,000 筆時首頁會提醒整理。</p>
+    </div>
+
+    <!-- ⑦ 系統設定（僅 is_admin，2026-10-06 Neil 要求）：line_groups／_expense_config／installments／_guide
+         原本只能在 Sheet 上看、改。按了分頁才抓，平常開 App 不為它多發請求（比照效能紀錄）。
+         ADR-013 D-16 的「管理員分頁」提前做的功能面；版面留給第 2 輪重設計。 -->
+    <div class="slot-card" id="sysCard" hidden>
+      <div class="place-head"><h2>🗂️ 系統設定</h2></div>
+      <div class="seg" id="sysTabs"></div>
+      <div id="sysBody"></div>
+      <p class="slot-hint">改動即時寫回 Sheet，每一筆都記在 LOG（來源「設定」）。</p>
     </div>
   </section>
 
@@ -1226,6 +1248,7 @@ function applyIdentity(){
   renderArchiveCard();
   renderAdminCard();
   renderPerfCard();
+  renderSysCard();
   renderScopeBars();
   renderAll();
 }
@@ -1728,7 +1751,7 @@ const NOTE_TAGS = ['文章','作品','系統','分享','其他'];
 let selectedNoteTag = null;
 
 /* ---------- LOG 頁（ADR-006 §C／§D） ---------- */
-const LOG_SOURCES = ['任務','記帳','收入','查詢','註冊','配對'];
+const LOG_SOURCES = ['任務','記帳','收入','查詢','註冊','配對','設定'];
 const LOG_WINDOW_DAYS = 7;
 // 抓回來的記錄只活在記憶體裡：不進 state、不寫 localStorage、不進待送佇列
 let logsCache = null;
@@ -2309,6 +2332,164 @@ async function purgePerf(){
   perfSummaryCache=null;
   renderPerfCard();
   toast('已刪除 '+r.deleted+' 筆，剩 '+r.remaining+' 筆');
+}
+
+/* ---------- 系統設定（管理員，2026-10-06） ----------
+   四張原本只能在 Sheet 上看的表。資料只放記憶體，按了分頁才抓；改動送專用 action，
+   雲端驗過欄位與值才寫（PWA 的一般 read／upsert 碰不到這幾張表）。 */
+const SYS_TABS = [['groups','群組'],['config','分類'],['plans','分期'],['guide','導覽']];
+const SYS_COLORS = ['c1','c2','c3','c4','c5','c6','c7','c8'];
+let sysTab = null;
+let sysData = {};          // { groups:{rows}, config:{rows,warnings}, guide:{headers,rows} }
+let sysLoading = false;
+function renderSysCard(){
+  const card=document.getElementById('sysCard');
+  if(!card) return;
+  card.hidden=!isAdmin();
+  if(!isAdmin()) return;
+  document.getElementById('sysTabs').innerHTML=SYS_TABS.map(([k,l])=>
+    `<button class="${sysTab===k?'sel':''}" onclick="openSysTab('${k}')">${l}</button>`).join('');
+  const body=document.getElementById('sysBody');
+  if(!sysTab){ body.innerHTML='<div class="empty-hint">選一個分頁</div>'; return; }
+  if(sysLoading){ body.innerHTML='<div class="empty-hint">讀取中…</div>'; return; }
+  const d=sysData[sysTab];
+  if(sysTab!=='plans' && (!d || !d.success)){
+    body.innerHTML=`<div class="empty-hint">讀不到（${esc((d&&d.error)||'連線失敗')}），再按一次分頁重試</div>`; return;
+  }
+  body.innerHTML = sysTab==='groups' ? sysGroupsHtml(d)
+                 : sysTab==='config' ? sysConfigHtml(d)
+                 : sysTab==='plans'  ? sysPlansHtml()
+                 : sysGuideHtml(d);
+}
+async function openSysTab(tab){
+  sysTab=tab;
+  if(tab==='plans'){ renderSysCard(); return; }       // 計畫列 boot／輪詢已經帶回來了
+  sysLoading=true; renderSysCard();
+  let r=null;
+  try{ r=await cloudPost({action:'adminView', what:tab}); }catch(e){ r=null; }
+  sysLoading=false;
+  sysData[tab]=r||{success:false};
+  renderSysCard();
+}
+function sysWarnHtml(w){
+  return (w&&w.length) ? `<div class="sys-warn">⚠️ ${w.map(esc).join('<br>⚠️ ')}</div>` : '';
+}
+
+/* 群組：啟用＋三個指令開關（比照成員與權限的開關鈕） */
+function sysGroupsHtml(d){
+  if(!d.rows.length) return '<div class="empty-hint">還沒有任何群組。把 bot 邀進群組就會出現在這裡。</div>';
+  return d.rows.map((g,i)=>{
+    const state = g.left_at ? '已離開' : truthy(g.is_active) ? '啟用中' : '待審';
+    const btn=(f,label)=>`<button class="${truthy(g[f])?'on':''}" onclick="setGroupFlag(${i},'${f}')">${label}</button>`;
+    return `<div class="sys-row">
+      <div class="who">${esc(g.name||'(沒有名稱)')}<small>${esc(g.group_id)}</small></div>
+      <div class="meta">${state}${g.joined_at?'・加入 '+esc(String(g.joined_at).slice(0,10)):''}</div>
+      <div class="adm-grid">${btn('is_active','✅ 啟用')}${btn('cmd_expense','記帳')}${btn('cmd_tasks','任務')}${btn('cmd_query','查詢')}</div>
+    </div>`;
+  }).join('');
+}
+async function setGroupFlag(i, field){
+  const g=((sysData.groups||{}).rows||[])[i]; if(!g) return;
+  const next=!truthy(g[field]);
+  let r=null;
+  try{ r=await cloudPost({action:'groupSet', group_id:g.group_id, field, value:next, trigger:'write'}); }catch(e){ r=null; }
+  if(!r || !r.success){ toast('⚠️ 沒有存到雲端'+(r&&r.error?'（'+r.error+'）':'')); return; }
+  g[field]=r.value; renderSysCard(); toast('已更新');
+}
+
+/* 分類：每列可停用／啟用、改排序；大類還能改顏色、對象群組、別名。不能改名（新增＋停用舊的） */
+function sysConfigHtml(d){
+  const rows=d.rows;
+  const groups=[...new Set(rows.filter(r=>r.kind==='target').map(r=>String(r.parent)))];
+  const cats=rows.filter(r=>r.kind==='category').map(r=>String(r.name));
+  const kindLabel={category:'大類', sub:'細項', target:'對象'};
+  const list=rows.map((r,i)=>{
+    const on = !(String(r.is_active).trim()!=='' && !truthy(r.is_active));
+    const ctl=(field,html)=>html.replace('$CH',`onchange="setConfigField(${i},'${field}',this.value)"`);
+    let extra='';
+    if(r.kind==='category'){
+      extra=`<div class="row">
+        ${ctl('color',`<select $CH><option value="">（無色）</option>${SYS_COLORS.map(c=>`<option value="${c}" ${r.color===c?'selected':''}>${c}</option>`).join('')}</select>`)}
+        ${ctl('targets',`<select $CH><option value="">（不選對象）</option>${groups.concat(['全部']).map(g=>`<option value="${esc(g)}" ${String(r.targets)===g?'selected':''}>${esc(g)}</option>`).join('')}</select>`)}
+      </div>
+      <div class="row">${ctl('aliases',`<input type="text" placeholder="別名（逗號分隔）" value="${esc(r.aliases)}" $CH>`)}</div>`;
+    }
+    return `<div class="sys-row">
+      <div class="who">${r.kind==='category'?`<span class="lg-dot" style="display:inline-block;background:${/^c[1-8]$/.test(r.color)?'var(--'+r.color+')':'var(--muted-ink)'}"></span> `:''}${esc(r.name)}<small>${kindLabel[r.kind]||esc(r.kind)}${r.parent?'・'+esc(r.parent):''}</small></div>
+      <div class="row">
+        <div class="adm-grid" style="margin:0"><button class="${on?'on':''}" onclick="setConfigField(${i},'is_active',${!on})">${on?'✅ 啟用中':'已停用'}</button></div>
+        ${ctl('sort',`<input type="number" step="1" placeholder="排序" value="${esc(r.sort)}" style="max-width:90px" $CH>`)}
+      </div>
+      ${extra}
+    </div>`;
+  }).join('');
+  return sysWarnHtml(d.warnings) + list + `<div class="sys-add">
+    <div class="field-label">新增（改名＝新增一個＋把舊的停用）</div>
+    <div class="row">
+      <select id="sysAddKind"><option value="category">大類</option><option value="sub">細項</option><option value="target">對象</option></select>
+      <input type="text" id="sysAddName" placeholder="名稱">
+    </div>
+    <div class="row">
+      <input type="text" id="sysAddParent" list="sysParents" placeholder="細項填大類；對象填群組（家人／車輛）">
+      <datalist id="sysParents">${cats.concat(groups).map(x=>`<option value="${esc(x)}">`).join('')}</datalist>
+      <select id="sysAddColor"><option value="">顏色（大類）</option>${SYS_COLORS.map(c=>`<option value="${c}">${c}</option>`).join('')}</select>
+    </div>
+    <div style="margin-top:8px"><button class="btn" onclick="addConfigItem()">新增</button></div>
+  </div>`;
+}
+const CONFIG_ERRORS = {
+  duplicate_name:'名稱重複了（細項名稱要全表唯一）', parent_not_found:'找不到這個大類', parent_required:'對象要填群組',
+  invalid_name:'名稱不能空白、不能有斜線、最多 20 字', invalid_color:'顏色只能是 c1～c8', invalid_kind:'類型不對',
+  invalid_field:'這一欄不能改', config_not_found:'找不到這一列，請重新整理', forbidden:'只有管理者可以改'
+};
+function applyConfigResult(r){
+  if(!r){ toast('⚠️ 沒有存到雲端'); return false; }
+  if(!r.success){ toast('⚠️ '+(CONFIG_ERRORS[r.error]||r.error)); return false; }
+  toast(r.warnings&&r.warnings.length ? '已存，但設定有 ⚠️ 要處理' : '已存，App 與 LINE 立刻生效');
+  return true;
+}
+async function setConfigField(i, field, value){
+  const row=((sysData.config||{}).rows||[])[i]; if(!row) return;
+  let r=null;
+  try{ r=await cloudPost({action:'configSet', key:{kind:row.kind, name:row.name, parent:row.parent}, field, value, trigger:'write'}); }catch(e){ r=null; }
+  if(applyConfigResult(r)){ await openSysTab('config'); syncFromCloud(); }
+}
+async function addConfigItem(){
+  const rec={kind:document.getElementById('sysAddKind').value, name:document.getElementById('sysAddName').value,
+             parent:document.getElementById('sysAddParent').value, color:document.getElementById('sysAddColor').value};
+  let r=null;
+  try{ r=await cloudPost({action:'configAdd', record:rec, trigger:'write'}); }catch(e){ r=null; }
+  if(applyConfigResult(r)){ await openSysTab('config'); syncFromCloud(); }
+}
+
+/* 分期：所有計畫一覽，結束／刪除走記帳分頁同一組動作 */
+function sysPlansHtml(){
+  if(!installmentPlans.length) return '<div class="empty-hint">還沒有分期計畫</div>';
+  const label={active:'進行中', ended:'已結束'};
+  return installmentPlans.map(p=>{
+    const s=planSummary(p.plan_id);
+    return `<div class="sys-row">
+      <div class="who">${esc(p.category||'')}${p.subcategory?'＞'+esc(p.subcategory):''} NT$ ${fmtAmount(Number(p.total)||0)}<small>${esc(p.plan_id)}</small></div>
+      <div class="meta">${label[p.status]||esc(p.status)}・${esc(p.periods)} 期${p.card?'・'+esc(p.card):''}${p.note?'・'+esc(p.note):''}<br>
+        已到期 ${s.due} 期・剩 ${s.left} 期共 NT$ ${fmtAmount(s.leftAmount)}${s.end?'・結束日 '+esc(s.end):''}</div>
+      ${p.status==='active'?`<div class="plan-actions">
+        <button class="btn-ghost" onclick="endPlan('${esc(p.plan_id)}')">結束計畫</button>
+        <button class="btn-ghost danger" onclick="deletePlan('${esc(p.plan_id)}')">刪除計畫</button></div>`:''}
+    </div>`;
+  }).join('');
+}
+
+/* 導覽：唯讀，雲端用寫 _guide 的同一份函式現算 */
+function sysGuideHtml(d){
+  const at=k=>d.headers.indexOf(k);
+  return d.rows.map(r=>{
+    const status=String(r[at('狀態')]||'');
+    return `<div class="sys-row">
+      <div class="who">${esc(r[at('分頁')])}<small>${esc(r[at('類別')])}${r[at('筆數')]!==''?'・'+esc(r[at('筆數')])+' 筆':''}</small></div>
+      <div class="meta">${esc(r[at('用途')])}</div>
+      ${status && status.indexOf('✅')!==0 ? `<div class="sys-warn" style="margin:6px 0 0">${esc(status)}</div>` : ''}
+    </div>`;
+  }).join('');
 }
 
 function renderArchiveCard(){
@@ -3458,6 +3639,7 @@ function renderAll(){
   renderMoodBtns(); renderMoods(); renderPulse();
   renderNotes(); renderNoteTagRow();
   renderExpenseView(); renderCatRow(); renderDashboard();
+  if(sysTab==='plans') renderSysCard();   // 只有分期分頁跟著資料重畫；其他分頁有輸入框，輪詢重畫會吃掉打到一半的字
   renderMeCard();          // 認領數會隨資料增減，跟著列表一起刷新
 }
 (function init(){
