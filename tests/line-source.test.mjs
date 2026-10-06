@@ -39,6 +39,13 @@ function loadLineRouter() {
   context.logTransaction_ = (...args) => { transactions.push(args.map(String)); };
   // 白名單閘門一律擋下：這批測試只驗白名單「之前」的路徑，不可以走到寫入
   context.writeGate_ = () => ({ allowed: false, error: 'not_on_whitelist' });
+  // 群組表（ADR-013）在 Code.gs 與 Sheet 上，這裡只載了 line-router.gs：假一個「已啟用、全開」的群組，
+  // 讓群組裡的指令走到上面那道白名單——這批測試要驗的是白名單有沒有擋住，不是群組開關
+  context.LINE_GROUPS_SHEET = 'line_groups';
+  context.registerGroup_ = () => ({ created: false });
+  context.truthy_ = (v) => v === true || ['TRUE', '1', 'YES', 'Y'].includes(String(v == null ? '' : v).trim().toUpperCase());
+  context.readLineGroups_ = () => ({ ok: true, headers: [], rows: [{ row: 2, record: {
+    group_id: GROUP, is_active: 'TRUE', left_at: '', cmd_expense: 'TRUE', cmd_tasks: 'TRUE', cmd_query: 'TRUE' } }] });
 
   return {
     replies,

@@ -29,6 +29,9 @@ var EXPENSE_CONFIG_SHEET = '_expense_config';
 /** 分期計畫（ADR-013 D-6～D-8）。欄位與規則見檔尾「分期」那一段 */
 var INSTALLMENTS_SHEET = 'installments';
 
+/** LINE 群組（ADR-013 D-13～D-15）。欄位與規則見 line-router.gs「群組」那一段 */
+var LINE_GROUPS_SHEET = 'line_groups';
+
 /**
  * 不歸前端 state 管的分頁：archivePurge 動不得。
  *
@@ -38,7 +41,8 @@ var INSTALLMENTS_SHEET = 'installments';
  *
  * 原名 NO_REPLACE_ALL；replaceAll 於 ADR-009 退場後改名，規則不變。
  */
-var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs', PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET];
+var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs', PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET,
+                           LINE_GROUPS_SHEET];
 
 /**
  * PWA 連一筆都不准寫的分頁（任何 action 都一樣，包括 upsert）。
@@ -52,7 +56,8 @@ var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs', PERFORMANCE_SHEET, EXPENSE_
  * 卻改不到它底下的各期，兩邊從此對不上。
  */
 var GUIDE_SHEET = '_guide';
-var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET];
+var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET,
+                    LINE_GROUPS_SHEET];
 
 /**
  * PWA 連讀都不准讀的分頁（ADR-010 D-8）。
@@ -64,8 +69,10 @@ var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_
  *
  * performance（ADR-012 T1）同理：讀寫都只能透過管理員的 perfSummary／perfPurge，
  * 原始列只由雲端自己寫。
+ *
+ * line_groups（ADR-013 D-13）：這一輪沒有前端管理介面，Neil 直接在 Sheet 上打勾。
  */
-var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET];
+var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET, LINE_GROUPS_SHEET];
 
 /**
  * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
