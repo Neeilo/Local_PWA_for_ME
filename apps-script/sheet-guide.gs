@@ -25,9 +25,9 @@ function guideRegistry_() {
     { sheet: 'tasks', category: '資料', purpose: '任務（含到期日、週期、提醒旗標）',
       writers: 'PWA、LINE「任務/」、到期檢查（只寫 notified）', readers: 'PWA、「查/」、到期檢查',
       key: 'id', adr: '004、009' },
-    { sheet: 'expenses', category: '資料', purpose: '收支記帳',
+    { sheet: 'expenses', category: '資料', purpose: '收支記帳（大類＋細項＋對象）',
       writers: 'PWA、LINE「記帳/」「收入/」', readers: 'PWA、「查/」',
-      key: 'id', adr: '004、006' },
+      key: 'id', adr: '004、006、013' },
     { sheet: 'reviews', category: '資料', purpose: '每日複盤',
       writers: 'PWA', readers: 'PWA、「查/」',
       key: 'review_date＋line_id', adr: '008' },
@@ -49,6 +49,9 @@ function guideRegistry_() {
     { sheet: PERFORMANCE_SHEET, category: '系統', purpose: '每次請求的耗時（不存 token、不存資料內容）',
       writers: '只有 GAS（PWA 請求回應前寫）', readers: '管理頁「效能紀錄」（雲端算好摘要，PWA 不可讀原始列）',
       key: 'id', adr: '012' },
+    { sheet: EXPENSE_CONFIG_SHEET, category: '系統', purpose: '記帳的大類、細項、對象（改名＝新增一列＋停用舊的）',
+      writers: 'Neil 在 Sheet 上改（PWA 不可寫）；不存在時 GAS 自動建表寫初版', readers: 'GAS（boot 送前端、LINE 記帳、「查/」）',
+      key: 'kind＋name', adr: '013' },
     { sheet: GUIDE_SHEET, category: '系統', purpose: '本導覽表',
       writers: '只有 refreshGuide()', readers: 'Neil',
       key: '分頁名稱', adr: '' }
@@ -120,6 +123,11 @@ function guideRow_(name, entry, sheet, notes) {
   } else if (sheet) {
     fields = sheetHeaders_(sheet).filter(function (h) { return h; }).join('、');
     count = Math.max(sheet.getLastRow() - 1, 0);
+    // 分類設定的自檢（ADR-013 交棒票 1-1）：細項重複、大類不存在、顏色重複…寫在狀態欄
+    if (name === EXPENSE_CONFIG_SHEET) {
+      var warnings = readExpenseConfig_().warnings || [];
+      if (warnings.length) status = '⚠️ ' + warnings.join('；');
+    }
   } else {
     status = GUIDE_STATUS_MISSING;
   }

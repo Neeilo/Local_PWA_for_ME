@@ -8,7 +8,7 @@
  *      存壞的值一律當自動，不能留下一個切不回來的主題。
  *   3. <head> 的防閃白腳本與主程式對同一個儲存值做出同一個判斷——兩邊不一致，
  *      重開 App 會先是一種顏色、init 跑完再跳成另一種，正好就是要防的閃爍。
- *   4. 記帳分類色指向 :root 的 --c1…--c7，而不是 JS 裡的色碼快照：
+ *   4. 記帳分類色指向 :root 的 --c1…--c8（ADR-013 起由設定的 color 欄決定），而不是 JS 裡的色碼快照：
  *      自動模式沒有 JS 監聽，手機切深色時只有 CSS 變數會跟著換。
  *
  * 跑法：npm test
@@ -22,6 +22,7 @@ import { inflateSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { loadFrontend } from './fake-browser.mjs';
+import { loadCodeGs } from './fake-apps-script.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -230,20 +231,45 @@ describe('<head> 防閃白腳本', () => {
 /* ========================================================================== */
 describe('記帳分類色跟著主題走', () => {
 
-  test('每個分類都指向 :root 裡存在的 --c1…--c7，沒有寫死色碼', () => {
+  /** 後端的初版設定（ADR-013 D-4），經 boot 送到前端的就是這個形狀 */
+  function seedConfig() {
+    const g = loadCodeGs();
+    const parsed = g.call('parseExpenseConfig_', g.call('expenseConfigSeedRecords_'));
+    return { source: 'builtin', categories: parsed.categories };
+  }
+  function withSeed() {
     const e = loadFrontend();
-    const colors = e.read('CATEGORY_COLOR');
-    const cats = e.read('EXPENSE_CATEGORIES');
-    const rootBlock = HTML.match(/:root\{([\s\S]*?)\}/)[1];
+    e.callRaw('applyExpenseConfig', e.context.JSON.parse(JSON.stringify(seedConfig())));
+    return e;
+  }
+
+  test('每個大類都指向 :root 裡存在的 --cN（亮、暗手動、暗自動三組都有），沒有寫死色碼', () => {
+    const e = withSeed();
+    const cats = seedConfig().categories;
+    assert.equal(cats.length, 8, '初版是 8 個大類（D-4 新增教育）');
+    const css = HTML.slice(HTML.indexOf('<style>'), HTML.indexOf('</style>'));
+    const blocks = {
+      light: css.match(/:root\{([\s\S]*?)\}/)[1],
+      dark: css.match(/:root\[data-theme="dark"\]\{([\s\S]*?)\}/)[1],
+      auto: css.match(/:root:not\(\[data-theme\]\)\{([\s\S]*?)\}/)[1]
+    };
     cats.forEach((c, i) => {
-      assert.equal(colors[c], 'var(--c' + (i + 1) + ')', c + ' 的顏色要照分類固定順序對應');
-      assert.match(rootBlock, new RegExp('--c' + (i + 1) + ':#'), '--c' + (i + 1) + ' 要在 :root 定義');
+      assert.equal(c.color, 'c' + (i + 1), c.name + ' 照初版順序對應 c' + (i + 1));
+      assert.equal(e.call('catColor', c.name), 'var(--c' + (i + 1) + ')');
+      for (const [mode, block] of Object.entries(blocks)) {
+        assert.match(block, new RegExp('--c' + (i + 1) + ':#[0-9a-f]{6};'), '--c' + (i + 1) + ' 要在 ' + mode + ' 定義');
+      }
     });
   });
 
+  test('設定裡沒有的大類（或設定還沒載入）用中性灰，不借別人的顏色', () => {
+    assert.equal(loadFrontend().call('catColor', '飲食'), 'var(--muted-ink)');
+    assert.equal(withSeed().call('catColor', '阿伯'), 'var(--muted-ink)');
+  });
+
   test('甜甜圈各分類的 stroke 寫在 style 裡（CSS 屬性，每個引擎都認得 var()）', () => {
-    const e = loadFrontend();
-    const svg = e.call('donutSVG', [{ cat: '餐飲', amount: 60 }, { cat: '交通', amount: 40 }], 100);
+    const e = withSeed();
+    const svg = e.call('donutSVG', [{ cat: '飲食', amount: 60 }, { cat: '交通', amount: 40 }], 100);
     assert.match(svg, /style="stroke:var\(--c1\)"/);
     assert.match(svg, /style="stroke:var\(--c2\)"/);
     assert.doesNotMatch(svg, /#[0-9a-f]{6}/i, '不可以再出現寫死的色碼');

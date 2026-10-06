@@ -18,7 +18,9 @@
 <meta name="apple-mobile-web-app-title" content="Neil OS">
 <style>
 /* 晨曦配色：以下 PART A–D 取自 neilos-theme-v1.css（sha256 60732ab41757…，Notion 2026-09-24 交棒頁附件），不要手改色碼。
-   與原檔唯一的差別：PART D 裡只服務已移除成長頁的選擇器（.toggle-btn／.d-btn／.detector-*／.tag-*）已刪。 */
+   與原檔的差別：PART D 裡只服務已移除成長頁的選擇器（.toggle-btn／.d-btn／.detector-*／.tag-*）已刪；
+   --c8（ADR-013 第 8 個大類「教育」）是後加的，原檔沒有——選色依據：與 c1～c7 在三種色盲模擬下的
+   最小色差都大於原色票自己最接近的那一對，對卡片底的對比亮色 7.05、暗色 4.53。 */
 /* PART A — light (default) */
 :root{
   --bg:#fbf3e8;
@@ -52,6 +54,7 @@
   --c5:#e87ba4;
   --c6:#008300;
   --c7:#4a3aa7;
+  --c8:#9c2f4f;
   --muted-ink:#898781;
   --shadow-home:0 3px 10px rgba(168,86,28,.32);
 }
@@ -93,6 +96,7 @@
   --c5:#f29abd;
   --c6:#44b544;
   --c7:#9486e6;
+  --c8:#d4688f;
   --muted-ink:#93a199;
   --shadow-home:0 3px 10px rgba(0,0,0,.45);
 }
@@ -132,6 +136,7 @@
     --c5:#f29abd;
     --c6:#44b544;
     --c7:#9486e6;
+    --c8:#d4688f;
     --muted-ink:#93a199;
     --shadow-home:0 3px 10px rgba(0,0,0,.45);
   }
@@ -324,6 +329,10 @@
   .exp-cat .lg-dot{width:8px; height:8px; border-radius:50%; flex:none;}
   .exp-body{flex:1; min-width:0;}
   .exp-note{font-size:14px; word-break:break-word;}
+  .exp-sub{color:var(--muted); font-weight:600;}
+  .exp-tags{display:flex; flex-wrap:wrap; gap:4px; margin-top:2px;}
+  .exp-tag{font-size:11px; padding:1px 7px; border-radius:9px; border:1px solid var(--line); color:var(--muted);}
+  .exp-filter{display:flex; justify-content:flex-end; margin:-4px 0 6px;}
   .exp-date{font-size:12px; color:var(--muted);}
   .exp-amt{font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; flex:none;}
   .exp-amt.income{color:var(--accent);}
@@ -748,6 +757,15 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       <input type="number" id="expAmount" class="amount-input" inputmode="decimal" step="1" min="0" placeholder="0">
       <div class="field-label">分類</div>
       <div class="cat-row" id="expCatRow"></div>
+      <!-- 細項與對象（ADR-013）：選了大類才出現，該大類沒有細項／對象就整塊收起 -->
+      <div id="expSubWrap" hidden>
+        <div class="field-label">細項（可不選）</div>
+        <div class="cat-row" id="expSubRow"></div>
+      </div>
+      <div id="expTargetWrap" hidden>
+        <div class="field-label">對象（可複選）</div>
+        <div class="cat-row" id="expTargetRow"></div>
+      </div>
       <div class="field-label">日期</div>
       <input type="date" id="expDate">
       <div class="field-label">備註（可留空）</div>
@@ -769,6 +787,7 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
     <div class="card">
       <h2>當月明細</h2>
       <div class="scope-bar" id="scopeExpenses" hidden></div>
+      <div class="exp-filter"><button class="cat-btn" id="expUnsortedBtn" onclick="toggleExpUnsorted()">只看未細分</button></div>
       <div id="expList"></div>
     </div>
   </section>
@@ -1160,6 +1179,7 @@ async function runBoot(trigger){
   if(gateMode) closeAuthGate();
   roster=j.line_users.filter(u=>rosterId(u));
   rosterStatus = activeUsers().length ? 'ok' : 'empty';
+  applyExpenseConfig(j.expense_config);   // 要在資料之前：分類名的換算（別名→正名）靠它
   const ok=applyCloudData(j.data, j.denied);
   applyIdentity();
   if(ok) flushOutbox();
@@ -1713,18 +1733,15 @@ const PRIORITY_RANK = {H:0, M:1, L:2};
 const PRIORITY_LABEL = {H:'高', M:'中', L:'低'};
 const DEFAULT_PRIORITY = 'M';
 
-/* ---------- 記帳分類 ----------
-   顏色綁定「分類」本身，不隨金額排名變動；環上以固定分類順序繪製，
+/* ---------- 記帳分類（ADR-013：大類 × 細項 × 對象，改由雲端 _expense_config 維護） ----------
+   這裡刻意沒有任何寫死的清單：分類只有一份，在 Sheet 上，boot 送下來（D-3）。
+   前後端各寫一份，正是 ADR-013 要消滅的東西。
+   顏色綁定「大類」本身（設定的 color 欄），不隨金額排名變動；環上以設定的順序繪製，
    相鄰配色已通過 CVD 檢驗，另加 2px 底色間隙與圖例直接標籤作為第二編碼。 */
-const EXPENSE_CATEGORIES = ['餐飲','交通','日常用品','家庭','醫療','娛樂','其他'];
-/* 指向 :root 的 --c1…--c7 而不是寫死色碼：暗色主題換的是變數值，這裡跟著走。
-   「自動」模式沒有 JS 監聽（手機切深淺色時不會重畫），所以不能在 JS 裡讀出色碼快照。
-   甜甜圈的 stroke 寫進 style：CSS 變數放在 SVG 屬性裡 Chromium 認得，但不是每個引擎都保證，style 最穩。 */
-const CATEGORY_COLOR = {
-  '餐飲':'var(--c1)', '交通':'var(--c2)', '日常用品':'var(--c3)', '家庭':'var(--c4)',
-  '醫療':'var(--c5)', '娛樂':'var(--c6)', '其他':'var(--c7)'
-};
+let expenseConfig = null;   // { source, categories:[{name,color,active,aliases,subs,target_group,targets}] }
 const MAX_DONUT_SEGMENTS = 6; // 超過的尾端併入「其他」，維持一眼可讀
+/* 設定裡沒有顏色（或還沒載入）的大類：用中性灰，不要借別人的顏色 */
+const CATEGORY_FALLBACK_COLOR = 'var(--muted-ink)';
 
 const EMPTY_STATE = () => ({ tasks:[], reviews:{}, moods:[], notes:[], expenses:[] });
 let state = EMPTY_STATE();
@@ -1732,6 +1749,9 @@ let selectedMood = null;
 let newTaskPriority = DEFAULT_PRIORITY;
 let expType = 'expense';
 let expCategory = null;
+let expSub = null;          // 細項（選填）
+let expTargets = [];        // 對象（選填、可複選）
+let expOnlyUnsorted = false; // 「只看未細分」：不記憶，比照 LOG 頁篩選
 let expEditingId = null;
 let expMonth = null; // 'YYYY-MM'，記帳分頁目前檢視的月份
 
@@ -1921,8 +1941,12 @@ function taskFromCloud(r){
           recurN:r.recur_interval||'', recurUnit:String(r.recur_unit||'').trim(),
           notified:truthy(r.notified)};
 }
+/* ⚠️ 雲端的 upsert 是整列覆寫：這裡沒帶的欄位會被寫成空白。ADR-013 的四欄
+   （細項、對象、分期）一定要原樣帶回去，不然在 App 改一下金額，LINE 記的細項就不見了。 */
 function expenseToCloud(e){
   return {id:String(e.id), expense_date:e.date, type:e.type, category:e.category,
+          subcategory:e.subcategory||'', targets:(e.targets||[]).join(','),
+          plan_id:e.plan_id||'', plan_seq:e.plan_seq||'',
           amount:e.amount, note:e.note||'', created_at:new Date(e.ts).toISOString(),
           line_id:e.line_id||'', del:e.del?'TRUE':'', board:e.board?'TRUE':''};
 }
@@ -1930,7 +1954,11 @@ function expenseFromCloud(r){
   return {id:Number(r.id)||Date.now(),
           date:localDateKey(r.expense_date)||todayKey(),
           type:r.type==='income'?'income':'expense',
-          category:EXPENSE_CATEGORIES.includes(r.category)?r.category:'其他',
+          category:canonicalCategory(r.category),
+          subcategory:String(r.subcategory==null?'':r.subcategory).trim(),
+          targets:String(r.targets==null?'':r.targets).split(',').map(t=>t.trim()).filter(t=>t),
+          plan_id:String(r.plan_id==null?'':r.plan_id).trim(),
+          plan_seq:String(r.plan_seq==null?'':r.plan_seq).trim(),
           amount:Number(r.amount)||0, note:r.note||'',
           ts:r.created_at?new Date(r.created_at).getTime():Date.now(),
           line_id:String(r.line_id||'').trim(), board:truthy(r.board)};
@@ -2537,6 +2565,36 @@ const DETECT_LABELS={serve:'✅ 服務選擇',delay:'⏸️ 延後選擇'};
 /* ---------- 輸出追蹤 ---------- */
 
 /* ---------- 記帳 ---------- */
+function expenseCategories(){ return (expenseConfig && expenseConfig.categories) || []; }
+function activeExpenseCategories(){ return expenseCategories().filter(c=>c.active); }
+function expenseCategory(name){ return expenseCategories().find(c=>c.name===name) || null; }
+/* 指向 :root 的 --c1…--c8 而不是寫死色碼：暗色主題換的是變數值，這裡跟著走。
+   「自動」模式沒有 JS 監聽（手機切深淺色時不會重畫），所以不能在 JS 裡讀出色碼快照。
+   甜甜圈的 stroke 寫進 style：CSS 變數放在 SVG 屬性裡 Chromium 認得，但不是每個引擎都保證，style 最穩。 */
+function catColor(name){
+  const c=expenseCategory(name);
+  return c && /^c[1-8]$/.test(c.color) ? `var(--${c.color})` : CATEGORY_FALLBACK_COLOR;
+}
+/* 雲端存的分類名 → 現在的大類。別名換回正名（遷移前的「餐飲」→「飲食」），停用的照樣認得
+   （舊資料照常顯示與統計）。認得清單卻對不上的歸「其他」，沿用改版前的行為。
+   設定還沒載入時原樣保留：不知道清單的時候，不能把每一筆都當成認不得。 */
+function canonicalCategory(raw){
+  const t=String(raw==null?'':raw).trim();
+  const cats=expenseCategories();
+  if(!cats.length) return t || '其他';
+  const hit=cats.find(c=>c.name===t || (c.aliases||[]).includes(t));
+  return hit ? hit.name : '其他';
+}
+/* boot 帶回來的設定。形狀不對就不收：留著上一份，比換成空的（整排分類按鈕消失）好 */
+function applyExpenseConfig(cfg){
+  if(!cfg || !Array.isArray(cfg.categories) || !cfg.categories.length) return false;
+  expenseConfig=cfg;
+  return true;
+}
+/* 「未細分」：這個大類有細項可選、這筆卻沒選。沒有細項的大類本來就無從細分，不算 */
+function isUnsorted(e){
+  return !e.subcategory && ((expenseCategory(e.category)||{}).subs||[]).length>0;
+}
 function sortExpenses(){
   // 消費日新→舊；同日以輸入時間新→舊
   state.expenses.sort((a,b)=> a.date===b.date ? b.ts-a.ts : (a.date<b.date?1:-1));
@@ -2547,18 +2605,21 @@ function expensesOfMonth(mk){ return state.expenses.filter(e=>e.date.slice(0,7)=
 function monthTotal(mk,type='expense'){
   return expensesOfMonth(mk).filter(e=>e.type===type).reduce((s,e)=>s+e.amount,0);
 }
-/* 依固定分類順序彙總，只回傳有金額者；超過 MAX_DONUT_SEGMENTS 時尾端併入「其他」 */
+/* 依設定的大類順序彙總（細項不影響，D-16），只回傳有金額者；超過 MAX_DONUT_SEGMENTS 時尾端併入「其他」。
+   設定裡沒有的名字（設定還沒載入時）接在最後，總額才對得上 */
 function categoryBreakdown(mk){
   const sums={};
   expensesOfMonth(mk).filter(e=>e.type==='expense').forEach(e=>{
     sums[e.category]=(sums[e.category]||0)+e.amount;
   });
-  let rows=EXPENSE_CATEGORIES.filter(c=>sums[c]>0).map(c=>({cat:c, amount:sums[c]}));
+  const order=expenseCategories().map(c=>c.name);
+  Object.keys(sums).forEach(k=>{ if(!order.includes(k)) order.push(k); });
+  let rows=order.filter(c=>sums[c]>0).map(c=>({cat:c, amount:sums[c]}));
   if(rows.length>MAX_DONUT_SEGMENTS){
     const keep=[...rows].sort((a,b)=>b.amount-a.amount).slice(0,MAX_DONUT_SEGMENTS-1);
     const keepSet=new Set(keep.map(r=>r.cat));
     const restTotal=rows.filter(r=>!keepSet.has(r.cat)).reduce((s,r)=>s+r.amount,0);
-    rows=EXPENSE_CATEGORIES.filter(c=>keepSet.has(c)).map(c=>({cat:c, amount:sums[c]}));
+    rows=order.filter(c=>keepSet.has(c)).map(c=>({cat:c, amount:sums[c]}));
     rows.push({cat:'其他', amount:restTotal});
   }
   return rows;
@@ -2568,17 +2629,49 @@ function pickExpType(t){
   expType=t;
   document.querySelectorAll('#expTypeSeg button').forEach(b=>b.classList.toggle('sel', b.dataset.val===t));
 }
+/* 換大類時，細項一定清掉（細項屬於某個大類）；對象只留新大類也能選的 */
 function pickExpCategory(c){
+  if(c!==expCategory){
+    expSub=null;
+    const opts=(expenseCategory(c)||{}).targets||[];
+    expTargets=expTargets.filter(t=>opts.includes(t));
+  }
   expCategory=c;
-  document.querySelectorAll('#expCatRow .cat-btn').forEach(b=>b.classList.toggle('sel', b.dataset.val===c));
+  renderCatRow();
+}
+function pickExpSub(s){ expSub = expSub===s ? null : s; renderCatRow(); }
+function toggleExpTarget(t){
+  expTargets = expTargets.includes(t) ? expTargets.filter(x=>x!==t) : expTargets.concat([t]);
+  renderCatRow();
+}
+/* 名稱來自 Sheet（Neil 手打），一律走 data-val＋esc，不拼進 onclick 字串 */
+function chipHtml(label, sel, handler, dot){
+  return `<button class="cat-btn ${sel?'sel':''}" data-val="${esc(label)}" onclick="${handler}(this.dataset.val)">
+       ${dot?`<span class="lg-dot" style="background:${dot}"></span>`:''}${esc(label)}</button>`;
+}
+/* 編輯舊資料時，停用的大類／細項／對象也要看得到（並維持選取），不然一按儲存就被清掉 */
+function withCurrent(list, current){
+  const out=list.slice();
+  (Array.isArray(current)?current:(current?[current]:[])).forEach(x=>{ if(!out.includes(x)) out.push(x); });
+  return out;
 }
 function renderCatRow(){
-  document.getElementById('expCatRow').innerHTML=EXPENSE_CATEGORIES.map(c=>
-    `<button class="cat-btn ${expCategory===c?'sel':''}" data-val="${c}" onclick="pickExpCategory('${c}')">
-       <span class="lg-dot" style="background:${CATEGORY_COLOR[c]}"></span>${c}</button>`).join('');
+  const names=withCurrent(activeExpenseCategories().map(c=>c.name), expCategory);
+  document.getElementById('expCatRow').innerHTML = names.length
+    ? names.map(c=>chipHtml(c, expCategory===c, 'pickExpCategory', catColor(c))).join('')
+    : '<div class="empty-hint">分類還沒從雲端載入，連上線後再試</div>';
+
+  const cat=expenseCategory(expCategory)||{};
+  const subs=expCategory ? withCurrent(cat.subs||[], expSub) : [];
+  document.getElementById('expSubWrap').hidden=!subs.length;
+  document.getElementById('expSubRow').innerHTML=subs.map(x=>chipHtml(x, expSub===x, 'pickExpSub')).join('');
+
+  const targets=expCategory ? withCurrent(cat.targets||[], expTargets) : [];
+  document.getElementById('expTargetWrap').hidden=!targets.length;
+  document.getElementById('expTargetRow').innerHTML=targets.map(x=>chipHtml(x, expTargets.includes(x), 'toggleExpTarget')).join('');
 }
 function resetExpenseForm(){
-  expEditingId=null; expCategory=null; expType='expense';
+  expEditingId=null; expCategory=null; expSub=null; expTargets=[]; expType='expense';
   document.getElementById('expAmount').value='';
   document.getElementById('expNote').value='';
   document.getElementById('expDate').value=todayKey();
@@ -2593,13 +2686,14 @@ function submitExpense(){
   const note=document.getElementById('expNote').value.trim();
   if(!amount||amount<=0){toast('先填金額吧 💰'); return;}
   if(!expCategory){toast('選一個分類'); return;}
+  const subcategory=expSub||'', targets=expTargets.slice();
   if(expEditingId){
     const e=state.expenses.find(x=>x.id===expEditingId);
-    if(e) Object.assign(e,{date,type:expType,category:expCategory,amount,note});
+    if(e) Object.assign(e,{date,type:expType,category:expCategory,subcategory,targets,amount,note});
     touched=e;
     toast('已更新這筆');
   }else{
-    touched={id:Date.now(),date,type:expType,category:expCategory,amount,note,ts:Date.now(),line_id:myLineId||''};
+    touched={id:Date.now(),date,type:expType,category:expCategory,subcategory,targets,amount,note,ts:Date.now(),line_id:myLineId||''};
     state.expenses.unshift(touched);
     toast('已記一筆');
   }
@@ -2616,7 +2710,9 @@ function editExpense(id){
   document.getElementById('expAmount').value=e.amount;
   document.getElementById('expDate').value=e.date;
   document.getElementById('expNote').value=e.note||'';
-  pickExpType(e.type); pickExpCategory(e.category);
+  // 直接設值、不走 pickExpCategory：那支換大類時會清掉細項，這裡是「載入既有的」
+  expCategory=e.category; expSub=e.subcategory||null; expTargets=(e.targets||[]).slice();
+  pickExpType(e.type); renderCatRow();
   document.getElementById('expSubmit').textContent='更新這筆';
   document.getElementById('expEditBanner').innerHTML=
     `<div class="edit-banner"><span>編輯中：${esc(e.date)} ${esc(e.category)}</span>
@@ -2639,21 +2735,29 @@ function shiftMonth(n){
   expMonth=monthKey(d);
   renderExpenseView();
 }
+function toggleExpUnsorted(){ expOnlyUnsorted=!expOnlyUnsorted; renderExpenseView(); }
 function renderExpenseView(){
   if(!expMonth) expMonth=monthKey();
-  const rows=expensesOfMonth(expMonth);
+  document.querySelectorAll('#expUnsortedBtn').forEach(b=>b.classList.toggle('sel', expOnlyUnsorted));
+  // 篩選只作用在明細：月小計與甜甜圈仍以大類算（D-16）
+  const all=expensesOfMonth(expMonth);
+  const rows=expOnlyUnsorted ? all.filter(isUnsorted) : all;
   const spent=monthTotal(expMonth,'expense');
   const earned=monthTotal(expMonth,'income');
   document.getElementById('expMonthLabel').textContent=fmtMonth(expMonth);
   document.getElementById('expMonthTotal').textContent=
     `支出 NT$ ${fmtAmount(spent)}` + (earned?`　收入 NT$ ${fmtAmount(earned)}`:'');
   const el=document.getElementById('expList');
-  if(!rows.length){ el.innerHTML='<div class="empty-hint">這個月還沒有紀錄</div>'; return; }
+  if(!rows.length){
+    el.innerHTML=`<div class="empty-hint">${expOnlyUnsorted && all.length ? '這個月沒有未細分的帳 🎉' : '這個月還沒有紀錄'}</div>`;
+    return;
+  }
   el.innerHTML=rows.map(e=>`
     <div class="exp-item">
-      <span class="exp-cat"><span class="lg-dot" style="background:${CATEGORY_COLOR[e.category]}"></span>${esc(e.category)}</span>
+      <span class="exp-cat"><span class="lg-dot" style="background:${catColor(e.category)}"></span>${esc(e.category)}</span>
       <div class="exp-body" onclick="editExpense(${e.id})">
-        ${e.note?`<div class="exp-note">${esc(e.note)}</div>`:''}
+        ${(e.subcategory||e.note)?`<div class="exp-note">${e.subcategory?`<span class="exp-sub">[${esc(e.subcategory)}]</span> `:''}${esc(e.note||'')}</div>`:''}
+        ${(e.targets||[]).length?`<div class="exp-tags">${e.targets.map(t=>`<span class="exp-tag">${esc(t)}</span>`).join('')}</div>`:''}
         <div class="exp-date">${esc(e.date)}${e.type==='income'?' · 收入':''}</div>
       </div>
       <div class="exp-amt ${e.type==='income'?'income':''}">${e.type==='income'?'+':'-'}${fmtAmount(e.amount)}</div>
@@ -2670,7 +2774,7 @@ function donutSVG(rows,total){
   let offset=0;
   const arcs=rows.map(r=>{
     const len=Math.max(C*(r.amount/total)-GAP, 1);
-    const seg=`<circle cx="70" cy="70" r="${R}" fill="none" style="stroke:${CATEGORY_COLOR[r.cat]}"
+    const seg=`<circle cx="70" cy="70" r="${R}" fill="none" style="stroke:${catColor(r.cat)}"
       stroke-width="${SW}" stroke-dasharray="${len.toFixed(2)} ${(C-len).toFixed(2)}"
       stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 70 70)"></circle>`;
     offset+=C*(r.amount/total);
@@ -2696,10 +2800,10 @@ function renderDashExpense(){
   const legend=rows.map(r=>{
     const pct=Math.round(r.amount/total*100);
     return `<div class="lg-row">
-        <span class="lg-dot" style="background:${CATEGORY_COLOR[r.cat]}"></span>
+        <span class="lg-dot" style="background:${catColor(r.cat)}"></span>
         <span class="lg-name">${esc(r.cat)}</span>
         <span class="lg-val">${fmtAmount(r.amount)}・${pct}%</span>
-        <span class="lg-bar"><i style="width:${pct}%;background:${CATEGORY_COLOR[r.cat]}"></i></span>
+        <span class="lg-bar"><i style="width:${pct}%;background:${catColor(r.cat)}"></i></span>
       </div>`;
   }).join('');
   el.innerHTML=`

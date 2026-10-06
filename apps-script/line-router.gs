@@ -15,9 +15,11 @@
  *    任務/買牛奶                  → 優先度預設 M
  *    任務/報表開發/H              → 優先度 H
  *    任務/寫 A/B 測試報告         → 內容含「/」也不會被切壞（見 parseMessage_）
- *    記帳/120/餐飲                → 支出 120，分類餐飲
- *    記帳/120/餐飲/星巴克         → 加備註
+ *    記帳/120/飲食                → 支出 120，大類飲食（未細分）
+ *    記帳/120/外食/午餐           → 只打細項也行，自動推回大類：飲食＞外食，備註午餐
+ *    記帳/120/飲食/外食/午餐      → 同上（第 4 段剛好是該大類的細項才算細項）
  *    收入/50000/其他/九月薪水     → 同格式，只是 type 記成 income
+ *    分類                         → 回傳整張分類表（大類、細項、對象）
  *
  * 【設計約束】
  *  - 純規則式字串切分，不接 AI 判讀（ADR-006：查詢型 AI 為獨立分支，不走 ROUTE_TABLE）
@@ -58,6 +60,9 @@ var QUERY_LOG_SOURCE = '查詢';
 /** 資料窗口與逐筆上限，皆為可調參數（ADR-006 §B） */
 var QUERY_WINDOW_DAYS = 30;
 var QUERY_MAX_TOTAL_RECORDS = 30;
+
+/** 回覆行數上限（寫進提示詞）。ADR-013 D-5：兩層彙總之後先不改，抽成常數方便之後調 */
+var QUERY_REPLY_LINES = 5;
 
 /**
  * Gemini 模型與端點。
@@ -101,12 +106,19 @@ var GEMINI_MAX_OUTPUT_TOKENS = 2048;
  */
 
 /**
- * 記帳分類固定清單，與 index.html 的 EXPENSE_CATEGORIES 一字不差。
+ * 記帳分類改讀 _expense_config（ADR-013 D-3，Code.gs 的 expenseConfig_），不再寫死一份。
  *
  * 不在清單內時一律打回並提示可用清單，不自動 fallback 成「其他」（ADR-006 §A）——
  * 打錯字被靜靜歸進「其他」，比當場被退回難發現得多，而且事後對不出來。
  */
-var EXPENSE_CATEGORIES = ['餐飲', '交通', '日常用品', '家庭', '醫療', '娛樂', '其他'];
+var CATEGORY_COMMAND = '分類';
+
+/**
+ * 「初始化」：管理者在 LINE 上跑部署後的安裝步驟（installAdr013＋refreshGuide），
+ * 不必打開 Apps Script 編輯器。每一步都可重複執行，已做過的不會重做。
+ */
+var INIT_COMMAND = '初始化';
+var INIT_LOCK_MS = 10000;
 
 /**
  * 路由表。要新增分頁時只加一筆，不需動其他邏輯。
@@ -422,6 +434,10 @@ function routeLineMessage_(rawText, userId) {
     return handleQuery_(text.slice(slash + 1).trim(), text, userId);
   }
 
+  // 「分類」：唯讀，回傳整張分類表（ADR-013 D-11）。權限照記帳
+  if (text === CATEGORY_COMMAND) return handleCategoryCommand_(text, userId);
+  if (text === INIT_COMMAND) return handleInitCommand_(text, userId);
+
   var route = ROUTE_TABLE[prefix];
 
   if (!route) {
@@ -464,6 +480,89 @@ function routeLineMessage_(rawText, userId) {
 }
 
 /**
+ * 「分類」關鍵字。跟記帳同一個權限（feat_expense）；不寫任何資料列，logs 記在「查詢」底下——
+ * 它是查東西，不是記帳，放進「記帳」篩選鈕只會混淆「我那筆帳記到哪去了」。
+ */
+function handleCategoryCommand_(text, userId) {
+  if (!canUse_(lineUserById_(userId), FEATURE_BY_SHEET.expenses)) {
+    var label = FEATURE_LABEL[FEATURE_BY_SHEET.expenses];
+    logTransaction_(QUERY_LOG_SOURCE, '失敗', text, '沒有「' + label + '」功能的權限', 'code=forbidden｜feat_expense', '', userId);
+    return '你沒有「' + label + '」功能的權限。\n需要的話請管理者到 App 的「成員與權限」打開。';
+  }
+  var cfg = expenseConfig_();
+  logTransaction_(QUERY_LOG_SOURCE, '成功', text, '回傳分類表',
+    cfg.source === 'builtin' ? '設定分頁讀不到，回的是內建清單' : '', '', userId);
+  return '📒 記帳分類\n' + expenseCategoryTable_(cfg, true) +
+    '\n\n格式：記帳/金額/大類或細項[/備註]';
+}
+
+/**
+ * 初始化的步驟。每一步回 { level: 'ok'|'warn', text }；丟例外＝這一步失敗。
+ * 新的 ADR 有部署後要跑的安裝函式，就往這裡加一步——它們本來就都要能重複執行。
+ */
+function initSteps_() {
+  var adr013 = null;
+  return [
+    { label: 'ADR-013 記帳分類', run: function () {
+      adr013 = installAdr013();
+      var cols = adr013.columns || {};
+      var lines = [
+        cols.reason === 'sheet_missing' ? '⚠️ 找不到 expenses 分頁，沒有補欄位'
+          : cols.reason === 'no_header' ? '⚠️ expenses 沒有表頭，沒有補欄位'
+          : (cols.added || []).length ? '補上欄位：' + cols.added.join('、') : '欄位已齊備',
+        adr013.config_ok ? '分類設定讀得到（' + adr013.categories + ' 個大類）' : '⚠️ 分類設定讀不到，記帳暫用內建清單',
+        EXPENSE_MIGRATE_FROM + '→' + EXPENSE_MIGRATE_TO + '：改了 ' + adr013.migrated + ' 列'
+      ];
+      (adr013.warnings || []).forEach(function (w) { lines.push('⚠️ ' + w); });
+      var warn = !adr013.config_ok || !!cols.reason || (adr013.warnings || []).length > 0;
+      return { level: warn ? 'warn' : 'ok', text: lines.join('\n　') };
+    } },
+    { label: '_guide 導覽表', run: function () {
+      var out = refreshGuide();
+      return { level: 'ok', text: '已更新（' + out.sheets + ' 張分頁）' };
+    } }
+  ];
+}
+
+/**
+ * 「初始化」——只有管理者能跑（會改 Sheet 的欄位）。
+ *
+ * 一步失敗就停，後面的不跑，回覆講清楚停在哪一步、原因是什麼（CLAUDE.md Rule 12：
+ * 「初始化完成」如果有一步沒做到，這句話就是錯的）。同一時間只准一個在跑。
+ */
+function handleInitCommand_(text, userId) {
+  if (!truthy_((lineUserById_(userId) || {}).is_admin)) {
+    logTransaction_('同步', '失敗', text, '不是管理者，拒絕初始化', 'code=forbidden', '', userId);
+    return '只有管理者可以執行「' + INIT_COMMAND + '」。';
+  }
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(INIT_LOCK_MS)) return '另一個初始化正在跑，請稍後再試。';
+
+  var lines = [];
+  var failed = false, warned = false;
+  try {
+    initSteps_().forEach(function (step) {
+      if (failed) { lines.push('⏭️ ' + step.label + '：前一步失敗，沒有執行'); return; }
+      try {
+        var r = step.run();
+        if (r.level === 'warn') warned = true;
+        lines.push((r.level === 'warn' ? '⚠️ ' : '✅ ') + step.label + '\n　' + r.text);
+      } catch (err) {
+        failed = true;
+        console.log('初始化失敗（' + step.label + '）：' + (err && err.stack || err));
+        lines.push('❌ ' + step.label + '：' + String(err && err.message || err));
+      }
+    });
+  } finally {
+    lock.releaseLock();
+  }
+
+  var head = failed ? '🛑 初始化沒有完成' : warned ? '🛠️ 初始化完成，但有要處理的地方' : '🛠️ 初始化完成';
+  logTransaction_('同步', failed ? '失敗' : '成功', text, head.replace(/^\S+ /, ''), lines.join('｜'), '', userId);
+  return head + '\n' + lines.join('\n') + '\n（可重複執行，已做過的不會重做）';
+}
+
+/**
  * 把「內容[/優先度]」拆成 { content, priority }。
  *
  * 只有「最後一段剛好是 H / M / L」才視為優先度，其餘一律當成內容的一部分，
@@ -500,6 +599,7 @@ function parseMessage_(rest, route) {
  */
 function parseExpense_(rest, route) {
   var parts = String(rest).split('/');
+  var cfg = expenseConfig_();
 
   var rawAmount = String(parts[0] || '').trim();
   var amount = Number(rawAmount);
@@ -512,16 +612,33 @@ function parseExpense_(rest, route) {
 
   var category = String(parts[1] || '').trim();
   if (!category) {
-    return { error: '要指定分類喔。\n' + categoryListMessage_() + '\n格式：' + route.usage };
+    return { error: '要指定分類喔。\n' + categoryListMessage_(cfg) + '\n格式：' + route.usage };
   }
-  if (EXPENSE_CATEGORIES.indexOf(category) === -1) {
-    return { error: '沒有「' + category + '」這個分類喔。\n' + categoryListMessage_() };
+  // 第 3 段：大類、大類別名、或細項（細項自動推回大類）——ADR-013 D-10
+  var hit = resolveExpenseCategory_(cfg, category);
+  if (!hit) {
+    return { error: '沒有「' + category + '」這個分類喔。\n' + categoryListMessage_(cfg) };
+  }
+
+  // 第 4 段：**完整等於**這個大類的某個細項才算細項，否則整段（含斜線）都是備註。
+  // 第 3 段已經是細項時不再看第 4 段——「記帳/120/外食/買菜」的備註就是「買菜」。
+  var rest3 = parts.slice(2);
+  var sub = hit.sub;
+  if (!sub && rest3.length) {
+    var cat = (cfg.categories || []).filter(function (c) { return c.name === hit.category; })[0];
+    var maybe = String(rest3[0] || '').trim();
+    if (cat && maybe && cat.subs.indexOf(maybe) !== -1) {
+      sub = maybe;
+      rest3 = rest3.slice(1);
+    }
   }
 
   return {
     amount: amount,
-    category: category,
-    note: parts.slice(2).join('/').trim()
+    category: hit.category,
+    subcategory: sub,
+    alias: hit.alias,
+    note: rest3.join('/').trim()
   };
 }
 
@@ -540,7 +657,7 @@ function buildTaskRow_(parsed) {
   };
 }
 
-/** expenses：id | expense_date | type | category | amount | note | created_at */
+/** expenses：id | expense_date | type | category | subcategory | targets | amount | note | created_at */
 function buildExpenseRow_(parsed, route) {
   var now = new Date();
   return {
@@ -548,6 +665,8 @@ function buildExpenseRow_(parsed, route) {
     expense_date: dateKey_(now),
     type: route.expenseType,
     category: parsed.category,
+    subcategory: parsed.subcategory || '',
+    targets: '',
     amount: parsed.amount,
     note: parsed.note || '',
     created_at: now.toISOString()
@@ -746,6 +865,7 @@ function buildQueryContext_(userId) {
   var allowed = {};
   QUERY_SHEETS.forEach(function (name) { allowed[name] = canUseSheet_(user, name); });
   var expenseRows = allowed.expenses ? readSheet_('expenses') : [];
+  var cfg = allowed.expenses ? expenseConfig_() : null;
 
   return {
     since: since,
@@ -756,8 +876,8 @@ function buildQueryContext_(userId) {
     // 只給後者的話，AI 會拿近 30 天的合計去回答「這個月」——數字包含上個月下旬，
     // 而且跟 App 首頁的「本月支出」對不起來。多算一組的成本只有幾行。
     expenses: allowed.expenses ? {
-      month: sumExpensesSince_(expenseRows, monthStartKey_()),
-      window: sumExpensesSince_(expenseRows, since)
+      month: sumExpensesSince_(expenseRows, monthStartKey_(), cfg),
+      window: sumExpensesSince_(expenseRows, since, cfg)
     } : null,
     tasks: allowed.tasks ? collectTasks_(readSheet_('tasks'), since) : null,
     reviews: allowed.reviews ? collectReviews_(readSheet_('reviews'), since) : null,
@@ -770,11 +890,19 @@ function monthStartKey_() {
   return dateKey_(new Date()).slice(0, 7) + '-01';
 }
 
-/** expenses → 分類小計 + 總計 + 筆數（完整不截斷） */
-function sumExpensesSince_(rows, since) {
+/**
+ * expenses → 大類 → 細項兩層小計 + 對象小計 + 總計 + 筆數（完整不截斷，ADR-013 D-5）。
+ *
+ * 沒填細項的歸「未細分」。大類名先換回正名（遷移前的「餐飲」併進「飲食」），
+ * 跟 App 的甜甜圈同一個口徑。cfg 省略時不換名（舊的呼叫端）。
+ *
+ * 對象可複選：一筆「姐姐,妹妹」的帳**整筆**同時計入兩個人。拆成各半是在替使用者
+ * 決定比例，而那正是這個欄位沒記的事。代價是對象小計相加會大於總額——提示詞會講明。
+ */
+function sumExpensesSince_(rows, since, cfg) {
   var acc = {
-    expense: { total: 0, count: 0, byCat: {} },
-    income: { total: 0, count: 0, byCat: {} }
+    expense: { total: 0, count: 0, byCat: {}, byTarget: {} },
+    income: { total: 0, count: 0, byCat: {}, byTarget: {} }
   };
   var seen = 0;
 
@@ -783,13 +911,25 @@ function sumExpensesSince_(rows, since) {
     if (!date || date < since) return;
     var type = String(r.type || '').trim() === 'income' ? 'income' : 'expense';
     var amount = Number(r.amount) || 0;
-    var cat = String(r.category || '其他').trim() || '其他';
+    var raw = String(r.category || '其他').trim() || '其他';
+    var cat = cfg ? (canonicalExpenseCategory_(cfg, raw) || '其他') : raw;
+    var sub = String(r.subcategory || '').trim() || EXPENSE_UNSORTED;
 
     acc[type].total += amount;
     acc[type].count += 1;
-    acc[type].byCat[cat] = (acc[type].byCat[cat] || { sum: 0, n: 0 });
-    acc[type].byCat[cat].sum += amount;
-    acc[type].byCat[cat].n += 1;
+    var c = acc[type].byCat[cat] = (acc[type].byCat[cat] || { sum: 0, n: 0, bySub: {} });
+    c.sum += amount;
+    c.n += 1;
+    c.bySub[sub] = (c.bySub[sub] || { sum: 0, n: 0 });
+    c.bySub[sub].sum += amount;
+    c.bySub[sub].n += 1;
+    String(r.targets || '').split(',').forEach(function (t) {
+      t = t.trim();
+      if (!t) return;
+      var g = acc[type].byTarget[t] = (acc[type].byTarget[t] || { sum: 0, n: 0 });
+      g.sum += amount;
+      g.n += 1;
+    });
     seen += 1;
   });
 
@@ -867,7 +1007,7 @@ function buildQueryPrompt_(ctx, question) {
   lines.push('');
   lines.push('規則：');
   lines.push('- 只根據以下資料回答。資料裡沒有的就直說沒有，絕對不要編造或推估。');
-  lines.push('- 回答控制在 5 行以內，這則訊息會顯示在 LINE 上。');
+  lines.push('- 回答控制在 ' + QUERY_REPLY_LINES + ' 行以內，這則訊息會顯示在 LINE 上。');
   lines.push('- 金額用阿拉伯數字加千分位，不要加貨幣符號以外的修飾。');
   lines.push('- 不要重複問題本身，直接給答案。');
   if (visible.length < QUERY_SHEETS.length) {
@@ -880,6 +1020,9 @@ function buildQueryPrompt_(ctx, question) {
     lines.push('  問「這個月」「本月」「九月」→ 用【本月】那組。');
     lines.push('  問「最近」「這 30 天」「這陣子」→ 用【近 30 天】那組。');
     lines.push('  問法沒有指明期間時，用【本月】那組，並在回答中說明是本月。');
+    lines.push('- 記帳彙總分兩層：「・大類」底下縮排的「－細項」是那個大類的細分，細項加起來等於大類；' +
+      '「' + EXPENSE_UNSORTED + '」是沒填細項的帳。');
+    lines.push('- 【對象】是花在誰／哪台車身上。一筆帳可以同時算給好幾個對象，所以對象小計相加會大於總額，不可相加。');
   }
   lines.push('');
   lines.push('今天是 ' + ctx.today + '。');
@@ -953,9 +1096,22 @@ function expenseBlock_(side, label) {
     return side.byCat[b].sum - side.byCat[a].sum;
   });
   var lines = [label + '合計 ' + formatAmount_(Math.round(side.total)) + ' 元（' + side.count + ' 筆）'];
+  var money = function (x) { return formatAmount_(Math.round(x.sum)) + ' 元（' + x.n + ' 筆）'; };
+  var bySum = function (map) {
+    return Object.keys(map).sort(function (a, b) { return map[b].sum - map[a].sum; });
+  };
   cats.forEach(function (c) {
-    lines.push('・' + c + ' ' + formatAmount_(Math.round(side.byCat[c].sum)) + ' 元（' + side.byCat[c].n + ' 筆）');
+    lines.push('・' + c + ' ' + money(side.byCat[c]));
+    var subs = side.byCat[c].bySub || {};
+    var names = bySum(subs);
+    // 整個大類都沒細分時不展開：多一行「－未細分」跟上一行一模一樣，只是佔版面
+    if (names.length === 1 && names[0] === EXPENSE_UNSORTED) return;
+    names.forEach(function (s) { lines.push('　－' + s + ' ' + money(subs[s])); });
   });
+  var targets = bySum(side.byTarget || {});
+  if (targets.length) {
+    lines.push('【對象】' + targets.map(function (t) { return t + ' ' + money(side.byTarget[t]); }).join('；'));
+  }
   return lines.join('\n');
 }
 
@@ -1220,6 +1376,8 @@ function supportedPrefixesMessage_() {
     }
   }
   lines.push('・' + QUERY_USAGE);
+  lines.push('・' + CATEGORY_COMMAND + '（看記帳可用的大類、細項、對象）');
+  lines.push('・' + INIT_COMMAND + '（管理者：部署後的安裝步驟，可重複執行）');
   lines.push('・' + REGISTER_USAGE);
   lines.push('・' + PAIR_COMMAND + '（拿 App 的配對碼，限一對一聊天）');
   lines.push('・' + RENEW_USAGE);
@@ -1242,8 +1400,9 @@ function versionLine_() {
   return '目前版本：#' + info.run + ' · main@' + info.sha + '（' + info.builtAt + '）';
 }
 
-function categoryListMessage_() {
-  return '目前可用分類：' + EXPENSE_CATEGORIES.join('、');
+/** 分類打錯或沒填時的提示。從設定產生，大類＋細項（ADR-013 T3） */
+function categoryListMessage_(cfg) {
+  return '目前可用分類（細項也可以直接打）：\n' + expenseCategoryTable_(cfg || expenseConfig_(), false);
 }
 
 function formatTaskSuccess_(parsed) {
@@ -1255,8 +1414,12 @@ function formatTaskSuccess_(parsed) {
 function formatExpenseSuccess_(parsed, route) {
   var isIncome = route.expenseType === 'income';
   var head = '✅ 已記錄' + (isIncome ? '收入' : '支出');
-  var line = (isIncome ? '+' : '-') + '$' + formatAmount_(parsed.amount) + '　' + parsed.category;
-  return parsed.note ? head + '\n' + line + '\n📝 ' + parsed.note : head + '\n' + line;
+  var line = (isIncome ? '+' : '-') + '$' + formatAmount_(parsed.amount) + '　' + parsed.category +
+    (parsed.subcategory ? '＞' + parsed.subcategory : '');
+  var out = parsed.note ? head + '\n' + line + '\n📝 ' + parsed.note : head + '\n' + line;
+  // 用到別名時講一聲：不然打「餐飲」卻看到「飲食」，會以為記錯
+  if (parsed.alias) out += '\n（' + parsed.alias + '已記為 ' + parsed.category + '）';
+  return out;
 }
 
 /** 千分位。小數點後不分節（邊界在「.」是 \b 而非 \B，不會被誤插）。 */
@@ -1270,7 +1433,7 @@ function summarizeTask_(parsed) {
 
 function summarizeExpense_(parsed, route) {
   var label = route.expenseType === 'income' ? '收入' : '支出';
-  return label + ' ' + parsed.category + ' ' + parsed.amount +
+  return label + ' ' + parsed.category + (parsed.subcategory ? '＞' + parsed.subcategory : '') + ' ' + parsed.amount +
     (parsed.note ? '（' + parsed.note + '）' : '');
 }
 
