@@ -2589,6 +2589,9 @@ function canonicalCategory(raw){
 function applyExpenseConfig(cfg){
   if(!cfg || !Array.isArray(cfg.categories) || !cfg.categories.length) return false;
   expenseConfig=cfg;
+  // 表單的分類列只在開機（設定還沒到）與點選時重畫；設定到了要主動重畫一次，
+  // 不然會一直停在「分類還沒從雲端載入」，直到使用者剛好點到什麼（2026-10-06 實機回報）
+  renderCatRow();
   return true;
 }
 /* 「未細分」：這個大類有細項可選、這筆卻沒選。沒有細項的大類本來就無從細分，不算 */
