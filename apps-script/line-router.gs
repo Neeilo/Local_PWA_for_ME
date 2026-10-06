@@ -114,6 +114,13 @@ var GEMINI_MAX_OUTPUT_TOKENS = 2048;
 var CATEGORY_COMMAND = '分類';
 
 /**
+ * 「初始化」：管理者在 LINE 上跑部署後的安裝步驟（installAdr013＋refreshGuide），
+ * 不必打開 Apps Script 編輯器。每一步都可重複執行，已做過的不會重做。
+ */
+var INIT_COMMAND = '初始化';
+var INIT_LOCK_MS = 10000;
+
+/**
  * 路由表。要新增分頁時只加一筆，不需動其他邏輯。
  *  sheetName   : 目標分頁名稱
  *  usage       : 前綴用錯時回覆的提示文字
@@ -429,6 +436,7 @@ function routeLineMessage_(rawText, userId) {
 
   // 「分類」：唯讀，回傳整張分類表（ADR-013 D-11）。權限照記帳
   if (text === CATEGORY_COMMAND) return handleCategoryCommand_(text, userId);
+  if (text === INIT_COMMAND) return handleInitCommand_(text, userId);
 
   var route = ROUTE_TABLE[prefix];
 
@@ -486,6 +494,72 @@ function handleCategoryCommand_(text, userId) {
     cfg.source === 'builtin' ? '設定分頁讀不到，回的是內建清單' : '', '', userId);
   return '📒 記帳分類\n' + expenseCategoryTable_(cfg, true) +
     '\n\n格式：記帳/金額/大類或細項[/備註]';
+}
+
+/**
+ * 初始化的步驟。每一步回 { level: 'ok'|'warn', text }；丟例外＝這一步失敗。
+ * 新的 ADR 有部署後要跑的安裝函式，就往這裡加一步——它們本來就都要能重複執行。
+ */
+function initSteps_() {
+  var adr013 = null;
+  return [
+    { label: 'ADR-013 記帳分類', run: function () {
+      adr013 = installAdr013();
+      var cols = adr013.columns || {};
+      var lines = [
+        cols.reason === 'sheet_missing' ? '⚠️ 找不到 expenses 分頁，沒有補欄位'
+          : cols.reason === 'no_header' ? '⚠️ expenses 沒有表頭，沒有補欄位'
+          : (cols.added || []).length ? '補上欄位：' + cols.added.join('、') : '欄位已齊備',
+        adr013.config_ok ? '分類設定讀得到（' + adr013.categories + ' 個大類）' : '⚠️ 分類設定讀不到，記帳暫用內建清單',
+        EXPENSE_MIGRATE_FROM + '→' + EXPENSE_MIGRATE_TO + '：改了 ' + adr013.migrated + ' 列'
+      ];
+      (adr013.warnings || []).forEach(function (w) { lines.push('⚠️ ' + w); });
+      var warn = !adr013.config_ok || !!cols.reason || (adr013.warnings || []).length > 0;
+      return { level: warn ? 'warn' : 'ok', text: lines.join('\n　') };
+    } },
+    { label: '_guide 導覽表', run: function () {
+      var out = refreshGuide();
+      return { level: 'ok', text: '已更新（' + out.sheets + ' 張分頁）' };
+    } }
+  ];
+}
+
+/**
+ * 「初始化」——只有管理者能跑（會改 Sheet 的欄位）。
+ *
+ * 一步失敗就停，後面的不跑，回覆講清楚停在哪一步、原因是什麼（CLAUDE.md Rule 12：
+ * 「初始化完成」如果有一步沒做到，這句話就是錯的）。同一時間只准一個在跑。
+ */
+function handleInitCommand_(text, userId) {
+  if (!truthy_((lineUserById_(userId) || {}).is_admin)) {
+    logTransaction_('同步', '失敗', text, '不是管理者，拒絕初始化', 'code=forbidden', '', userId);
+    return '只有管理者可以執行「' + INIT_COMMAND + '」。';
+  }
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(INIT_LOCK_MS)) return '另一個初始化正在跑，請稍後再試。';
+
+  var lines = [];
+  var failed = false, warned = false;
+  try {
+    initSteps_().forEach(function (step) {
+      if (failed) { lines.push('⏭️ ' + step.label + '：前一步失敗，沒有執行'); return; }
+      try {
+        var r = step.run();
+        if (r.level === 'warn') warned = true;
+        lines.push((r.level === 'warn' ? '⚠️ ' : '✅ ') + step.label + '\n　' + r.text);
+      } catch (err) {
+        failed = true;
+        console.log('初始化失敗（' + step.label + '）：' + (err && err.stack || err));
+        lines.push('❌ ' + step.label + '：' + String(err && err.message || err));
+      }
+    });
+  } finally {
+    lock.releaseLock();
+  }
+
+  var head = failed ? '🛑 初始化沒有完成' : warned ? '🛠️ 初始化完成，但有要處理的地方' : '🛠️ 初始化完成';
+  logTransaction_('同步', failed ? '失敗' : '成功', text, head.replace(/^\S+ /, ''), lines.join('｜'), '', userId);
+  return head + '\n' + lines.join('\n') + '\n（可重複執行，已做過的不會重做）';
 }
 
 /**
@@ -1303,6 +1377,7 @@ function supportedPrefixesMessage_() {
   }
   lines.push('・' + QUERY_USAGE);
   lines.push('・' + CATEGORY_COMMAND + '（看記帳可用的大類、細項、對象）');
+  lines.push('・' + INIT_COMMAND + '（管理者：部署後的安裝步驟，可重複執行）');
   lines.push('・' + REGISTER_USAGE);
   lines.push('・' + PAIR_COMMAND + '（拿 App 的配對碼，限一對一聊天）');
   lines.push('・' + RENEW_USAGE);

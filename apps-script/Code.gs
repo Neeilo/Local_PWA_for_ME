@@ -2595,7 +2595,8 @@ function migrateExpenseDiningToFood() {
 }
 
 /**
- * ADR-013 安裝——merge 後在 Apps Script 編輯器選這支按「執行」一次（比照 ensureAdr009Columns）。
+ * ADR-013 安裝——merge 後在 Apps Script 編輯器選這支按「執行」一次（比照 ensureAdr009Columns），
+ * 或由管理者在 LINE 傳「初始化」（line-router.gs 的 handleInitCommand_）。
  * 三件事，全部可重複執行：
  *   1. expenses 往右補 subcategory／targets／plan_id／plan_seq
  *   2. _expense_config 不存在就建表寫初版（存在不覆蓋）
@@ -2617,5 +2618,6 @@ function installAdr013() {
   var migrated = migrateExpenseDiningToFood();
   var config = diagnoseExpenseConfig();
   console.log('—— ADR-013 安裝完成。此函式可重複執行。');
-  return { columns: columns, migrated: migrated.changed, config_ok: config.ok, warnings: config.warnings || [] };
+  return { columns: columns, migrated: migrated.changed, config_ok: config.ok,
+           categories: (config.categories || []).length, warnings: config.warnings || [] };
 }

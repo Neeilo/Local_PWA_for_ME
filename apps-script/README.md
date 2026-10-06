@@ -33,7 +33,9 @@
 ### ⚠️ 記帳分類設定：部署後執行一次 `installAdr013`（ADR-013，2026-10-06 起）
 
 分類、細項、對象改由分頁 `_expense_config` 維護（取代前後端各寫死一份的清單）。merge 後在
-Apps Script 編輯器選 `installAdr013` 按「執行」一次，它會（全部可重複執行）：
+Apps Script 編輯器選 `installAdr013` 按「執行」一次——**或由管理者在 LINE 傳「初始化」**
+（它會跑 `installAdr013` 再跑 `refreshGuide`，逐步回報 ✅／⚠️／❌，一步失敗就停；非管理者會被拒絕）。
+`installAdr013` 會（全部可重複執行）：
 
 1. `expenses` 往右補 `subcategory`／`targets`／`plan_id`／`plan_seq` 四欄——**沒跑之前細項與對象寫不進 Sheet**
 2. `_expense_config` 不存在就建表寫初版；已存在不覆蓋
