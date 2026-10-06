@@ -212,7 +212,7 @@ function handleLineWebhook_(body) {
   try {
     var events = body.events || [];
     for (var i = 0; i < events.length; i++) {
-      handleLineEvent_(events[i]);
+      runLineEvent_(events[i]);
     }
   } catch (err) {
     console.log('LINE webhook 例外：' + err);
@@ -220,6 +220,53 @@ function handleLineWebhook_(body) {
   return ContentService
     .createTextOutput(JSON.stringify({ ok: true }))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * 一個事件的外框（2026-10-06 效能調整）：
+ *  1. logs 先排隊（LINE_LOG_QUEUE），**回覆送出之後**才一次寫進 logs 分頁——
+ *     LINE 的回覆在呼叫回覆 API 的當下就送到手機，不必等程式跑完；
+ *     以前每筆記帳要先寫完 logs（讀表頭＋新增一列）才回覆，使用者白等
+ *  2. 記一列效能紀錄（action＝line＋事件型別，reply_ms＝使用者等了多久）
+ * ⚠️ 已知取捨（Neil 2026-10-06 同意）：回覆之後 GAS 若剛好中斷，logs 可能少一筆；
+ *    資料列本身是在回覆之前就寫好的，不受影響。
+ */
+var LINE_LOG_QUEUE = null;
+var LINE_REPLIED_AT = null;
+function runLineEvent_(event) {
+  var started = Date.now();
+  LINE_LOG_QUEUE = [];
+  LINE_REPLIED_AT = null;
+  try {
+    handleLineEvent_(event);
+  } finally {
+    var queued = LINE_LOG_QUEUE;
+    LINE_LOG_QUEUE = null;
+    flushLineLogs_(queued);
+    var type = event && event.type ? String(event.type) : '';
+    if (/^(message|postback)$/.test(type)) {
+      recordLinePerf_('line' + type.charAt(0).toUpperCase() + type.slice(1),
+        (event.source && event.source.userId) || '', Date.now() - started,
+        LINE_REPLIED_AT === null ? null : LINE_REPLIED_AT - started);
+    }
+  }
+}
+
+/** 排隊的 logs 一次寫完：表頭只讀一次、整批一個 setValues（以前一筆 log 就要讀一次表頭） */
+function flushLineLogs_(queued) {
+  if (!queued || !queued.length) return;
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LOG_SHEET_NAME);
+    if (!sheet) throw new Error('找不到分頁「' + LOG_SHEET_NAME + '」');
+    var headers = sheetHeaders_(sheet);
+    if (!headers.length) throw new Error('分頁「' + LOG_SHEET_NAME + '」沒有表頭列');
+    var rows = queued.map(function (rec) {
+      return headers.map(function (h) { return Object.prototype.hasOwnProperty.call(rec, h) ? rec[h] : ''; });
+    });
+    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, headers.length).setValues(rows);
+  } catch (err) {
+    console.log('寫 logs 失敗（主流程不受影響）：' + err + '｜' + JSON.stringify(queued).slice(0, 500));
+  }
 }
 
 function handleLineEvent_(event) {
@@ -763,18 +810,21 @@ function appendToSheet_(sheetName, record) {
  * 以目前單人使用、LINE webhook 序列處理的情況不會發生，暫不加鎖（ADR-006 已記錄此假設邊界）。
  */
 function logTransaction_(source, status, input, result, detail, targetRow, userId) {
+  var rec = {
+    id: Date.now(),
+    ts: new Date(),
+    source: source || '',
+    status: status || '',
+    input: input || '',
+    result: result || '',
+    detail: detail || '',
+    target_row: (targetRow || targetRow === 0) ? targetRow : '',
+    user_id: userId || ''
+  };
+  // LINE 事件進行中：排隊，回覆送出之後才寫（見 runLineEvent_）
+  if (LINE_LOG_QUEUE) { LINE_LOG_QUEUE.push(rec); return; }
   try {
-    appendToSheet_(LOG_SHEET_NAME, {
-      id: Date.now(),
-      ts: new Date(),
-      source: source || '',
-      status: status || '',
-      input: input || '',
-      result: result || '',
-      detail: detail || '',
-      target_row: (targetRow || targetRow === 0) ? targetRow : '',
-      user_id: userId || ''
-    });
+    appendToSheet_(LOG_SHEET_NAME, rec);
   } catch (err) {
     console.log('寫 logs 失敗（主流程不受影響）：' + err);
   }
@@ -1515,6 +1565,7 @@ function lineReply_(replyToken, text) {
     });
 
     var code = res.getResponseCode();
+    if (LINE_REPLIED_AT === null) LINE_REPLIED_AT = Date.now();
     if (code === 200) {
       console.log('LINE 回覆成功');
     } else {
@@ -1862,6 +1913,33 @@ function readLineGroups_() {
   }
 }
 
+/**
+ * 三道門用的群組設定：先問快取（5 分鐘，比照白名單），沒有才讀 Sheet（2026-10-06 效能調整）。
+ * 以前每則群組訊息、每次按按鈕都要讀一次 line_groups。只快取成功的讀取；
+ * 改了設定的地方（App 的 groupSet、join、leave、補待審列）都會立刻清掉，不必等 5 分鐘。
+ */
+var LINE_GROUPS_CACHE_KEY = 'adr013_line_groups_v1';
+var LINE_GROUPS_CACHE_TTL = 300;
+function lineGroupsCached_() {
+  var cache = scriptCache_();
+  if (cache) {
+    var hit = cacheGetJson_(cache, LINE_GROUPS_CACHE_KEY);
+    if (hit) return hit;
+  }
+  var all = readLineGroups_();
+  if (!all.ok) return all;
+  var light = { ok: true, rows: all.rows.map(function (r) { return { row: r.row, record: r.record }; }) };
+  if (cache) {
+    try { cache.put(LINE_GROUPS_CACHE_KEY, JSON.stringify(light), LINE_GROUPS_CACHE_TTL); } catch (err) {}
+  }
+  return light;
+}
+
+function invalidateLineGroupsCache_() {
+  var cache = scriptCache_();
+  if (cache) { try { cache.remove(LINE_GROUPS_CACHE_KEY); } catch (err) {} }
+}
+
 function findGroup_(all, chatId) {
   var hit = null;
   (all.rows || []).some(function (r) {
@@ -1903,6 +1981,7 @@ function registerGroup_(source, chatId) {
     var patch = { left_at: '', joined_at: now, updated_at: now };
     if (name) patch.name = name;
     setDeviceFields_(all.sheet, all.headers, hit.row, patch);
+    invalidateLineGroupsCache_();
     return { created: false };
   }
   var sheet = all.sheet || ensureLineGroupsSheet_();
@@ -1910,6 +1989,7 @@ function registerGroup_(source, chatId) {
   var row = { group_id: chatId, name: name, is_active: '', joined_at: now, left_at: '', created_at: now, updated_at: now };
   GROUP_CMD_FIELDS.forEach(function (f) { row[f] = 'TRUE'; });
   sheet.appendRow(headers.map(function (h) { return row[h] == null ? '' : row[h]; }));
+  invalidateLineGroupsCache_();
   return { created: true };
 }
 
@@ -1925,6 +2005,7 @@ function handleLeave_(event) {
     var joined = toTime_(hit.record.joined_at);
     quick = isFinite(joined) && now - joined <= GROUP_QUICK_LEAVE_MS;
     setDeviceFields_(all.sheet, all.headers, hit.row, { left_at: new Date(now).toISOString(), updated_at: new Date(now).toISOString() });
+    invalidateLineGroupsCache_();
   }
   logTransaction_(JOIN_LOG_SOURCE, quick ? '失敗' : '成功', (src.type || '') + '/' + (chatId || '(沒有 ID)'),
     quick ? '⚠️ 加入 1 分鐘內就離開：疑似群組已有其他官方帳號（LINE 一個群組只能有一個官方帳號）' : '已離開' + (SOURCE_LABELS[src.type] || ''),
@@ -1948,7 +2029,7 @@ function groupCommandOf_(text) {
  */
 function groupGate_(source, cmd, text, userId) {
   var chatId = chatIdOf_(source);
-  var all = readLineGroups_();
+  var all = lineGroupsCached_();
   if (!all.ok) {
     logTransaction_(GROUP_LOG_SOURCE, '失敗', text, LINE_GROUPS_SHEET + ' 讀不到，擋下', all.error, '', userId);
     return '群組設定暫時讀不到，先擋下來以策安全。';

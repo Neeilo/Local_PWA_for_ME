@@ -2060,10 +2060,10 @@ function authorizeArchiveMail() {
  * 並行的五個請求，appendRow 才不會互相蓋掉。
  */
 var PERFORMANCE_HEADERS = ['id', 'ts', 'action', 'trigger', 'client_ms', 'server_ms', 'auth_ms', 'open_ms', 'read_ms',
-  'sheets', 'rows', 'device_id', 'line_id'];
+  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms'];
 
 /** 觸發情境。不在清單裡的一律不記——欄位裡只會出現這幾個字 */
-var PERF_TRIGGERS = ['cold', 'foreground', 'poll', 'manual', 'write'];
+var PERF_TRIGGERS = ['cold', 'foreground', 'poll', 'manual', 'write', 'line'];
 var PERF_CLIENT_MAX = 20;              // 一個請求最多收幾筆手機紀錄
 var PERF_CLIENT_MS_MAX = 600000;       // 超過 10 分鐘的不是耗時，是手機睡著了
 var PERF_SUMMARY_DAYS = 7;
@@ -2123,7 +2123,7 @@ function recordPerf_(body, perf, serverMs) {
     if (!rows.length) return;
 
     var sheet = ensurePerformanceSheet_();
-    var headers = sheetHeaders_(sheet);
+    var headers = perfHeaders_(sheet);
     var now = Date.now();
     rows.forEach(function (r, i) {
       r.id = String(now + i);
@@ -2136,6 +2136,41 @@ function recordPerf_(body, perf, serverMs) {
     });
   } catch (err) {
     console.log('寫效能紀錄失敗（主流程不受影響）：' + err);
+  }
+}
+
+/**
+ * 表頭；舊表沒有 reply_ms（2026-10-06 加的，LINE 用）就補在最右邊。
+ * 本來每次寫紀錄就要讀一次表頭，這裡沒有多讀，只有缺欄的那一次多寫一格。
+ */
+function perfHeaders_(sheet) {
+  var headers = sheetHeaders_(sheet);
+  if (headers.length && headers.indexOf('reply_ms') === -1) {
+    sheet.getRange(1, headers.length + 1, 1, 1).setValues([['reply_ms']]);
+    headers.push('reply_ms');
+  }
+  return headers;
+}
+
+/**
+ * LINE 的一次 webhook（2026-10-06）。本來只有 PWA 的請求有效能紀錄，LINE 完全沒記——
+ * 「按鈕很慢」查不到數字。在**回覆之後**才寫，不讓使用者多等。
+ *  - server_ms：整個 webhook 跑完（含回覆後才寫的 logs）
+ *  - reply_ms ：從收到事件到送出回覆——使用者實際等的時間
+ * 只記名單上啟用中的人（比照 PWA：沒通過驗證的請求一列都不寫，免得陌生人灌爆這張表）。
+ */
+function recordLinePerf_(action, userId, serverMs, replyMs) {
+  try {
+    var user = lineUserById_(userId);
+    if (!user || !truthy_(user.is_active)) return;
+    var sheet = ensurePerformanceSheet_();
+    var headers = perfHeaders_(sheet);
+    var now = Date.now();
+    var r = { id: String(now), ts: new Date(now).toISOString(), action: action, trigger: 'line',
+              server_ms: serverMs, reply_ms: replyMs == null ? '' : replyMs, line_id: String(userId || '').trim() };
+    sheet.appendRow(headers.map(function (h) { return r[h] === undefined || r[h] === null ? '' : r[h]; }));
+  } catch (err) {
+    console.log('寫 LINE 效能紀錄失敗（主流程不受影響）：' + err);
   }
 }
 
@@ -2198,6 +2233,7 @@ function perfSummary_(caller, now) {
   var oldest = NaN;
   var client = {};
   var server = {};
+  var line = {};
   data.rows.forEach(function (r) {
     var t = toTime_(r.ts);
     if (!isNaN(t) && (isNaN(oldest) || t < oldest)) oldest = t;
@@ -2209,6 +2245,15 @@ function perfSummary_(caller, now) {
       (client[ck] = client[ck] || []).push(c);
     }
     var s = perfNum_(r.server_ms);
+    // LINE 另外一張表：使用者等的是「多久回覆」，不是整個 webhook 跑多久
+    if (String(r.trigger || '') === 'line') {
+      var lk = String(r.action || '');
+      var lg = line[lk] = line[lk] || { reply: [], total: [] };
+      var rp = perfNum_(r.reply_ms);
+      if (rp !== null) lg.reply.push(rp);
+      if (s !== null) lg.total.push(s);
+      return;
+    }
     if (s !== null) {
       var sk = String(r.action || '');
       var g = server[sk] = server[sk] || { ms: [], total: 0, auth: 0, open: 0, read: 0 };
@@ -2236,6 +2281,13 @@ function perfSummary_(caller, now) {
       var ms = g.ms.sort(asc);
       return { action: k, count: ms.length, p50: perfPercentile_(ms, 0.5), p90: perfPercentile_(ms, 0.9),
         auth_pct: pct(g.auth, g.total), open_pct: pct(g.open, g.total), read_pct: pct(g.read, g.total) };
+    }),
+    line: Object.keys(line).map(function (k) {
+      var g = line[k];
+      var rp = g.reply.sort(asc), tt = g.total.sort(asc);
+      return { action: k, count: Math.max(rp.length, tt.length),
+        reply_p50: rp.length ? perfPercentile_(rp, 0.5) : null, reply_p90: rp.length ? perfPercentile_(rp, 0.9) : null,
+        total_p50: tt.length ? perfPercentile_(tt, 0.5) : null };
     })
   };
 }
@@ -3019,6 +3071,7 @@ function groupSet_(caller, groupId, field, value) {
   setDeviceFields_(all.sheet, all.headers, hit.row, (function () {
     var p = { updated_at: new Date().toISOString() }; p[field] = v; return p;
   })());
+  invalidateLineGroupsCache_();          // LINE 的三道門立刻看到新設定，不等快取過期
   settingsLog_(caller, 'groupSet ' + (hit.record.name || id), field + ' → ' + (v ? '開' : '關'), 'group_id=' + id);
   return { success: true, group_id: id, field: field, value: v };
 }
@@ -3045,11 +3098,25 @@ function configKeyOf_(rec) {
     (kind === 'target' ? String(rec.parent == null ? '' : rec.parent).trim() : '');
 }
 
-/** 改完設定：清快取（立刻生效，不等 5 分鐘），回最新的自檢結果 */
-function configChanged_(ss) {
-  invalidateExpenseConfigCache_();
-  var parsed = readExpenseConfig_(ss);
-  return { warnings: parsed.warnings || [], ok: !!parsed.ok };
+/**
+ * 改完設定：用手上（已套用改動）的列直接算出新設定，**放進快取**並回傳最新的列與自檢——
+ * 不再整張重讀一次，App 也不必再發一個請求抓清單（2026-10-06 效能調整）。
+ * 新設定不能用（沒有任何啟用中的大類）時改成清快取，讓下一次讀取走 fail-safe 那條路。
+ */
+function configCommit_(cfg) {
+  var records = cfg.rows.map(function (r) { return r.record; });
+  var parsed = parseExpenseConfig_(records);
+  var cache = scriptCache_();
+  if (parsed.ok && cache) {
+    try {
+      cache.put(EXPENSE_CONFIG_CACHE_KEY, JSON.stringify({ source: 'sheet', categories: parsed.categories, warnings: parsed.warnings }),
+        EXPENSE_CONFIG_CACHE_TTL);
+    } catch (err) { invalidateExpenseConfigCache_(); }
+  } else {
+    invalidateExpenseConfigCache_();
+  }
+  return { success: true, warnings: parsed.warnings || [], ok: !!parsed.ok,
+           rows: cfg.rows.map(function (r) { return plainRecord_(r.record, EXPENSE_CONFIG_HEADERS); }) };
 }
 
 /**
@@ -3085,9 +3152,9 @@ function configSet_(caller, key, field, value) {
   var patch = {};
   patch[field] = v;
   setDeviceFields_(cfg.sheet, cfg.headers, hit.row, patch);
+  hit.record[field] = v;
   settingsLog_(caller, 'configSet ' + hit.record.kind + ' ' + hit.record.name, field + ' → ' + (v === '' ? '（空白）' : v));
-  var after = configChanged_(ss);
-  return { success: true, warnings: after.warnings, ok: after.ok };
+  return configCommit_(cfg);
 }
 
 /**
@@ -3131,7 +3198,7 @@ function configAdd_(caller, record) {
               targets: kind === 'category' ? String(r.targets == null ? '' : r.targets).trim() : '',
               aliases: '', color: kind === 'category' ? color : '', sort: sort + 10, is_active: '' };
   cfg.sheet.appendRow(cfg.headers.map(function (h) { return row[h] == null ? '' : row[h]; }));
+  cfg.rows.push({ row: cfg.sheet.getLastRow(), record: row });
   settingsLog_(caller, 'configAdd ' + kind + ' ' + name, '已新增' + (row.parent ? '（' + row.parent + '）' : ''));
-  var after = configChanged_(ss);
-  return { success: true, warnings: after.warnings, ok: after.ok };
+  return configCommit_(cfg);
 }

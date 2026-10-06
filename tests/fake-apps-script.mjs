@@ -221,7 +221,7 @@ class FakeSpreadsheet {
  * 回傳的 call() 直接呼叫原始碼裡的函式，read() 讀得到頂層的 const
  * （vm 的頂層 const 不會變成全域屬性，但同一個 context 裡的後續運算看得見）。
  */
-export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [], cache = false, overrides = {}, mailImpl = null, tokens = {} } = {}) {
+export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [], cache = false, overrides = {}, mailImpl = null, tokens = {}, realLogs = false } = {}) {
   const logs = [];              // console.log 的內容
   const transactions = [];      // logTransaction_ 收到的參數
   const pushes = [];            // linePush_ 收到的 (userId, text)
@@ -341,7 +341,8 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
   // line-router.gs 被載進來時會用真的 logTransaction_／linePush_ 蓋掉上面的記錄器。
   // 裝回去：測試要看的是「有沒有記」，不是記進 Sheet 的格式。其餘出口（例如
   // lineReply_）由 overrides 換成記錄器——函式呼叫在執行時才查全域，換掉的就是實際被呼叫的那個。
-  context.logTransaction_ = (...args) => transactions.push(args);
+  // realLogs：保留 line-router.gs 真的 logTransaction_（寫進 logs 分頁），測「什麼時候寫」的時候用
+  if (!realLogs) context.logTransaction_ = (...args) => transactions.push(args);
   context.linePush_ = linePush_;
   Object.assign(context, overrides);
 

@@ -43,6 +43,7 @@ function loadLineRouter() {
   // 讓群組裡的指令走到上面那道白名單——這批測試要驗的是白名單有沒有擋住，不是群組開關
   context.LINE_GROUPS_SHEET = 'line_groups';
   context.registerGroup_ = () => ({ created: false });
+  context.scriptCache_ = () => null;          // 沒有快取：群組設定直接走上面那個 readLineGroups_ 替身
   context.truthy_ = (v) => v === true || ['TRUE', '1', 'YES', 'Y'].includes(String(v == null ? '' : v).trim().toUpperCase());
   context.readLineGroups_ = () => ({ ok: true, headers: [], rows: [{ row: 2, record: {
     group_id: GROUP, is_active: 'TRUE', left_at: '', cmd_expense: 'TRUE', cmd_tasks: 'TRUE', cmd_query: 'TRUE' } }] });

@@ -2280,7 +2280,7 @@ const PERF_TRIGGER_LABEL={cold:'開 App', foreground:'回前景', poll:'輪詢',
 
 function perfAlertNeeded(){ return isAdmin() && perfRows>PERF_ALERT_ROWS; }
 
-function fmtMs(ms){ return ms<1000 ? Math.round(ms)+' ms' : (ms/1000).toFixed(1)+' 秒'; }
+function fmtMs(ms){ if(ms==null) return '—'; return ms<1000 ? Math.round(ms)+' ms' : (ms/1000).toFixed(1)+' 秒'; }
 
 /** 摘要畫成表格。p90 這個詞不上畫面，寫成「慢的時候」 */
 function perfSummaryHtml(r){
@@ -2291,10 +2291,15 @@ function perfSummaryHtml(r){
   const server=(r.server||[]).map(g=>`<tr><td>${esc(g.action)}</td>
       <td>${g.count}</td><td>${fmtMs(g.p50)}</td><td>${fmtMs(g.p90)}</td>
       <td>${g.auth_pct}／${g.open_pct}／${g.read_pct}%</td></tr>`).join('');
+  const LINE_LABEL={lineMessage:'打字（記帳、查詢…）', linePostback:'按按鈕'};
+  const line=(r.line||[]).map(g=>`<tr><td>${esc(LINE_LABEL[g.action]||g.action)}</td>
+      <td>${g.count}</td><td>${fmtMs(g.reply_p50)}</td><td>${fmtMs(g.reply_p90)}</td></tr>`).join('');
   return `<p class="perf-sub">手機上等了多久（近 ${r.days} 天）</p>
     <table class="perf-table"><tr><th>情境</th><th>次數</th><th>一般</th><th>慢的時候</th></tr>${client||'<tr><td colspan="4">—</td></tr>'}</table>
     <p class="perf-sub">雲端內部（驗證／開表／讀表 佔比）</p>
     <table class="perf-table"><tr><th>動作</th><th>次數</th><th>一般</th><th>慢的時候</th><th>分段</th></tr>${server||'<tr><td colspan="5">—</td></tr>'}</table>
+    <p class="perf-sub">LINE 多久回覆你</p>
+    <table class="perf-table"><tr><th>動作</th><th>次數</th><th>一般</th><th>慢的時候</th></tr>${line||'<tr><td colspan="4">—</td></tr>'}</table>
     <p class="perf-sub">「慢的時候」：90% 的請求比這個快。共 ${r.total} 筆，最舊一筆 ${esc(String(r.oldest||'').slice(0,10))}</p>`;
 }
 
@@ -2366,7 +2371,7 @@ async function openSysTab(tab){
   if(tab==='plans'){ renderSysCard(); return; }       // 計畫列 boot／輪詢已經帶回來了
   sysLoading=true; renderSysCard();
   let r=null;
-  try{ r=await cloudPost({action:'adminView', what:tab}); }catch(e){ r=null; }
+  try{ r=await cloudPost({action:'adminView', what:tab, trigger:'manual'}); }catch(e){ r=null; }
   sysLoading=false;
   sysData[tab]=r||{success:false};
   renderSysCard();
@@ -2388,12 +2393,17 @@ function sysGroupsHtml(d){
     </div>`;
   }).join('');
 }
+/* 開關先在畫面上變（不必等雲端來回好幾秒），雲端沒存到才變回來並講明 */
 async function setGroupFlag(i, field){
   const g=((sysData.groups||{}).rows||[])[i]; if(!g) return;
-  const next=!truthy(g[field]);
+  const before=g[field], next=!truthy(before);
+  g[field]=next?'TRUE':''; renderSysCard();
   let r=null;
   try{ r=await cloudPost({action:'groupSet', group_id:g.group_id, field, value:next, trigger:'write'}); }catch(e){ r=null; }
-  if(!r || !r.success){ toast('⚠️ 沒有存到雲端'+(r&&r.error?'（'+r.error+'）':'')); return; }
+  if(!r || !r.success){
+    g[field]=before; renderSysCard();
+    toast('⚠️ 沒有存到雲端，已改回來'+(r&&r.error?'（'+r.error+'）':'')); return;
+  }
   g[field]=r.value; renderSysCard(); toast('已更新');
 }
 
@@ -2442,24 +2452,32 @@ const CONFIG_ERRORS = {
   invalid_name:'名稱不能空白、不能有斜線、最多 20 字', invalid_color:'顏色只能是 c1～c8', invalid_kind:'類型不對',
   invalid_field:'這一欄不能改', config_not_found:'找不到這一列，請重新整理', forbidden:'只有管理者可以改'
 };
+/* 雲端回應直接帶回最新的列與自檢：拿來重畫就好，不必再發一個請求抓清單。
+   之後背景同步一次，記帳表單的分類按鈕跟著換（不等它） */
 function applyConfigResult(r){
   if(!r){ toast('⚠️ 沒有存到雲端'); return false; }
   if(!r.success){ toast('⚠️ '+(CONFIG_ERRORS[r.error]||r.error)); return false; }
+  if(Array.isArray(r.rows)) sysData.config={success:true, rows:r.rows, warnings:r.warnings||[], ok:r.ok};
+  renderSysCard();
   toast(r.warnings&&r.warnings.length ? '已存，但設定有 ⚠️ 要處理' : '已存，App 與 LINE 立刻生效');
+  syncFromCloud();
   return true;
 }
 async function setConfigField(i, field, value){
   const row=((sysData.config||{}).rows||[])[i]; if(!row) return;
+  // 啟用／停用先在畫面上變；下拉選單與輸入框本來就已經是新值
+  const before=row[field];
+  if(field==='is_active'){ row.is_active = value ? 'TRUE' : 'FALSE'; renderSysCard(); }
   let r=null;
   try{ r=await cloudPost({action:'configSet', key:{kind:row.kind, name:row.name, parent:row.parent}, field, value, trigger:'write'}); }catch(e){ r=null; }
-  if(applyConfigResult(r)){ await openSysTab('config'); syncFromCloud(); }
+  if(!applyConfigResult(r) && field==='is_active'){ row.is_active=before; renderSysCard(); }
 }
 async function addConfigItem(){
   const rec={kind:document.getElementById('sysAddKind').value, name:document.getElementById('sysAddName').value,
              parent:document.getElementById('sysAddParent').value, color:document.getElementById('sysAddColor').value};
   let r=null;
   try{ r=await cloudPost({action:'configAdd', record:rec, trigger:'write'}); }catch(e){ r=null; }
-  if(applyConfigResult(r)){ await openSysTab('config'); syncFromCloud(); }
+  applyConfigResult(r);
 }
 
 /* 分期：所有計畫一覽，結束／刪除走記帳分頁同一組動作 */

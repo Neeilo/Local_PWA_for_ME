@@ -26,7 +26,7 @@ const DAY = 86400000;
 
 const TASK_HEADERS = ['id', 'text', 'is_completed', 'created_at', 'priority', 'line_id', 'del', 'archive'];
 const PERF_HEADERS = ['id', 'ts', 'action', 'trigger', 'client_ms', 'server_ms', 'auth_ms', 'open_ms', 'read_ms',
-  'sheets', 'rows', 'device_id', 'line_id'];
+  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms'];
 
 function env({ sheets = {}, cache = false } = {}) {
   const e = loadCodeGs({
