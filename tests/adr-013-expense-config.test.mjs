@@ -683,3 +683,33 @@ describe('LINE「初始化」：管理者在手機上跑部署後的安裝步驟
     assert.equal(e.ss.getSheetByName('_expense_config'), null);
   });
 });
+
+/* ========================================================================== */
+describe('回歸：開機後分類列要自己重畫（2026-10-06 實機回報「雲端類別未載入」）', () => {
+
+  test('開 App、boot 回來、什麼都沒點 → 分類列已是設定的大類，不是「還沒載入」', async () => {
+    const g = env({ sheets: {
+      tasks: new FakeSheet('tasks', [['id', 'text', 'line_id', 'del']]),
+      reviews: new FakeSheet('reviews', [['review_date', 'line_id', 'del']]),
+      moods: new FakeSheet('moods', [['id', 'level', 'line_id', 'del']]),
+      notes: new FakeSheet('notes', [['id', 'text', 'line_id', 'del']])
+    } });
+    const e = loadFrontend({
+      fetchImpl: ({ body }) => {
+        const out = g.call('handlePwaSync_', { postData: { contents: JSON.stringify(Object.assign({}, body, { token: TOK_ME })) } }).body;
+        return { json: () => Promise.resolve(JSON.parse(out)) };
+      }
+    });
+    const els = {};
+    const orig = e.context.document.getElementById;
+    e.set('document', Object.assign({}, e.context.document, { getElementById: (id) => els[id] || (els[id] = orig(id)) }));
+    e.raw('deviceToken = "' + TOK_ME + '"; localOnly = false; applyIdentity = function(){}');
+
+    e.call('resetExpenseForm');                         // 開機時畫的第一版：設定還沒到
+    assert.match(els.expCatRow.innerHTML, /還沒從雲端載入/, '前提：開機當下確實是空的');
+
+    await e.callRaw('startSession', 'cold');
+    assert.doesNotMatch(els.expCatRow.innerHTML, /還沒從雲端載入/);
+    for (const name of ['飲食', '交通', '教育']) assert.match(els.expCatRow.innerHTML, new RegExp(name));
+  });
+});
