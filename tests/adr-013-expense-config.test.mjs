@@ -706,10 +706,84 @@ describe('回歸：開機後分類列要自己重畫（2026-10-06 實機回報�
     e.raw('deviceToken = "' + TOK_ME + '"; localOnly = false; applyIdentity = function(){}');
 
     e.call('resetExpenseForm');                         // 開機時畫的第一版：設定還沒到
-    assert.match(els.expCatRow.innerHTML, /還沒從雲端載入/, '前提：開機當下確實是空的');
+    assert.match(els.expCatRow.innerHTML, /分類載入中/, '前提：開機當下確實是空的');
 
     await e.callRaw('startSession', 'cold');
-    assert.doesNotMatch(els.expCatRow.innerHTML, /還沒從雲端載入/);
+    assert.doesNotMatch(els.expCatRow.innerHTML, /載入中|連不上|沒有送來/);
     for (const name of ['飲食', '交通', '教育']) assert.match(els.expCatRow.innerHTML, new RegExp(name));
+  });
+});
+
+/* ========================================================================== */
+describe('回歸（code-review）：分類設定不能只靠開機那一趟', () => {
+
+  const DATA_ONLY = () => ({
+    tasks: new FakeSheet('tasks', [['id', 'text', 'line_id', 'del']]),
+    reviews: new FakeSheet('reviews', [['review_date', 'line_id', 'del']]),
+    moods: new FakeSheet('moods', [['id', 'level', 'line_id', 'del']]),
+    notes: new FakeSheet('notes', [['id', 'text', 'line_id', 'del']]),
+    expenses: new FakeSheet('expenses', [EXP_HEADERS,
+      ['5', '2026-10-01', 'expense', '餐飲', 120, '', '2026-10-01T00:00:00.000Z', ME, '', '', '', '', '']])
+  });
+
+  /** 前端接真的 Code.gs。tamper(action, out) 可以竄改／丟掉某個 action 的回應 */
+  function wired(tamper = (_a, out) => out) {
+    const g = env({ sheets: DATA_ONLY() });
+    const e = loadFrontend({
+      fetchImpl: ({ body }) => {
+        const out = JSON.parse(g.call('handlePwaSync_', { postData: { contents: JSON.stringify(Object.assign({}, body, { token: TOK_ME })) } }).body);
+        const t = tamper(body.action, out);
+        return t === null ? { json: () => Promise.reject(new Error('offline')) } : { json: () => Promise.resolve(t) };
+      }
+    });
+    const els = {};
+    const orig = e.context.document.getElementById;
+    e.set('document', Object.assign({}, e.context.document, { getElementById: (id) => els[id] || (els[id] = orig(id)) }));
+    e.raw('deviceToken = "' + TOK_ME + '"; localOnly = false; applyIdentity = function(){}');
+    e.call('resetExpenseForm');
+    return { e, els, g };
+  }
+
+  test('後端：readMany 有讀 expenses 就帶分類設定；沒讀、或沒權限就不帶', () => {
+    const g = env({ sheets: DATA_ONLY() });
+    const many = (sheets, token = TOK_ME) => post(g, { action: 'readMany', token, sheets });
+    assert.equal(many(['tasks', 'expenses']).expense_config.categories[0].name, '飲食');
+    assert.equal('expense_config' in many(['tasks']), false, '沒讀記帳就不必帶');
+    const noExp = env({ users: roster(''), sheets: DATA_ONLY() });
+    const out = post(noExp, { action: 'readMany', token: TOK_MOM, sheets: ['tasks', 'expenses'] });
+    assert.ok(out.denied.includes('expenses'));
+    assert.equal('expense_config' in out, false, '沒有記帳權限就不給分類設定');
+  });
+
+  test('開機那一趟失敗、改由輪詢接手 → 分類列照樣補上，「餐飲」舊帳也換成飲食', async () => {
+    const { e, els } = wired((action, out) => (action === 'boot' ? null : out));
+    await e.callRaw('startSession', 'cold');
+    assert.equal(e.read('expenseConfig'), null, '前提：開機確實失敗、沒拿到設定');
+    assert.match(els.expCatRow.innerHTML, /連不上雲端/, '開機失敗當下：講明是連不上，不是「載入中」');
+
+    await e.callRaw('pullFromCloud', { trigger: 'poll' });
+    assert.match(els.expCatRow.innerHTML, /飲食/);
+    assert.doesNotMatch(els.expCatRow.innerHTML, /載入中|連不上|沒有送來/);
+    assert.equal(e.read('state.expenses[0].category'), '飲食', '設定要在換算記帳資料之前收下');
+  });
+
+  test('開機成功但回應沒帶分類設定 → 不靜默：分類列講明是雲端沒送，並留 console 警告', async () => {
+    const { e, els } = wired((action, out) => { if (action === 'boot') delete out.expense_config; return out; });
+    const warns = [];
+    e.context.console.warn = (...a) => warns.push(a.join(' '));
+    await e.callRaw('startSession', 'cold');
+    assert.equal(e.read('cloudOnline'), true, '資料照常載入');
+    assert.match(els.expCatRow.innerHTML, /雲端沒有送來分類設定/);
+    assert.ok(warns.some((w) => /expense_config/.test(w)));
+  });
+
+  test('之前拿到過設定、這次回應沒帶 → 沿用手上那份，不誤報', async () => {
+    let drop = false;
+    const { e, els } = wired((_a, out) => { if (drop) delete out.expense_config; return out; });
+    await e.callRaw('startSession', 'cold');
+    drop = true;
+    await e.callRaw('pullFromCloud', { trigger: 'poll' });
+    assert.equal(e.read('expenseConfigMissing'), false);
+    assert.match(els.expCatRow.innerHTML, /飲食/);
   });
 });
