@@ -333,6 +333,16 @@
   .exp-tags{display:flex; flex-wrap:wrap; gap:4px; margin-top:2px;}
   .exp-tag{font-size:11px; padding:1px 7px; border-radius:9px; border:1px solid var(--line); color:var(--muted);}
   .exp-filter{display:flex; justify-content:flex-end; margin:-4px 0 6px;}
+  .plan-box{margin-top:12px; padding-top:12px; border-top:1px dashed var(--line);}
+  .plan-box .row{display:flex; gap:8px; margin-top:6px;}
+  .plan-box .row input{flex:1; min-width:0;}
+  .plan-sched{font-size:13px; margin-top:8px; display:grid; grid-template-columns:auto 1fr auto; gap:2px 10px;}
+  .plan-sched .amt{text-align:right; font-variant-numeric:tabular-nums;}
+  .plan-stat{font-size:13px; color:var(--muted); line-height:1.7;}
+  .plan-actions{display:flex; gap:8px; margin-top:10px;}
+  .plan-actions button{flex:1;}
+  .btn-ghost{background:var(--field); border:1.5px solid var(--line); border-radius:10px; padding:9px; font-weight:600; color:var(--ink);}
+  .btn-ghost.danger{color:var(--danger); border-color:var(--danger);}
   .exp-date{font-size:12px; color:var(--muted);}
   .exp-amt{font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; flex:none;}
   .exp-amt.income{color:var(--accent);}
@@ -771,6 +781,8 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       <div class="field-label">備註（可留空）</div>
       <input type="text" id="expNote" placeholder="買了什麼？">
       <div style="margin-top:12px"><button class="btn" id="expSubmit" onclick="submitExpense()">記一筆</button></div>
+      <!-- 分期（ADR-013 T4）：只在編輯既有一筆時出現——支出可以「轉成分期」，分期列顯示計畫狀態 -->
+      <div id="expPlanBox"></div>
     </div>
 
     <div class="card">
@@ -1179,7 +1191,7 @@ async function runBoot(trigger){
   if(gateMode) closeAuthGate();
   roster=j.line_users.filter(u=>rosterId(u));
   rosterStatus = activeUsers().length ? 'ok' : 'empty';
-  const ok=applyCloudData(j.data, j.denied, j.expense_config);
+  const ok=applyCloudData(j.data, j.denied, j);
   applyIdentity();
   if(ok) flushOutbox();
   return ok;
@@ -1739,6 +1751,8 @@ const DEFAULT_PRIORITY = 'M';
    相鄰配色已通過 CVD 檢驗，另加 2px 底色間隙與圖例直接標籤作為第二編碼。 */
 let expenseConfig = null;   // { source, categories:[{name,color,active,aliases,subs,target_group,targets}] }
 let expenseConfigMissing = false;   // 連上雲端、讀得到記帳，回應卻沒帶分類設定
+let installmentPlans = [];          // 分期計畫（ADR-013 D-6），各期本身在 state.expenses（帶 plan_id）
+let planDraft = null;               // 「轉成分期」表單：{id, periods, down, card, schedule}
 const MAX_DONUT_SEGMENTS = 6; // 超過的尾端併入「其他」，維持一眼可讀
 /* 設定裡沒有顏色（或還沒載入）的大類：用中性灰，不要借別人的顏色 */
 const CATEGORY_FALLBACK_COLOR = 'var(--muted-ink)';
@@ -2110,7 +2124,7 @@ async function pullFromCloud(meta){
   let j=null;
   try{ j=await cloudPost(Object.assign({action:'readMany', sheets:DATA_SHEETS}, meta)); }catch(e){ j=null; }
   if(!j || j.error || !j.data || typeof j.data!=='object') return pullFailed();
-  return applyCloudData(j.data, j.denied, j.expense_config);
+  return applyCloudData(j.data, j.denied, j);
 }
 
 function pullFailed(){
@@ -2120,9 +2134,11 @@ function pullFailed(){
 }
 
 /** boot 與 readMany 共用：雲端回來的各表整張換進 state。回傳這次算不算數。
-    expenseCfg 是兩條路都會帶的分類設定（ADR-013）：放在這裡收，boot 失敗、改由輪詢接手時
-    分類列也一樣補得上；而且一定在換算記帳資料「之前」收——別名→正名的換算靠它 */
-function applyCloudData(data, denied, expenseCfg){
+    extras 是兩條路都會帶的記帳附件（ADR-013）：分類設定 expense_config 與分期計畫 installments。
+    放在這裡收，boot 失敗、改由輪詢接手時也一樣補得上；分類設定一定在換算記帳資料「之前」收——
+    別名→正名的換算靠它 */
+function applyCloudData(data, denied, extras){
+  const expenseCfg=(extras||{}).expense_config;
   const deniedList=(Array.isArray(denied)?denied:[]).filter(x=>DATA_SHEETS.includes(x));
   const c={};
   for(const sheet of DATA_SHEETS){
@@ -2135,6 +2151,9 @@ function applyCloudData(data, denied, expenseCfg){
   if(!deniedList.includes('expenses')){
     expenseConfigMissing = !applyExpenseConfig(expenseCfg) && !expenseConfig;
     if(expenseConfigMissing) console.warn('雲端回應沒有帶記帳分類設定（expense_config）');
+    if(Array.isArray((extras||{}).installments)) installmentPlans=extras.installments;
+  }else{
+    installmentPlans=[];
   }
 
   // 整張換掉。後端已經濾掉 del=true 的列，所以「別人刪掉的」在這裡自然消失
@@ -2686,13 +2705,13 @@ function renderCatRow(){
   document.getElementById('expTargetRow').innerHTML=targets.map(x=>chipHtml(x, expTargets.includes(x), 'toggleExpTarget')).join('');
 }
 function resetExpenseForm(){
-  expEditingId=null; expCategory=null; expSub=null; expTargets=[]; expType='expense';
+  expEditingId=null; expCategory=null; expSub=null; expTargets=[]; expType='expense'; planDraft=null;
   document.getElementById('expAmount').value='';
   document.getElementById('expNote').value='';
   document.getElementById('expDate').value=todayKey();
   document.getElementById('expSubmit').textContent='記一筆';
   document.getElementById('expEditBanner').innerHTML='';
-  pickExpType('expense'); renderCatRow();
+  pickExpType('expense'); renderCatRow(); renderPlanBox();
 }
 function submitExpense(){
   let touched=null;   // 這次動到的那一筆，送出去用
@@ -2727,7 +2746,8 @@ function editExpense(id){
   document.getElementById('expNote').value=e.note||'';
   // 直接設值、不走 pickExpCategory：那支換大類時會清掉細項，這裡是「載入既有的」
   expCategory=e.category; expSub=e.subcategory||null; expTargets=(e.targets||[]).slice();
-  pickExpType(e.type); renderCatRow();
+  planDraft=null;
+  pickExpType(e.type); renderCatRow(); renderPlanBox();
   document.getElementById('expSubmit').textContent='更新這筆';
   document.getElementById('expEditBanner').innerHTML=
     `<div class="edit-banner"><span>編輯中：${esc(e.date)} ${esc(e.category)}</span>
@@ -2749,6 +2769,146 @@ function shiftMonth(n){
   const d=new Date(y, m-1+n, 1);
   expMonth=monthKey(d);
   renderExpenseView();
+}
+/* ---------- 分期（ADR-013 T4） ----------
+   拆期的算法只在雲端（planSchedule_）：預覽也是問雲端（dry_run），不在這裡另算一份——
+   兩份實作遲早有一天預覽說 1,983、存進去的是 1,984。 */
+/* 雲端存「3／12」（全形斜線，免得 Sheet 把 3/12 轉成日期），畫面上顯示「第 3/12 期」 */
+function planSeqLabel(seq){
+  const s=String(seq||'').trim();
+  if(!s || s==='頭期') return s;
+  const m=s.match(/^(\d+)\s*[\/／]\s*(\d+)$/);
+  return m ? `第 ${m[1]}/${m[2]} 期` : s;
+}
+/* 一個計畫的現況：各期都在 state.expenses 裡（已軟刪除的雲端不會送來） */
+function planSummary(planId){
+  const plan=installmentPlans.find(p=>String(p.plan_id)===String(planId))||null;
+  const rows=state.expenses.filter(e=>String(e.plan_id)===String(planId) && e.plan_seq);
+  const today=todayKey();
+  const periods=rows.filter(e=>e.plan_seq!=='頭期');
+  const left=periods.filter(e=>e.date>today);
+  const end=rows.reduce((m,e)=>e.date>m?e.date:m,'');
+  return { plan, due:periods.length-left.length, left:left.length,
+           leftAmount:left.reduce((s,e)=>s+e.amount,0), end,
+           total: plan ? Number(plan.total)||0 : rows.reduce((s,e)=>s+e.amount,0) };
+}
+/* 這筆還有變更排在待送佇列：先轉分期的話，晚到的那個 upsert 會把原本那筆救回來，錢算兩次 */
+function hasPendingExpense(id){
+  return outbox.some(j=>j.sheet==='expenses' && String((j.record||{}).id)===String(id));
+}
+function renderPlanBox(){
+  const el=document.getElementById('expPlanBox');
+  const e=expEditingId ? state.expenses.find(x=>x.id===expEditingId) : null;
+  if(!e){ el.innerHTML=''; return; }
+
+  if(e.plan_id && e.plan_seq){
+    const s=planSummary(e.plan_id);
+    const status=s.plan ? s.plan.status : '';
+    el.innerHTML=`<div class="plan-box">
+      <div class="field-label">分期計畫 🧾 ${esc(planSeqLabel(e.plan_seq))}</div>
+      <div class="plan-stat">
+        計畫總額 NT$ ${fmtAmount(s.total)}${s.plan&&s.plan.card?`（${esc(s.plan.card)}）`:''}<br>
+        已到期 ${s.due} 期・剩 ${s.left} 期共 NT$ ${fmtAmount(s.leftAmount)}<br>
+        ${status==='ended'?'已結束':'結束日 '+esc(s.end)}
+      </div>
+      ${status==='active'?`<div class="plan-actions">
+        <button class="btn-ghost" onclick="endPlan('${esc(e.plan_id)}')">結束計畫</button>
+        <button class="btn-ghost danger" onclick="deletePlan('${esc(e.plan_id)}')">刪除計畫</button>
+      </div>`:''}
+      <div class="plan-stat" style="margin-top:6px">這一期可以照一般記帳修改，不會回寫計畫。</div>
+    </div>`;
+    return;
+  }
+  if(e.type!=='expense' || e.plan_id){ el.innerHTML=''; return; }   // 收入不能分期
+
+  if(!planDraft || planDraft.id!==e.id){
+    el.innerHTML=`<div class="plan-box"><button class="btn-ghost" style="width:100%" onclick="openPlanForm()">轉成分期</button></div>`;
+    return;
+  }
+  const d=planDraft;
+  const sched=(d.schedule||[]).map(r=>`<span>${esc(planSeqLabel(r.seq))}</span><span>${esc(r.date)}</span><span class="amt">${fmtAmount(r.amount)}</span>`).join('');
+  el.innerHTML=`<div class="plan-box">
+    <div class="field-label">轉成分期（總額 NT$ ${fmtAmount(e.amount)}）</div>
+    <div class="row">
+      <input type="number" id="planPeriods" inputmode="numeric" min="2" step="1" placeholder="期數（必填）" value="${esc(d.periods)}">
+      <input type="number" id="planDown" inputmode="decimal" min="0" step="1" placeholder="頭期款（選填）" value="${esc(d.down)}">
+    </div>
+    <div class="row"><input type="text" id="planCard" placeholder="卡片（選填）" value="${esc(d.card)}"></div>
+    ${sched?`<div class="plan-sched">${sched}</div>`:''}
+    <div class="plan-actions">
+      <button class="btn-ghost" onclick="cancelPlanForm()">取消</button>
+      <button class="btn-ghost" onclick="previewPlan()">預覽</button>
+      ${sched?`<button class="btn" onclick="confirmPlan()">確認轉成分期</button>`:''}
+    </div>
+  </div>`;
+}
+function openPlanForm(){ planDraft={id:expEditingId, periods:'', down:'', card:'', schedule:null}; renderPlanBox(); }
+function cancelPlanForm(){ planDraft=null; renderPlanBox(); }
+function readPlanForm(){
+  planDraft.periods=document.getElementById('planPeriods').value.trim();
+  planDraft.down=document.getElementById('planDown').value.trim();
+  planDraft.card=document.getElementById('planCard').value.trim();
+}
+const PLAN_ERRORS = {
+  invalid_periods:'期數要是 2 以上的整數', invalid_down_payment:'頭期款要小於總額',
+  amount_too_small:'金額不夠分這麼多期', already_planned:'這筆已經轉過分期了',
+  not_an_expense:'收入不能分期', expense_not_found:'雲端找不到這筆（可能已被刪除），請重新整理',
+  columns_missing:'雲端的記帳表還沒補分期欄位，請管理者在 LINE 傳「初始化」',
+  plan_not_found:'找不到這個分期計畫，請重新整理', plan_not_active:'這個計畫已經結束了',
+  plan_already_deleted:'這個計畫已經刪除了', busy:'雲端正在處理另一個分期，請稍後再試', forbidden:'你沒有記帳的權限'
+};
+function planErrorText(r){ return PLAN_ERRORS[r&&r.error] || ('雲端回報錯誤：'+((r&&r.error)||'未知')); }
+function planRequest(){
+  readPlanForm();
+  if(hasPendingExpense(planDraft.id)){ toast('這筆還有變更沒送上雲端，等同步完成再轉分期'); return null; }
+  return {expense_id:String(planDraft.id), periods:Number(planDraft.periods),
+          down_payment:planDraft.down===''?'':Number(planDraft.down), card:planDraft.card};
+}
+/* 預覽也問雲端（dry_run，什麼都不寫）：拆期的算法只有一份 */
+async function previewPlan(){
+  const req=planRequest(); if(!req) return;
+  let r=null;
+  try{ r=await cloudPost(Object.assign({action:'planCreate', dry_run:true}, req)); }catch(e){ r=null; }
+  if(!r){ toast('連不上雲端，沒辦法預覽'); return; }
+  if(!r.success){ toast(planErrorText(r)); planDraft.schedule=null; renderPlanBox(); return; }
+  planDraft.schedule=r.schedule; planDraft.previewed=JSON.stringify(req); renderPlanBox();
+}
+async function confirmPlan(){
+  const req=planRequest(); if(!req) return;
+  // 預覽之後又改了數字：送出去的會是沒看過的拆法。要求重新預覽，不替人猜
+  if(JSON.stringify(req)!==planDraft.previewed){
+    planDraft.schedule=null; renderPlanBox();
+    toast('數字改過了，請再按一次「預覽」確認'); return;
+  }
+  let r=null;
+  try{ r=await cloudPost(Object.assign({action:'planCreate', trigger:'write'}, req)); }catch(e){ r=null; }
+  if(!r){
+    // 請求可能已經在雲端跑完、只是回應沒傳回來——再按一次是安全的（雲端會回「已經轉過」）
+    alert('沒有收到雲端回應（可能是連線中斷）。\n\n不確定是否已轉成分期：重新整理看看，沒有的話再轉一次（重複按是安全的）。');
+    return;
+  }
+  if(!r.success){ toast(planErrorText(r)); return; }
+  toast('已轉成 '+r.schedule.length+' 筆分期');
+  resetExpenseForm();
+  syncFromCloud();
+}
+async function planAction(action, planId, ask, done){
+  if(!confirm(ask)) return;
+  let r=null;
+  try{ r=await cloudPost({action, plan_id:planId, trigger:'write'}); }catch(e){ r=null; }
+  if(!r){ alert('沒有收到雲端回應（可能是連線中斷）。重新整理看看結果，需要的話再按一次（重複按是安全的）。'); return; }
+  if(!r.success){ toast(planErrorText(r)); return; }
+  toast(done(r));
+  resetExpenseForm();
+  syncFromCloud();
+}
+function endPlan(planId){
+  return planAction('planEnd', planId, '結束這個分期？\n今天之後的期數會刪掉，已到期的保留。',
+    r=>'已結束：刪除 '+r.removed+' 期未到期');
+}
+function deletePlan(planId){
+  return planAction('planDelete', planId, '刪除整個分期計畫？\n所有期數都會刪掉，原本那一筆會恢復。',
+    r=>'已刪除 '+r.deleted+' 期'+(r.restored?'，原本那筆已恢復':''));
 }
 function toggleExpUnsorted(){ expOnlyUnsorted=!expOnlyUnsorted; renderExpenseView(); }
 function renderExpenseView(){
@@ -2772,7 +2932,7 @@ function renderExpenseView(){
       <span class="exp-cat"><span class="lg-dot" style="background:${catColor(e.category)}"></span>${esc(e.category)}</span>
       <div class="exp-body" onclick="editExpense(${e.id})">
         ${(e.subcategory||e.note)?`<div class="exp-note">${e.subcategory?`<span class="exp-sub">[${esc(e.subcategory)}]</span> `:''}${esc(e.note||'')}</div>`:''}
-        ${(e.targets||[]).length?`<div class="exp-tags">${e.targets.map(t=>`<span class="exp-tag">${esc(t)}</span>`).join('')}</div>`:''}
+        ${((e.targets||[]).length||e.plan_seq)?`<div class="exp-tags">${e.plan_seq?`<span class="exp-tag">🧾 ${esc(planSeqLabel(e.plan_seq))}${e.date>todayKey()?' ⏳':''}</span>`:''}${(e.targets||[]).map(t=>`<span class="exp-tag">${esc(t)}</span>`).join('')}</div>`:''}
         <div class="exp-date">${esc(e.date)}${e.type==='income'?' · 收入':''}</div>
       </div>
       <div class="exp-amt ${e.type==='income'?'income':''}">${e.type==='income'?'+':'-'}${fmtAmount(e.amount)}</div>

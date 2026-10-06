@@ -26,6 +26,9 @@ var PERFORMANCE_SHEET = 'performance';
 /** 記帳分類設定（ADR-013 D-3）。欄位與規則見檔尾「ADR-013」那一段 */
 var EXPENSE_CONFIG_SHEET = '_expense_config';
 
+/** 分期計畫（ADR-013 D-6～D-8）。欄位與規則見檔尾「分期」那一段 */
+var INSTALLMENTS_SHEET = 'installments';
+
 /**
  * 不歸前端 state 管的分頁：archivePurge 動不得。
  *
@@ -35,7 +38,7 @@ var EXPENSE_CONFIG_SHEET = '_expense_config';
  *
  * 原名 NO_REPLACE_ALL；replaceAll 於 ADR-009 退場後改名，規則不變。
  */
-var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs', PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET];
+var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs', PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET];
 
 /**
  * PWA 連一筆都不准寫的分頁（任何 action 都一樣，包括 upsert）。
@@ -45,9 +48,11 @@ var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs', PERFORMANCE_SHEET, EXPENSE_
  * 不見」的假象。它比 NOT_FRONTEND_SHEETS 更嚴，所以擋在所有 action 之前，不另外列進去。
  *
  * _expense_config（ADR-013）同理：分類由 Neil 在 Sheet 上改，前端只拿 boot 解析好的結構。
+ * installments（ADR-013 D-6）只走 planCreate／planDelete／planEnd：一般 upsert 改得到計畫列，
+ * 卻改不到它底下的各期，兩邊從此對不上。
  */
 var GUIDE_SHEET = '_guide';
-var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET];
+var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET];
 
 /**
  * PWA 連讀都不准讀的分頁（ADR-010 D-8）。
@@ -460,6 +465,8 @@ function bootResponse_(caller, perf) {
 function withExpenseConfig_(out, user, ss, sheets) {
   if ((sheets || []).indexOf('expenses') !== -1 && canUseSheet_(user, 'expenses')) {
     out.expense_config = expenseConfigPublic_(expenseConfig_(ss));
+    // 分期計畫（D-6）跟著同一個條件走：列表上的「剩 M 期共 X 元」要用計畫的總額與狀態
+    out.installments = installmentPlans_(ss);
   }
   return out;
 }
@@ -524,6 +531,9 @@ function routePwaSync_(body, perf) {
   if (body.action === 'setMyEmail') return jsonOut(setMyEmail_(caller, body.email));
   if (body.action === 'perfSummary') return jsonOut(perfSummary_(caller));
   if (body.action === 'perfPurge') return jsonOut(perfPurge_(caller, body.days));
+  if (body.action === 'planCreate') return jsonOut(planCreate_(caller, body));
+  if (body.action === 'planDelete') return jsonOut(planDelete_(caller, body.plan_id));
+  if (body.action === 'planEnd') return jsonOut(planEnd_(caller, body.plan_id, body.today));
 
   if (NO_PWA_WRITE.indexOf(body.sheet) !== -1) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');
@@ -2613,7 +2623,7 @@ function migrateExpenseDiningToFood() {
  * 或由管理者在 LINE 傳「初始化」（line-router.gs 的 handleInitCommand_）。
  * 三件事，全部可重複執行：
  *   1. expenses 往右補 subcategory／targets／plan_id／plan_seq
- *   2. _expense_config 不存在就建表寫初版（存在不覆蓋）
+ *   2. _expense_config 不存在就建表寫初版（存在不覆蓋）；installments 不存在就建表頭
  *   3. 「餐飲」→「飲食」遷移
  *
  * ⚠️ 第 1 步沒跑之前，細項與對象寫不進 Sheet（寫入都依表頭對位，沒有那一欄就安靜地略過）。
@@ -2629,9 +2639,293 @@ function installAdr013() {
     console.log(columns.added.length ? '✅ expenses 補上欄位：' + columns.added.join('、') : '✔ expenses 欄位已齊備');
   }
   ensureExpenseConfigSheet_(ss);
+  ensureInstallmentsSheet_(ss);
   var migrated = migrateExpenseDiningToFood();
   var config = diagnoseExpenseConfig();
   console.log('—— ADR-013 安裝完成。此函式可重複執行。');
   return { columns: columns, migrated: migrated.changed, config_ok: config.ok,
            categories: (config.categories || []).length, warnings: config.warnings || [] };
+}
+
+
+/* ========================================================================== */
+/* ADR-013 — 分期（D-6～D-8，交棒票 T4）                                         */
+/*                                                                            */
+/* 先記一筆 → PWA「轉成分期」→ planCreate 一次做完：寫計畫列、原本那筆軟刪除、   */
+/* 預先產生各期。不用排程：各期一產生就是普通的記帳列，月小計、「查/」、甜甜圈     */
+/* 全部照舊算，不必認得「分期」這回事。                                          */
+/*                                                                            */
+/* 第一版只做「刪得掉、停得了、單筆改得動」（D-8）：                              */
+/*   planDelete：整個計畫刪除，各期全軟刪除、原本那筆恢復                         */
+/*   planEnd   ：結束計畫，今天之後的期數軟刪除，已到期的保留                     */
+/*   改某一期  ：一般 upsert，不回寫計畫                                          */
+/* 保留方向（不做）：① 改計畫同步到各期 ② 分期↔信用卡連動                        */
+/* ========================================================================== */
+
+var INSTALLMENTS_HEADERS = ['plan_id', 'source_expense_id', 'total', 'down_payment', 'periods', 'first_date',
+  'category', 'subcategory', 'targets', 'note', 'card', 'line_id', 'status', 'created_at', 'ended_at'];
+var PLAN_PERIODS_MAX = 120;              // 十年。超過的不是分期，是打錯字
+var PLAN_LOCK_MS = 10000;
+var PLAN_CARD_MAX = 40;
+/** 頭期那一列的 plan_seq */
+var PLAN_SEQ_DOWN = '頭期';
+/**
+ * 各期 plan_seq 的分隔字元是**全形**斜線：「3／12」。半形的「3/12」寫進 Sheet 會被自動
+ * 轉成 3 月 12 日——那就不是第幾期了，而且是安靜的。前端顯示時換回「第 3/12 期」。
+ */
+var PLAN_SEQ_SEP = '／';
+
+/** 建表方式比照 ensurePerformanceSheet_：只建表頭 */
+function ensureInstallmentsSheet_(ss) {
+  ss = ss || SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(INSTALLMENTS_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(INSTALLMENTS_SHEET);
+    sheet.appendRow(INSTALLMENTS_HEADERS);
+    return sheet;
+  }
+  if (sheet.getLastRow() === 0) sheet.appendRow(INSTALLMENTS_HEADERS);
+  return sheet;
+}
+
+/** 送前端的計畫列（刪除的不送）。分頁還沒建＝還沒有任何計畫 */
+function installmentPlans_(ss) {
+  var sheet = (ss || SpreadsheetApp.getActiveSpreadsheet()).getSheetByName(INSTALLMENTS_SHEET);
+  if (!sheet) return [];
+  var read = sheetRecords_(ss || SpreadsheetApp.getActiveSpreadsheet(), INSTALLMENTS_SHEET, {});
+  if (read.error) return [];
+  return read.rows.filter(function (p) {
+    return String(p.plan_id || '').trim() && String(p.status || '').trim() !== 'deleted';
+  }).map(function (p) {
+    var o = {};
+    INSTALLMENTS_HEADERS.forEach(function (h) { o[h] = p[h] instanceof Date ? keyValue_(p[h]) : (p[h] == null ? '' : p[h]); });
+    return o;
+  });
+}
+
+/** 'YYYY-MM-DD' 的下 n 個月 1 號。純函式 */
+function monthFirstAfter_(dateKey, n) {
+  var d = parseDateKey_(dateKey);
+  if (!d) return '';
+  return keyValue_(new Date(d.getFullYear(), d.getMonth() + n, 1, 12, 0, 0, 0));
+}
+
+/**
+ * 各期的日期與金額（D-6）。純函式，PWA 的預覽也走這一份（planCreate 的 dry_run）——
+ * 前後端各算一份，遲早有一天預覽說 1,983、存進去的是 1,984。
+ *  - 有頭期款：頭期一筆，日期＝原日期
+ *  - 剩餘金額 ÷ 期數，無條件捨去成整數，零頭全放最後一期
+ *  - 第 1 期＝原日期的下個月 1 號，之後每月 1 號
+ */
+function planSchedule_(total, downPayment, periods, dateKey) {
+  var rows = [];
+  if (downPayment > 0) rows.push({ seq: PLAN_SEQ_DOWN, date: dateKey, amount: downPayment });
+  var rest = total - downPayment;
+  var each = Math.floor(rest / periods);
+  for (var i = 1; i <= periods; i++) {
+    var amount = i < periods ? each : Math.round((rest - each * (periods - 1)) * 100) / 100;
+    rows.push({ seq: i + PLAN_SEQ_SEP + periods, date: monthFirstAfter_(dateKey, i), amount: amount });
+  }
+  return rows;
+}
+
+/** 分期的動作一律要有記帳權限（跟寫 expenses 同一條規則） */
+function planForbidden_(caller, action) {
+  return canUseSheet_(caller.user, 'expenses') ? null : featureForbidden_(caller, action, 'expenses');
+}
+
+/** expenses 整張讀進來，附列號。分期要用的欄位缺了就回 missing（請先跑「初始化」） */
+function planExpenses_(ss) {
+  var sheet = ss.getSheetByName('expenses');
+  if (!sheet) return { error: 'sheet_not_found' };
+  var headers = sheetHeaders_(sheet);
+  var missing = ['id', DEL_FIELD, 'plan_id', 'plan_seq'].filter(function (h) { return headers.indexOf(h) === -1; });
+  if (missing.length) return { error: 'columns_missing', missing: missing };
+  var lastRow = sheet.getLastRow();
+  var values = lastRow < 2 ? [] : sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+  return {
+    sheet: sheet, headers: headers,
+    rows: values.map(function (line, i) {
+      var rec = {};
+      headers.forEach(function (h, c) { rec[h] = line[c]; });
+      return { row: i + 2, record: rec };
+    })
+  };
+}
+
+function planLog_(status, input, result, detail, lineId) {
+  try { logTransaction_('記帳', status, input, result, detail || '', '', lineId); } catch (err) {}
+}
+
+/**
+ * planCreate → { success, plan_id, schedule } ／ dry_run → { success, dry_run, schedule }（什麼都不寫）
+ *
+ * 防連按兩次：整段包在鎖裡，而且原本那筆一旦轉過（已軟刪除、或帶著 plan_id）就拒絕——
+ * 第二次請求排到鎖之後，看到的已經是轉過的那筆，不會再產生第二套。
+ */
+function planCreate_(caller, body) {
+  var forbidden = planForbidden_(caller, 'planCreate');
+  if (forbidden) return forbidden;
+
+  var periods = Number(body.periods);
+  if (!(periods >= 2 && periods <= PLAN_PERIODS_MAX && Math.floor(periods) === periods)) {
+    return { error: 'invalid_periods', max: PLAN_PERIODS_MAX };
+  }
+  var down = body.down_payment === '' || body.down_payment == null ? 0 : Number(body.down_payment);
+  var card = String(body.card == null ? '' : body.card).replace(/[\r\n\t]+/g, ' ').trim().slice(0, PLAN_CARD_MAX);
+  var id = keyValue_(body.expense_id);
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(PLAN_LOCK_MS)) return { error: 'busy' };
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var ex = planExpenses_(ss);
+    if (ex.error) return ex;
+    var hit = null;
+    ex.rows.some(function (r) { if (keyValue_(r.record.id) === id) { hit = r; return true; } return false; });
+    if (!id || !hit || isTombstone_(hit.record)) return { error: 'expense_not_found' };
+    var src = hit.record;
+    if (String(src.type || '').trim() === 'income') return { error: 'not_an_expense' };
+    if (keyValue_(src.plan_id) || keyValue_(src.plan_seq)) return { error: 'already_planned' };
+
+    var total = Number(src.amount);
+    if (!(total > 0)) return { error: 'invalid_amount' };
+    if (!(isFinite(down) && down >= 0 && down < total)) return { error: 'invalid_down_payment' };
+    var dateKey = keyValue_(src.expense_date);
+    if (!parseDateKey_(dateKey)) return { error: 'invalid_date' };
+    if (total - down < periods) return { error: 'amount_too_small' };   // 每期至少 1 元
+
+    var schedule = planSchedule_(total, down, periods, dateKey);
+    if (body.dry_run === true) return { success: true, dry_run: true, schedule: schedule };
+
+    var now = new Date().toISOString();
+    var planId = 'P' + Date.now();
+    var base = Date.now();
+    var rows = schedule.map(function (s, i) {
+      var rec = {};
+      ex.headers.forEach(function (h) { rec[h] = src[h] == null ? '' : src[h]; });
+      rec.id = String(base + i);
+      rec.expense_date = s.date;
+      rec.amount = s.amount;
+      rec.plan_id = planId;
+      rec.plan_seq = s.seq;
+      rec.created_at = now;
+      rec[DEL_FIELD] = '';
+      if ('board' in rec) rec.board = '';
+      return ex.headers.map(function (h) { return rec[h]; });
+    });
+
+    ensureInstallmentsSheet_(ss).appendRow(INSTALLMENTS_HEADERS.map(function (h) {
+      return ({ plan_id: planId, source_expense_id: id, total: total, down_payment: down || '', periods: periods,
+        first_date: monthFirstAfter_(dateKey, 1), category: src.category, subcategory: src.subcategory,
+        targets: src.targets, note: src.note, card: card, line_id: caller.line_id, status: 'active',
+        created_at: now, ended_at: '' })[h] ?? '';
+    }));
+    ex.sheet.getRange(ex.sheet.getLastRow() + 1, 1, rows.length, ex.headers.length).setValues(rows);
+    // 原本那筆：軟刪除並記下 plan_id——planDelete 靠它找回來恢復
+    setDeviceFields_(ex.sheet, ex.headers, hit.row, { del: 'TRUE', plan_id: planId });
+
+    planLog_('成功', '轉成分期 ' + src.category + ' ' + total,
+      '已建立 ' + planId + '：' + (down ? '頭期 ' + down + '＋' : '') + periods + ' 期',
+      '原本那筆 id=' + id + ' 已軟刪除', caller.line_id);
+    return { success: true, plan_id: planId, schedule: schedule };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 找計畫列。回 { sheet, headers, row, record } 或 { error } */
+function findPlan_(ss, planId) {
+  var sheet = ss.getSheetByName(INSTALLMENTS_SHEET);
+  var id = keyValue_(planId);
+  if (!sheet || !id) return { error: 'plan_not_found' };
+  var headers = sheetHeaders_(sheet);
+  var rows = findRowsByKey_(sheet, [headers.indexOf('plan_id') + 1], id);
+  if (!rows.length) return { error: 'plan_not_found' };
+  var values = sheet.getRange(rows[0], 1, 1, headers.length).getValues()[0];
+  var record = {};
+  headers.forEach(function (h, i) { record[h] = values[i]; });
+  return { sheet: sheet, headers: headers, row: rows[0], record: record };
+}
+
+/** 計畫底下的各期（含頭期；不含原本那筆——它沒有 plan_seq） */
+function planPeriods_(ex, planId) {
+  return ex.rows.filter(function (r) {
+    return keyValue_(r.record.plan_id) === planId && keyValue_(r.record.plan_seq);
+  });
+}
+
+/**
+ * planDelete（建錯了）：計畫 status=deleted；**所有期**軟刪除；原本那筆恢復（取消軟刪除、清掉 plan_id）。
+ * 恢復之後它就是一筆普通的帳，可以重新轉一次。
+ */
+function planDelete_(caller, planId) {
+  var forbidden = planForbidden_(caller, 'planDelete');
+  if (forbidden) return forbidden;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(PLAN_LOCK_MS)) return { error: 'busy' };
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var plan = findPlan_(ss, planId);
+    if (plan.error) return plan;
+    if (String(plan.record.status || '').trim() === 'deleted') return { error: 'plan_already_deleted' };
+    var ex = planExpenses_(ss);
+    if (ex.error) return ex;
+    var id = keyValue_(planId);
+
+    var periods = planPeriods_(ex, id);
+    periods.forEach(function (r) { setDeviceFields_(ex.sheet, ex.headers, r.row, { del: 'TRUE' }); });
+    var restored = 0;
+    var srcId = keyValue_(plan.record.source_expense_id);
+    ex.rows.forEach(function (r) {
+      if (keyValue_(r.record.id) !== srcId || keyValue_(r.record.plan_seq)) return;
+      setDeviceFields_(ex.sheet, ex.headers, r.row, { del: '', plan_id: '' });
+      restored++;
+    });
+    setDeviceFields_(plan.sheet, plan.headers, plan.row, { status: 'deleted', ended_at: new Date().toISOString() });
+
+    planLog_(restored ? '成功' : '失敗', '刪除分期 ' + id,
+      '已刪除 ' + periods.length + ' 期' + (restored ? '，原本那筆已恢復' : '，⚠️ 找不到原本那筆，沒有恢復'),
+      'source_expense_id=' + srcId, caller.line_id);
+    return { success: true, deleted: periods.length, restored: restored };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * planEnd（不付了／提前還清）：計畫 status=ended；**日期在今天之後**的期數軟刪除，已到期的保留。
+ * today 只給測試用（比照 completeRecurring）；平常走伺服器的今天。
+ */
+function planEnd_(caller, planId, today) {
+  var forbidden = planForbidden_(caller, 'planEnd');
+  if (forbidden) return forbidden;
+  var todayKey = keyValue_(today) || keyValue_(new Date());
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(PLAN_LOCK_MS)) return { error: 'busy' };
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var plan = findPlan_(ss, planId);
+    if (plan.error) return plan;
+    if (String(plan.record.status || '').trim() !== 'active') return { error: 'plan_not_active' };
+    var ex = planExpenses_(ss);
+    if (ex.error) return ex;
+    var id = keyValue_(planId);
+
+    var removed = 0, kept = 0;
+    planPeriods_(ex, id).forEach(function (r) {
+      if (isTombstone_(r.record)) return;
+      if (keyValue_(r.record.expense_date) > todayKey) {
+        setDeviceFields_(ex.sheet, ex.headers, r.row, { del: 'TRUE' });
+        removed++;
+      } else {
+        kept++;
+      }
+    });
+    setDeviceFields_(plan.sheet, plan.headers, plan.row, { status: 'ended', ended_at: new Date().toISOString() });
+    planLog_('成功', '結束分期 ' + id, '刪除 ' + removed + ' 期未到期，保留 ' + kept + ' 期', '今天=' + todayKey, caller.line_id);
+    return { success: true, removed: removed, kept: kept };
+  } finally {
+    lock.releaseLock();
+  }
 }
