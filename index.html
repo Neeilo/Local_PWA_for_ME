@@ -1179,8 +1179,7 @@ async function runBoot(trigger){
   if(gateMode) closeAuthGate();
   roster=j.line_users.filter(u=>rosterId(u));
   rosterStatus = activeUsers().length ? 'ok' : 'empty';
-  applyExpenseConfig(j.expense_config);   // 要在資料之前：分類名的換算（別名→正名）靠它
-  const ok=applyCloudData(j.data, j.denied);
+  const ok=applyCloudData(j.data, j.denied, j.expense_config);
   applyIdentity();
   if(ok) flushOutbox();
   return ok;
@@ -1739,6 +1738,7 @@ const DEFAULT_PRIORITY = 'M';
    顏色綁定「大類」本身（設定的 color 欄），不隨金額排名變動；環上以設定的順序繪製，
    相鄰配色已通過 CVD 檢驗，另加 2px 底色間隙與圖例直接標籤作為第二編碼。 */
 let expenseConfig = null;   // { source, categories:[{name,color,active,aliases,subs,target_group,targets}] }
+let expenseConfigMissing = false;   // 連上雲端、讀得到記帳，回應卻沒帶分類設定
 const MAX_DONUT_SEGMENTS = 6; // 超過的尾端併入「其他」，維持一眼可讀
 /* 設定裡沒有顏色（或還沒載入）的大類：用中性灰，不要借別人的顏色 */
 const CATEGORY_FALLBACK_COLOR = 'var(--muted-ink)';
@@ -2110,7 +2110,7 @@ async function pullFromCloud(meta){
   let j=null;
   try{ j=await cloudPost(Object.assign({action:'readMany', sheets:DATA_SHEETS}, meta)); }catch(e){ j=null; }
   if(!j || j.error || !j.data || typeof j.data!=='object') return pullFailed();
-  return applyCloudData(j.data, j.denied);
+  return applyCloudData(j.data, j.denied, j.expense_config);
 }
 
 function pullFailed(){
@@ -2119,8 +2119,10 @@ function pullFailed(){
   return false;
 }
 
-/** boot 與 readMany 共用：雲端回來的各表整張換進 state。回傳這次算不算數 */
-function applyCloudData(data, denied){
+/** boot 與 readMany 共用：雲端回來的各表整張換進 state。回傳這次算不算數。
+    expenseCfg 是兩條路都會帶的分類設定（ADR-013）：放在這裡收，boot 失敗、改由輪詢接手時
+    分類列也一樣補得上；而且一定在換算記帳資料「之前」收——別名→正名的換算靠它 */
+function applyCloudData(data, denied, expenseCfg){
   const deniedList=(Array.isArray(denied)?denied:[]).filter(x=>DATA_SHEETS.includes(x));
   const c={};
   for(const sheet of DATA_SHEETS){
@@ -2129,6 +2131,11 @@ function applyCloudData(data, denied){
     c[sheet]=data[sheet];
   }
   applyDenied(deniedList);
+  // 讀得到記帳、雲端卻沒送設定：不可靜默（Rule 12）。分類列會講明是雲端沒送，不是叫人「連上線再試」
+  if(!deniedList.includes('expenses')){
+    expenseConfigMissing = !applyExpenseConfig(expenseCfg) && !expenseConfig;
+    if(expenseConfigMissing) console.warn('雲端回應沒有帶記帳分類設定（expense_config）');
+  }
 
   // 整張換掉。後端已經濾掉 del=true 的列，所以「別人刪掉的」在這裡自然消失
   state.tasks    = c.tasks.map(taskFromCloud);
@@ -2589,9 +2596,6 @@ function canonicalCategory(raw){
 function applyExpenseConfig(cfg){
   if(!cfg || !Array.isArray(cfg.categories) || !cfg.categories.length) return false;
   expenseConfig=cfg;
-  // 表單的分類列只在開機（設定還沒到）與點選時重畫；設定到了要主動重畫一次，
-  // 不然會一直停在「分類還沒從雲端載入」，直到使用者剛好點到什麼（2026-10-06 實機回報）
-  renderCatRow();
   return true;
 }
 /* 「未細分」：這個大類有細項可選、這筆卻沒選。沒有細項的大類本來就無從細分，不算 */
@@ -2658,11 +2662,19 @@ function withCurrent(list, current){
   (Array.isArray(current)?current:(current?[current]:[])).forEach(x=>{ if(!out.includes(x)) out.push(x); });
   return out;
 }
+/* 分類列是空的：講清楚是哪一種，三種的處理方式完全不同。
+   分類列在 renderAll 裡重畫（比照雜記的 renderNoteTagRow）：設定、連線狀態一變就跟著換，
+   不靠個別路徑記得呼叫——只在開機與點選時畫，正是 2026-10-06「雲端類別未載入」的根 */
+function catRowEmptyHint(){
+  if(expenseConfigMissing) return '雲端沒有送來分類設定（後端可能還是舊版），請告訴管理者';
+  if(cloudOnline===false) return '連不上雲端，分類要連上線才會出現';
+  return '分類載入中…';
+}
 function renderCatRow(){
   const names=withCurrent(activeExpenseCategories().map(c=>c.name), expCategory);
   document.getElementById('expCatRow').innerHTML = names.length
     ? names.map(c=>chipHtml(c, expCategory===c, 'pickExpCategory', catColor(c))).join('')
-    : '<div class="empty-hint">分類還沒從雲端載入，連上線後再試</div>';
+    : `<div class="empty-hint">${catRowEmptyHint()}</div>`;
 
   const cat=expenseCategory(expCategory)||{};
   const subs=expCategory ? withCurrent(cat.subs||[], expSub) : [];
@@ -3285,7 +3297,7 @@ function renderAll(){
   renderTasks(); renderReviews(); loadTodayReview();
   renderMoodBtns(); renderMoods(); renderPulse();
   renderNotes(); renderNoteTagRow();
-  renderExpenseView(); renderDashboard();
+  renderExpenseView(); renderCatRow(); renderDashboard();
   renderMeCard();          // 認領數會隨資料增減，跟著列表一起刷新
 }
 (function init(){

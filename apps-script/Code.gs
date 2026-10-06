@@ -446,8 +446,21 @@ function bootResponse_(caller, perf) {
     denied: many.denied
   };
   if (isAdmin) out.perf_rows = perfRowCount_();
-  // 分類設定只給有記帳權限的人（ADR-013 D-3）。用同一個 ss：boot 只開一次試算表
-  if (canUseSheet_(caller.user, 'expenses')) out.expense_config = expenseConfigPublic_(expenseConfig_(ss));
+  return withExpenseConfig_(out, caller.user, ss, BOOT_SHEETS);
+}
+
+/**
+ * boot 與 readMany 都帶分類設定（ADR-013 D-3）。只給這次真的讀了 expenses、而且有記帳權限的人。
+ *
+ * 為什麼 readMany 也要帶：只有 boot 帶的話，開機那一趟一失敗（GAS 冷啟動、手機網路差），
+ * 接手的 15 秒輪詢走的是 readMany——資料回來了、連線燈也綠了，分類列卻永遠是空的
+ * （2026-10-06 實機回報）。設定有 5 分鐘快取，多帶一份幾乎不花成本。
+ * 用呼叫端開好的 ss：boot 只開一次試算表。
+ */
+function withExpenseConfig_(out, user, ss, sheets) {
+  if ((sheets || []).indexOf('expenses') !== -1 && canUseSheet_(user, 'expenses')) {
+    out.expense_config = expenseConfigPublic_(expenseConfig_(ss));
+  }
   return out;
 }
 
@@ -498,7 +511,8 @@ function routePwaSync_(body, perf) {
     var openedMany = Date.now();
     var ssMany = SpreadsheetApp.getActiveSpreadsheet();
     perf.open_ms = Date.now() - openedMany;
-    return jsonOut(readManyFrom_(ssMany, caller.user, body.sheets, perf));
+    var many = readManyFrom_(ssMany, caller.user, body.sheets, perf);
+    return jsonOut(withExpenseConfig_(many, caller.user, ssMany, Array.isArray(body.sheets) ? body.sheets : []));
   }
   if (body.action === 'read') return jsonOut(readSheetResponse_(body.sheet, '', '', perf, caller.user));
   if (body.action === 'readTombstones') {
