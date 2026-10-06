@@ -84,8 +84,26 @@ var GUIDE_REFRESH_HOUR = 6;      // 在九點的到期檢查之前，早上打�
 function refreshGuide() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var guide = ss.getSheetByName(GUIDE_SHEET) || ss.insertSheet(GUIDE_SHEET);
-  var notes = guideNotes_(guide);
+  var rows = guideRows_(ss, guideNotes_(guide));
 
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
+  var banner = '本分頁由 refreshGuide() 自動產生（最後更新：' + stamp + '）。' +
+    '要改說明請改 repo 的 apps-script/sheet-guide.gs，只有「備註」欄會被保留。';
+
+  guide.clearContents();
+  guide.getRange(1, 1, 1, 1).setValues([[banner]]);
+  guide.getRange(GUIDE_HEADER_ROW, 1, 1 + rows.length, GUIDE_HEADERS.length)
+    .setValues([GUIDE_HEADERS].concat(rows));
+
+  console.log('✅ _guide 已更新：' + rows.length + ' 張分頁');
+  return { sheets: rows.length };
+}
+
+/**
+ * 導覽表的每一列（依 GUIDE_HEADERS 的欄序）。refreshGuide 寫進 Sheet、首頁「系統設定」的
+ * 導覽分頁現算現給，兩邊共用這一份——不然 App 上看到的說明會跟 Sheet 上的漂移。
+ */
+function guideRows_(ss, notes) {
   var actual = {};
   ss.getSheets().forEach(function (s) { actual[s.getName()] = s; });
 
@@ -102,18 +120,7 @@ function refreshGuide() {
   Object.keys(actual).forEach(function (name) {
     if (!registered[name]) rows.push(guideRow_(name, null, actual[name], notes));
   });
-
-  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
-  var banner = '本分頁由 refreshGuide() 自動產生（最後更新：' + stamp + '）。' +
-    '要改說明請改 repo 的 apps-script/sheet-guide.gs，只有「備註」欄會被保留。';
-
-  guide.clearContents();
-  guide.getRange(1, 1, 1, 1).setValues([[banner]]);
-  guide.getRange(GUIDE_HEADER_ROW, 1, 1 + rows.length, GUIDE_HEADERS.length)
-    .setValues([GUIDE_HEADERS].concat(rows));
-
-  console.log('✅ _guide 已更新：' + rows.length + ' 張分頁');
-  return { sheets: rows.length };
+  return rows;
 }
 
 /** 一張分頁在 _guide 裡的那一列 */

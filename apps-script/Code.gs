@@ -538,6 +538,10 @@ function routePwaSync_(body, perf) {
   if (body.action === 'setMyEmail') return jsonOut(setMyEmail_(caller, body.email));
   if (body.action === 'perfSummary') return jsonOut(perfSummary_(caller));
   if (body.action === 'perfPurge') return jsonOut(perfPurge_(caller, body.days));
+  if (body.action === 'adminView') return jsonOut(adminView_(caller, body.what));
+  if (body.action === 'groupSet') return jsonOut(groupSet_(caller, body.group_id, body.field, body.value));
+  if (body.action === 'configSet') return jsonOut(configSet_(caller, body.key, body.field, body.value));
+  if (body.action === 'configAdd') return jsonOut(configAdd_(caller, body.record));
   if (body.action === 'planCreate') return jsonOut(planCreate_(caller, body));
   if (body.action === 'planDelete') return jsonOut(planDelete_(caller, body.plan_id));
   if (body.action === 'planEnd') return jsonOut(planEnd_(caller, body.plan_id, body.today));
@@ -2935,4 +2939,199 @@ function planEnd_(caller, planId, today) {
   } finally {
     lock.releaseLock();
   }
+}
+
+
+/* ========================================================================== */
+/* 首頁「系統設定」卡片（管理員，2026-10-06 Neil 要求）                          */
+/*                                                                            */
+/* line_groups、_expense_config、installments、_guide 原本只能在 Sheet 上看、改。 */
+/* 這一段讓管理員在 App 首頁就能看、能改（比照「成員與權限」：改動即時寫回）。     */
+/* ADR-013 D-16 把「管理員分頁」排在第 2 輪：這是提前做的功能面，版面之後重設計。  */
+/*                                                                            */
+/* 一律只有管理者能用；每一筆改動都寫 logs（source「設定」）。                    */
+/* PWA 的一般 read／upsert 仍然碰不到這幾張表（NO_PWA_READ／NO_PWA_WRITE 不變）： */
+/* 只有這幾個驗過欄位與值的 action 改得動，改名、刪列這類會讓舊資料對不上的動作沒有開。 */
+/* ========================================================================== */
+
+var SETTINGS_LOG_SOURCE = '設定';
+var GROUP_SET_FIELDS = ['is_active', 'cmd_expense', 'cmd_tasks', 'cmd_query'];
+var CONFIG_SET_FIELDS = ['is_active', 'color', 'targets', 'aliases', 'sort'];
+var CONFIG_KINDS = ['category', 'sub', 'target'];
+var CONFIG_NAME_MAX = 20;
+
+function adminForbidden_(caller, action) {
+  if (truthy_((caller.user || {}).is_admin)) return null;
+  try { logTransaction_(SETTINGS_LOG_SOURCE, '失敗', action, '只有管理者可以改系統設定', '', '', caller.line_id); } catch (err) {}
+  return { error: 'forbidden' };
+}
+
+function settingsLog_(caller, input, result, detail) {
+  try { logTransaction_(SETTINGS_LOG_SOURCE, '成功', input, result, detail || '', '', caller.line_id); } catch (err) {}
+}
+
+/** Sheet 的值送前端：日期換成字串，null 換成空字串 */
+function plainRecord_(rec, headers) {
+  var o = {};
+  headers.forEach(function (h) {
+    var v = rec[h];
+    o[h] = v instanceof Date ? v.toISOString() : (v == null ? '' : v);
+  });
+  return o;
+}
+
+/**
+ * adminView：what = groups／config／guide。（分期計畫前端早就有了——boot 帶回來的 installments）
+ * config 回原始列（含停用的，才能重新啟用）＋自檢 warnings。
+ */
+function adminView_(caller, what) {
+  var forbidden = adminForbidden_(caller, 'adminView ' + what);
+  if (forbidden) return forbidden;
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (what === 'groups') {
+    var all = readLineGroups_();
+    if (!all.ok) return { error: 'read_failed', message: all.error };
+    return { success: true, rows: all.rows.map(function (r) { return plainRecord_(r.record, LINE_GROUPS_HEADERS); }) };
+  }
+  if (what === 'config') {
+    var cfg = configRows_(ss);
+    var parsed = readExpenseConfig_(ss);
+    return { success: true, rows: cfg.rows.map(function (r) { return plainRecord_(r.record, EXPENSE_CONFIG_HEADERS); }),
+             warnings: parsed.warnings || [], ok: !!parsed.ok };
+  }
+  if (what === 'guide') {
+    return { success: true, headers: GUIDE_HEADERS, rows: guideRows_(ss, {}) };
+  }
+  return { error: 'unknown_view' };
+}
+
+/** 群組的啟用與指令開關。只收 GROUP_SET_FIELDS、只收真假值 */
+function groupSet_(caller, groupId, field, value) {
+  var forbidden = adminForbidden_(caller, 'groupSet');
+  if (forbidden) return forbidden;
+  if (GROUP_SET_FIELDS.indexOf(field) === -1) return { error: 'invalid_field' };
+  var id = String(groupId == null ? '' : groupId).trim();
+  var all = readLineGroups_();
+  if (!all.ok) return { error: 'read_failed', message: all.error };
+  var hit = findGroup_(all, id);
+  if (!id || !hit) return { error: 'group_not_found' };
+  var v = value === true ? 'TRUE' : '';
+  setDeviceFields_(all.sheet, all.headers, hit.row, (function () {
+    var p = { updated_at: new Date().toISOString() }; p[field] = v; return p;
+  })());
+  settingsLog_(caller, 'groupSet ' + (hit.record.name || id), field + ' → ' + (v ? '開' : '關'), 'group_id=' + id);
+  return { success: true, group_id: id, field: field, value: v };
+}
+
+/** _expense_config 整張讀進來（附列號）；分頁不存在就建表寫初版，跟 expenseConfig_ 同一條規則 */
+function configRows_(ss) {
+  var sheet = ss.getSheetByName(EXPENSE_CONFIG_SHEET) || ensureExpenseConfigSheet_(ss);
+  var headers = sheetHeaders_(sheet);
+  var lastRow = sheet.getLastRow();
+  var values = lastRow < 2 ? [] : sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+  var rows = [];
+  values.forEach(function (line, i) {
+    var rec = {};
+    headers.forEach(function (h, c) { rec[h] = line[c]; });
+    if (String(rec.name == null ? '' : rec.name).trim()) rows.push({ row: i + 2, record: rec });
+  });
+  return { sheet: sheet, headers: headers, rows: rows };
+}
+
+/** 一列的身分：kind＋name，對象（target）還要加群組——不同群組可以有同名的對象 */
+function configKeyOf_(rec) {
+  var kind = String(rec.kind == null ? '' : rec.kind).trim().toLowerCase();
+  return kind + '|' + String(rec.name == null ? '' : rec.name).trim() + '|' +
+    (kind === 'target' ? String(rec.parent == null ? '' : rec.parent).trim() : '');
+}
+
+/** 改完設定：清快取（立刻生效，不等 5 分鐘），回最新的自檢結果 */
+function configChanged_(ss) {
+  invalidateExpenseConfigCache_();
+  var parsed = readExpenseConfig_(ss);
+  return { warnings: parsed.warnings || [], ok: !!parsed.ok };
+}
+
+/**
+ * configSet：改一格。key = { kind, name, parent }。
+ * 沒有開放改 name／kind／parent：改名要「新增＋停用舊的」，不然舊帳存的名字就對不上了（D-3）。
+ */
+function configSet_(caller, key, field, value) {
+  var forbidden = adminForbidden_(caller, 'configSet');
+  if (forbidden) return forbidden;
+  if (CONFIG_SET_FIELDS.indexOf(field) === -1) return { error: 'invalid_field' };
+  var v;
+  if (field === 'is_active') {
+    v = value === true ? 'TRUE' : 'FALSE';              // 明寫 FALSE：空白在這張表是「啟用」
+  } else if (field === 'color') {
+    v = String(value == null ? '' : value).trim().toLowerCase();
+    if (v && EXPENSE_COLOR_SLOTS.indexOf(v) === -1) return { error: 'invalid_color' };
+  } else if (field === 'sort') {
+    v = value === '' || value == null ? '' : Number(value);
+    if (v !== '' && !isFinite(v)) return { error: 'invalid_sort' };
+  } else {
+    v = String(value == null ? '' : value).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 100);
+  }
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var cfg = configRows_(ss);
+  var want = configKeyOf_(key || {});
+  var hit = null;
+  cfg.rows.some(function (r) { if (configKeyOf_(r.record) === want) { hit = r; return true; } return false; });
+  if (!hit) return { error: 'config_not_found' };
+  if (field !== 'is_active' && field !== 'sort' && String(hit.record.kind).trim() !== 'category') {
+    return { error: 'invalid_field' };                   // 顏色、對象群組、別名只對大類有意義
+  }
+  var patch = {};
+  patch[field] = v;
+  setDeviceFields_(cfg.sheet, cfg.headers, hit.row, patch);
+  settingsLog_(caller, 'configSet ' + hit.record.kind + ' ' + hit.record.name, field + ' → ' + (v === '' ? '（空白）' : v));
+  var after = configChanged_(ss);
+  return { success: true, warnings: after.warnings, ok: after.ok };
+}
+
+/**
+ * configAdd：新增一個大類／細項／對象（改名也是走這條：新增新的，再把舊的停用）。
+ * 擋重複（細項名稱全表唯一、大類唯一、對象在同一個群組裡唯一）與掛錯地方的細項。
+ */
+function configAdd_(caller, record) {
+  var forbidden = adminForbidden_(caller, 'configAdd');
+  if (forbidden) return forbidden;
+  var r = record || {};
+  var kind = String(r.kind == null ? '' : r.kind).trim().toLowerCase();
+  var name = String(r.name == null ? '' : r.name).replace(/[\r\n\t,，、]+/g, ' ').trim();
+  var parent = String(r.parent == null ? '' : r.parent).trim();
+  if (CONFIG_KINDS.indexOf(kind) === -1) return { error: 'invalid_kind' };
+  if (!name || name.length > CONFIG_NAME_MAX || name.indexOf('/') !== -1) return { error: 'invalid_name' };
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var cfg = configRows_(ss);
+  var recs = cfg.rows.map(function (x) { return x.record; });
+  var named = function (k, n) {
+    return recs.filter(function (x) { return String(x.kind).trim().toLowerCase() === k && String(x.name).trim() === n; });
+  };
+  if (kind === 'category' && named('category', name).length) return { error: 'duplicate_name' };
+  if (kind === 'sub') {
+    if (!named('category', parent).length) return { error: 'parent_not_found' };
+    if (named('sub', name).length || named('category', name).length) return { error: 'duplicate_name' };
+  }
+  if (kind === 'target') {
+    if (!parent) return { error: 'parent_required' };
+    if (named('target', name).some(function (x) { return String(x.parent).trim() === parent; })) return { error: 'duplicate_name' };
+  }
+  var color = String(r.color == null ? '' : r.color).trim().toLowerCase();
+  if (kind === 'category' && color && EXPENSE_COLOR_SLOTS.indexOf(color) === -1) return { error: 'invalid_color' };
+
+  var sort = 0;
+  recs.forEach(function (x) {
+    var n = Number(x.sort);
+    if (String(x.kind).trim().toLowerCase() === kind && isFinite(n) && n > sort) sort = n;
+  });
+  var row = { kind: kind, name: name, parent: kind === 'category' ? '' : parent,
+              targets: kind === 'category' ? String(r.targets == null ? '' : r.targets).trim() : '',
+              aliases: '', color: kind === 'category' ? color : '', sort: sort + 10, is_active: '' };
+  cfg.sheet.appendRow(cfg.headers.map(function (h) { return row[h] == null ? '' : row[h]; }));
+  settingsLog_(caller, 'configAdd ' + kind + ' ' + name, '已新增' + (row.parent ? '（' + row.parent + '）' : ''));
+  var after = configChanged_(ss);
+  return { success: true, warnings: after.warnings, ok: after.ok };
 }
