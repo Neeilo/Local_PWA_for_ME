@@ -614,7 +614,15 @@ describe('LINE「初始化」：管理者在手機上跑部署後的安裝步驟
     ['id', 'expense_date', 'type', 'category', 'amount', 'note', 'line_id'],
     ['1', '2026-09-01', 'expense', '餐飲', 120, '', ME]
   ]);
-  const initEnv = (over = {}) => env(Object.assign({ extraFiles: ['sheet-guide.gs'], sheets: { expenses: OLD_EXPENSES() } }, over));
+  // ADR-014：初始化也補 ADR-009 的欄位，資料分頁要在（缺分頁會如實標 ⚠️）
+  const DATA_SHEETS = () => ({
+    tasks: new FakeSheet('tasks', [['id', 'text', 'line_id']]),
+    notes: new FakeSheet('notes', [['id', 'text', 'line_id']]),
+    reviews: new FakeSheet('reviews', [['review_date', 'line_id']]),
+    moods: new FakeSheet('moods', [['id', 'level', 'line_id']])
+  });
+  const initEnv = (over = {}) => env(Object.assign({}, over, { extraFiles: ['sheet-guide.gs'],
+    sheets: Object.assign(DATA_SHEETS(), { expenses: OLD_EXPENSES() }, over.sheets || {}) }));
 
   test('管理者：補欄位、建設定表、遷移、更新 _guide，回覆逐步列出結果並寫 logs', () => {
     const e = initEnv();
@@ -623,7 +631,7 @@ describe('LINE「初始化」：管理者在手機上跑部署後的安裝步驟
     assert.match(reply, /✅ ADR-013 記帳分類\n　補上欄位：subcategory、targets、plan_id、plan_seq/);
     assert.match(reply, /分類設定讀得到（8 個大類）/);
     assert.match(reply, /餐飲→飲食：改了 1 列/);
-    assert.match(reply, /✅ _guide 導覽表\n　已更新/);
+    assert.match(reply, /✅ 排程（到期提醒＋_guide）\n　已安裝.*_guide 已更新/);
     assert.deepEqual(e.sheets.expenses.values[0].slice(-4), ['subcategory', 'targets', 'plan_id', 'plan_seq']);
     assert.equal(e.sheets.expenses.toRecords()[0].category, '飲食');
     assert.ok(e.ss.getSheetByName('_expense_config'));
@@ -657,7 +665,7 @@ describe('LINE「初始化」：管理者在手機上跑部署後的安裝步驟
     const reply = line(e, ME, '初始化');
     assert.match(reply, /^🛑 初始化沒有完成/);
     assert.match(reply, /❌ ADR-013 記帳分類：Sheet 暫時無法存取/);
-    assert.match(reply, /⏭️ _guide 導覽表：前一步失敗，沒有執行/);
+    assert.match(reply, /⏭️ 排程（到期提醒＋_guide）：前一步失敗，沒有執行/);
     assert.doesNotMatch(reply, /初始化完成/);
     assert.equal(e.ss.getSheetByName('_guide'), null, '_guide 沒有被跑');
     assert.ok(e.transactions.some((t) => t[1] === '失敗' && t[2] === '初始化'));
@@ -665,7 +673,7 @@ describe('LINE「初始化」：管理者在手機上跑部署後的安裝步驟
   });
 
   test('設定有問題：照樣跑完，但標 ⚠️ 並列出問題', () => {
-    const e = initEnv({ sheets: { expenses: OLD_EXPENSES(), _expense_config: configSheet([
+    const e = initEnv({ sheets: { _expense_config: configSheet([
       ['category', '飲食', '', '', '', 'c1', 1, ''],
       ['sub', '外食', '飲食', '', '', '', 1, ''],
       ['sub', '外食', '飲食', '', '', '', 2, '']
@@ -673,7 +681,7 @@ describe('LINE「初始化」：管理者在手機上跑部署後的安裝步驟
     const reply = line(e, ME, '初始化');
     assert.match(reply, /^🛠️ 初始化完成，但有要處理的地方/);
     assert.match(reply, /⚠️ 細項「外食」重複/);
-    assert.match(reply, /✅ _guide 導覽表/);
+    assert.match(reply, /✅ 排程（到期提醒＋_guide）/);
   });
 
   test('另一個初始化正在跑：不重疊執行', () => {

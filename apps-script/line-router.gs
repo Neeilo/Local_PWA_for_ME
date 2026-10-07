@@ -116,8 +116,9 @@ var GEMINI_MAX_OUTPUT_TOKENS = 2048;
 var CATEGORY_COMMAND = '分類';
 
 /**
- * 「初始化」：管理者在 LINE 上跑部署後的安裝步驟（installAdr013＋refreshGuide），
+ * 「初始化」：管理者在 LINE 上跑部署後的安裝步驟（欄位、記帳分類、所有排程），
  * 不必打開 Apps Script 編輯器。每一步都可重複執行，已做過的不會重做。
+ * 編輯器裡對應的總入口是 installAll()。
  */
 var INIT_COMMAND = '初始化';
 var INIT_LOCK_MS = 10000;
@@ -332,6 +333,13 @@ function handleLineEvent_(event) {
     return;
   }
 
+  // 「✏️ 自己輸入」到期日的 5 分鐘等待（ADR-014 D-21）：這句是日期就收下；是指令就取消等待照常處理
+  var waited = taskDateWaitReply_(text, event.source, userId);
+  if (waited !== null) {
+    lineReply_(event.replyToken, waited);
+    return;
+  }
+
   // 裝置配對與續期（ADR-010）。排在閘門**之後**：只有 active 成員拿得到配對碼，
   // 那張碼就是「這個人本人在 LINE 上」的證明，放在閘門前面等於誰都能領鑰匙。
   var deviceReply = handleDeviceCommand_(text, event.source, userId);
@@ -340,7 +348,7 @@ function handleLineEvent_(event) {
     return;
   }
 
-  var reply = routeLineMessage_(text, userId);
+  var reply = routeLineMessage_(text, userId, '');
   lineReply_(event.replyToken, reply);
 }
 
@@ -491,7 +499,7 @@ function handleJoin_(event) {
  * 認得的前綴無論成敗都會留下一列 logs；認不得的前綴（打錯字、閒聊、貼到的網址）
  * 刻意不寫——logs 是拿來回頭查「我那筆記到哪去了」的，灌進雜訊等於自廢武功。
  */
-function routeLineMessage_(rawText, userId) {
+function routeLineMessage_(rawText, userId, chatId) {
   var text = String(rawText || '').trim();
   if (!text) return supportedPrefixesMessage_();
 
@@ -539,19 +547,26 @@ function routeLineMessage_(rawText, userId) {
   // 「記帳/金額」沒給分類：跳大類按鈕（ADR-013 T6），不是打回錯誤
   if (parsed.needCategory) return quickCategoryPrompt_(prefix, parsed.amount, userId);
 
-  return recordRoute_(prefix, route, parsed, userId, text);
+  return recordRoute_(prefix, route, parsed, userId, text, chatId);
 }
 
-/** 解析好的一筆寫進分頁、寫 logs、回成功訊息。打字記帳與 Quick Reply 按鈕共用這一份 */
-function recordRoute_(prefix, route, parsed, userId, text) {
+/**
+ * 解析好的一筆寫進分頁、寫 logs、回成功訊息。打字記帳與 Quick Reply 按鈕共用這一份。
+ * chatId：群組／多人聊天室的 ID（一對一是空字串）。只有任務會記下來（ADR-014 D-17）。
+ */
+function recordRoute_(prefix, route, parsed, userId, text, chatId) {
   try {
     var record = route.build(parsed, route);
     // 資料歸屬（ADR-008 C-1）。蓋在這裡而不是各 build 函式裡：路由表每新增一個
     // 前綴都會自動帶上，不必記得補。分頁還沒加 line_id 欄時，appendToSheet_ 是
     // 依實際表頭對位的，這個鍵會被安靜忽略——不會因此寫壞任何一列。
     record.line_id = userId || '';
+    // 在哪個群組交代的，到期提醒就推回哪裡（ADR-014 D-17）。白板與這個無關
+    if (route.sheetName === 'tasks') record.origin_chat = chatId || '';
     var rowNumber = appendToSheet_(route.sheetName, record);
     logTransaction_(prefix, '成功', text, route.summary(parsed, route), '', rowNumber, userId);
+    // 任務建好再問到期日（ADR-014 D-20）：不按也沒關係，任務已經在了
+    if (route.sheetName === 'tasks') return taskDatePrompt_(route.format(parsed, route), record.id, userId);
     return route.format(parsed, route);
   } catch (err) {
     console.log('寫入失敗：' + err);
@@ -580,10 +595,26 @@ function handleCategoryCommand_(text, userId) {
 /**
  * 初始化的步驟。每一步回 { level: 'ok'|'warn', text }；丟例外＝這一步失敗。
  * 新的 ADR 有部署後要跑的安裝函式，就往這裡加一步——它們本來就都要能重複執行。
+ *
+ * ADR-014 D-23：以前這裡沒有到期提醒的排程，installAdr009Triggers() 要人記得去編輯器跑，
+ * 結果 9/30 上線後一次都沒跑過。現在「初始化」一次裝好全部排程。
  */
 function initSteps_() {
   var adr013 = null;
   return [
+    { label: '欄位（ADR-009／014）', run: function () {
+      var r = ensureAdr009Columns();
+      var lines = [], warn = false;
+      Object.keys(r).forEach(function (name) {
+        var x = r[name];
+        if (x.reason) { warn = true; lines.push('⚠️ ' + name + '：' + (x.reason === 'sheet_missing' ? '找不到分頁' : '沒有表頭') + '，沒有補'); }
+        else if (x.added.length) lines.push(name + ' 補上：' + x.added.join('、'));
+      });
+      var g = ensureColumnsOnSheet_(ensureLineGroupsSheet_(), ['notify_due']);
+      if (g.reason) { warn = true; lines.push('⚠️ ' + LINE_GROUPS_SHEET + ' 沒有表頭，沒有補 notify_due'); }
+      else if (g.added.length) lines.push(LINE_GROUPS_SHEET + ' 補上：notify_due');
+      return { level: warn ? 'warn' : 'ok', text: lines.length ? lines.join('\n　') : '欄位已齊備' };
+    } },
     { label: 'ADR-013 記帳分類', run: function () {
       adr013 = installAdr013();
       var cols = adr013.columns || {};
@@ -598,11 +629,68 @@ function initSteps_() {
       var warn = !adr013.config_ok || !!cols.reason || (adr013.warnings || []).length > 0;
       return { level: warn ? 'warn' : 'ok', text: lines.join('\n　') };
     } },
-    { label: '_guide 導覽表', run: function () {
-      var out = refreshGuide();
-      return { level: 'ok', text: '已更新（' + out.sheets + ' 張分頁）' };
+    { label: '排程（到期提醒＋_guide）', run: function () {
+      installAdr009Triggers();
+      installGuideTrigger();            // 裝好會順便更新一次 _guide
+      return { level: 'ok', text: '已安裝（先刪同名的再建，不會累積）；_guide 已更新' };
     } }
   ];
+}
+
+/** 每個排程函式大約幾點跑。ScriptApp 的觸發器物件問不到時段，只能由這裡對照 */
+function scheduleHours_() {
+  var h = {};
+  h[DUE_CHECK_FUNCTION] = DUE_CHECK_HOUR;
+  h[GUIDE_REFRESH_FUNCTION] = GUIDE_REFRESH_HOUR;
+  return h;
+}
+
+/** 目前專案裡有哪些觸發器（函式名＋時段＋幾個）。同名不只一個＝會重複執行，標 ⚠️ */
+function triggerSummary_() {
+  var count = {};
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    var fn = t.getHandlerFunction();
+    count[fn] = (count[fn] || 0) + 1;
+  });
+  var hours = scheduleHours_();
+  var names = Object.keys(count).sort();
+  if (!names.length) return ['⚠️ 沒有任何觸發器'];
+  return names.map(function (fn) {
+    return (count[fn] > 1 ? '⚠️ ' : '⏰ ') + fn +
+      (hours[fn] !== undefined ? '（每天約 ' + hours[fn] + ' 點）' : '') + (count[fn] > 1 ? ' ×' + count[fn] : '');
+  });
+}
+
+/** 依序跑 initSteps_：一步失敗就停，後面的不跑（CLAUDE.md Rule 12） */
+function runInstallSteps_() {
+  var lines = [];
+  var failed = false, warned = false;
+  initSteps_().forEach(function (step) {
+    if (failed) { lines.push('⏭️ ' + step.label + '：前一步失敗，沒有執行'); return; }
+    try {
+      var r = step.run();
+      if (r.level === 'warn') warned = true;
+      lines.push((r.level === 'warn' ? '⚠️ ' : '✅ ') + step.label + '\n　' + r.text);
+    } catch (err) {
+      failed = true;
+      console.log('初始化失敗（' + step.label + '）：' + (err && err.stack || err));
+      lines.push('❌ ' + step.label + '：' + String(err && err.message || err));
+    }
+  });
+  var triggers = [];
+  try { triggers = triggerSummary_(); } catch (err) { triggers = ['⚠️ 讀不到觸發器：' + String(err && err.message || err)]; }
+  var head = failed ? '🛑 初始化沒有完成' : warned ? '🛠️ 初始化完成，但有要處理的地方' : '🛠️ 初始化完成';
+  return { failed: failed, warned: warned, head: head, lines: lines, triggers: triggers };
+}
+
+/**
+ * 總入口（ADR-014 T1）：編輯器裡選這支按「執行」＝在 LINE 傳「初始化」。
+ * 原本各支（installAdr009Triggers、installGuideTrigger、installAdr013…）仍可單獨執行。
+ */
+function installAll() {
+  var out = runInstallSteps_();
+  console.log(out.head + '\n' + out.lines.join('\n') + '\n目前的觸發器：\n' + out.triggers.join('\n'));
+  return out;
 }
 
 /**
@@ -610,6 +698,7 @@ function initSteps_() {
  *
  * 一步失敗就停，後面的不跑，回覆講清楚停在哪一步、原因是什麼（CLAUDE.md Rule 12：
  * 「初始化完成」如果有一步沒做到，這句話就是錯的）。同一時間只准一個在跑。
+ * 回覆最後列出目前的觸發器，讓管理者一眼確認排程真的在。
  */
 function handleInitCommand_(text, userId) {
   if (!truthy_((lineUserById_(userId) || {}).is_admin)) {
@@ -619,28 +708,17 @@ function handleInitCommand_(text, userId) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(INIT_LOCK_MS)) return '另一個初始化正在跑，請稍後再試。';
 
-  var lines = [];
-  var failed = false, warned = false;
+  var out;
   try {
-    initSteps_().forEach(function (step) {
-      if (failed) { lines.push('⏭️ ' + step.label + '：前一步失敗，沒有執行'); return; }
-      try {
-        var r = step.run();
-        if (r.level === 'warn') warned = true;
-        lines.push((r.level === 'warn' ? '⚠️ ' : '✅ ') + step.label + '\n　' + r.text);
-      } catch (err) {
-        failed = true;
-        console.log('初始化失敗（' + step.label + '）：' + (err && err.stack || err));
-        lines.push('❌ ' + step.label + '：' + String(err && err.message || err));
-      }
-    });
+    out = runInstallSteps_();
   } finally {
     lock.releaseLock();
   }
 
-  var head = failed ? '🛑 初始化沒有完成' : warned ? '🛠️ 初始化完成，但有要處理的地方' : '🛠️ 初始化完成';
-  logTransaction_('同步', failed ? '失敗' : '成功', text, head.replace(/^\S+ /, ''), lines.join('｜'), '', userId);
-  return head + '\n' + lines.join('\n') + '\n（可重複執行，已做過的不會重做）';
+  logTransaction_('同步', out.failed ? '失敗' : '成功', text, out.head.replace(/^\S+ /, ''),
+    out.lines.concat(out.triggers).join('｜'), '', userId);
+  return out.head + '\n' + out.lines.join('\n') + '\n\n目前的排程：\n' + out.triggers.join('\n') +
+    '\n（可重複執行，已做過的不會重做）';
 }
 
 /**
@@ -1865,7 +1943,7 @@ function diagnoseGemini() {
 /* ========================================================================== */
 
 var LINE_GROUPS_HEADERS = ['group_id', 'name', 'is_active', 'cmd_expense', 'cmd_tasks', 'cmd_query',
-  'joined_at', 'left_at', 'created_at', 'updated_at'];
+  'joined_at', 'left_at', 'created_at', 'updated_at', 'notify_due'];
 var GROUP_CMD_FIELDS = ['cmd_expense', 'cmd_tasks', 'cmd_query'];
 /** 前綴 → 群組的指令開關。「分類」是記帳的一部分；初始化不在這裡（只限一對一） */
 var GROUP_CMD_BY_PREFIX = { '記帳': 'cmd_expense', '收入': 'cmd_expense', '任務': 'cmd_tasks' };
@@ -2064,12 +2142,15 @@ function groupMessageReply_(text, source, userId) {
   // 配對／驗證裝置：在群組一律拒絕（它自己會講原因），不必過門
   var device = handleDeviceCommand_(text, source, userId);
   if (device !== null) return device;
+  // 等待到期日（ADR-014 D-21）：只認建立者本人在同一個群組的下一句，其他人的話照常不理
+  var waited = taskDateWaitReply_(text, source, userId);
+  if (waited !== null) return waited;
   var cmd = groupCommandOf_(text);
   if (cmd === null) return null;
   if (cmd === '') return '「' + String(text).trim() + '」只能在跟 bot 的一對一聊天室用。';
   var denied = groupGate_(source, cmd, text, userId);
   if (denied !== null) return denied;
-  return routeLineMessage_(text, userId);
+  return routeLineMessage_(text, userId, chatIdOf_(source));
 }
 
 /* ========================================================================== */
@@ -2136,6 +2217,7 @@ function quickCategoryPrompt_(prefix, amount, userId) {
 /** postback 事件：先過門（群組三道、一對一白名單），再走下一步 */
 function handlePostback_(event) {
   var data = parseQuickData_(event.postback && event.postback.data);
+  if (String(data.td) === '1') { handleTaskDatePostback_(event, data); return; }
   if (String(data.qr) !== '1') return;
   var src = event.source || {};
   var userId = src.userId || '';
@@ -2196,4 +2278,216 @@ function quickExpenseStep_(data, userId, input) {
   // 寫入失敗就把 nonce 放回去：讓使用者可以再按一次，而不是被說「已經記過了」
   if (/^寫入失敗/.test(String(reply))) { try { cache.remove(key); } catch (err) {} }
   return reply;
+}
+
+
+/* ========================================================================== */
+/* LINE「任務/」兩段式日期（ADR-014 D-20／D-21，交棒票 T3）                       */
+/*                                                                            */
+/* 第一段：「任務/內容」照舊建立 → 回 Quick Reply 問到期日（不按＝不設，不卡入口）。 */
+/* 第二段：+N 天／📅 原生日期選擇器／✏️ 自己輸入／不設日期。                       */
+/* 按鈕資料全在 postback data 裡（比照記帳按鈕）；只有建立者按得動，同一個 nonce    */
+/* 只生效一次。                                                                  */
+/*                                                                            */
+/* ✏️ 自己輸入是 Neil OS 第一個「對話狀態」：CacheService 記 5 分鐘，             */
+/* key＝聊天室＋人。範圍刻意壓小——等的只有一句日期，看到指令就放手。              */
+/* ========================================================================== */
+
+var TASK_DATE_TZ = 'Asia/Taipei';
+var TASK_DATE_OFFSETS = [1, 3, 7, 10, 30];
+var TASK_DATE_NONCE_PREFIX = 'adr014_td_';
+var TASK_DATE_NONCE_TTL = 86400;          // 一天：按鈕在聊天室裡留得比記帳久，隔幾小時才按也要擋得住重複
+var TASK_DATE_WAIT_PREFIX = 'taskdate:';
+var TASK_DATE_WAIT_TTL = 300;             // 5 分鐘（D-21）
+var TASK_DATE_HINT = '請回覆日期，例如 1015 或 10/15（5 分鐘內）';
+var WEEKDAY_ZH = '日一二三四五六';
+
+/** 今天（台北）。按鈕標籤與「今年已過算明年」都以這一天為準 */
+function lineTodayKey_() {
+  return Utilities.formatDate(new Date(), TASK_DATE_TZ, 'yyyy-MM-dd');
+}
+
+function addDaysKey_(key, n) {
+  var d = parseDateKey_(key);
+  return d ? keyValue_(new Date(d.getFullYear(), d.getMonth(), d.getDate() + n, 12, 0, 0, 0)) : '';
+}
+
+/** '2026-10-15' → '10/15（四）'；wrap=false → '10/15 四'（按鈕標籤用，省字） */
+function shortDateLabel_(key, wrap) {
+  var d = parseDateKey_(key);
+  if (!d) return key;
+  var wd = WEEKDAY_ZH.charAt(d.getDay());
+  return (d.getMonth() + 1) + '/' + d.getDate() + (wrap === false ? ' ' + wd : '（' + wd + '）');
+}
+
+/**
+ * 使用者打的日期 → 'YYYY-MM-DD'；看不懂回 ''。純函式。
+ * 收：1015、10/15、2026/10/15（全形數字與全形斜線也收）。
+ * 沒寫年份時，今年那天已經過了就算明年（今天本身算今年）。不存在的日期（2/30）看不懂。
+ */
+function parseTaskDateInput_(raw, todayKey) {
+  var t = String(raw == null ? '' : raw).trim()
+    .replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+    .replace(/／/g, '/');
+  var m, y = null, mo, d;
+  if ((m = /^(\d{2})(\d{2})$/.exec(t))) { mo = m[1]; d = m[2]; }
+  else if ((m = /^(\d{1,2})\/(\d{1,2})$/.exec(t))) { mo = m[1]; d = m[2]; }
+  else if ((m = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(t))) { y = Number(m[1]); mo = m[2]; d = m[3]; }
+  else return '';
+  var today = parseDateKey_(todayKey);
+  if (!today) return '';
+  var pad = function (n) { return (Number(n) < 10 ? '0' : '') + Number(n); };
+  var key = (y || today.getFullYear()) + '-' + pad(mo) + '-' + pad(d);
+  if (!parseDateKey_(key)) return '';
+  if (!y && key < todayKey) key = (today.getFullYear() + 1) + '-' + pad(mo) + '-' + pad(d);
+  return parseDateKey_(key) ? key : '';
+}
+
+/** 建好任務之後的回覆：原本的成功訊息＋到期日按鈕 */
+function taskDatePrompt_(text, taskId, userId) {
+  var today = lineTodayKey_();
+  var base = { td: 1, t: taskId, u: userId || '', n: Utilities.getUuid().replace(/-/g, '').slice(0, 16) };
+  var post = function (label, d) {
+    return { type: 'action', action: { type: 'postback', label: label, data: quickData_(Object.assign({}, base, { d: d })), displayText: label } };
+  };
+  var items = TASK_DATE_OFFSETS.map(function (n) {
+    return post(('+' + n + ' ' + shortDateLabel_(addDaysKey_(today, n), false)).slice(0, QUICK_LABEL_MAX), String(n));
+  });
+  // 原生日期選擇器（Speculation：電腦版 LINE 可能不支援，按了沒反應就用 ✏️ 自己輸入）
+  items.push({ type: 'action', action: { type: 'datetimepicker', label: '📅 選日期',
+    data: quickData_(Object.assign({}, base, { d: 'pick' })), mode: 'date', initial: addDaysKey_(today, 1), min: today } });
+  items.push(post('✏️ 自己輸入', 'input'));
+  items.push(post('不設日期', 'none'));
+  return { text: text + '\n📅 要設到期日嗎？', quickReply: { items: items } };
+}
+
+/** postback：過門（群組三道／一對一白名單）→ 任務權限 → 只限建立者 → 走下一步 */
+function handleTaskDatePostback_(event, data) {
+  var src = event.source || {};
+  var userId = src.userId || '';
+  var input = '任務到期日（按鈕：' + (data.d || '?') + '）';
+  var denied = null;
+  if (isGroupSource_(src)) {
+    denied = groupGate_(src, 'cmd_tasks', input, userId);
+  } else {
+    var w = writeGate_(userId, 'LINE ' + input);
+    if (!w.allowed) denied = lineDeniedMessage_(w.error);
+  }
+  if (denied === null) {
+    var params = (event.postback && event.postback.params) || {};
+    denied = taskDateStep_(data, params, src, userId, input);
+  }
+  lineReply_(event.replyToken, denied);
+}
+
+function taskDateStep_(data, params, source, userId, input) {
+  if (!canUse_(lineUserById_(userId), FEATURE_BY_SHEET.tasks)) {
+    var label = FEATURE_LABEL[FEATURE_BY_SHEET.tasks];
+    logTransaction_('任務', '失敗', input, '沒有「' + label + '」功能的權限', 'code=forbidden｜feat_tasks', '', userId);
+    return '你沒有「' + label + '」功能的權限。\n需要的話請管理者到 App 的「成員與權限」打開。';
+  }
+  if (!data.t || !data.n) return '這個按鈕看不懂，之後可以在 App 補到期日。';
+  if (data.u && data.u !== userId) return '這組按鈕是別人叫出來的，請他自己點。';
+  var cache = scriptCache_();
+  if (!cache) return '暫時沒辦法用按鈕設日期，之後可以在 App 補。';
+  if (cache.get(TASK_DATE_NONCE_PREFIX + data.n)) return '這筆的到期日已經設過了 👌';
+
+  if (data.d === 'none') {
+    cache.put(TASK_DATE_NONCE_PREFIX + data.n, '1', TASK_DATE_NONCE_TTL);
+    return '好，之後可以在 App 補。';
+  }
+  if (data.d === 'input') {
+    try {
+      cache.put(taskDateWaitKey_(source, userId), JSON.stringify({ t: String(data.t), n: data.n }), TASK_DATE_WAIT_TTL);
+    } catch (err) { return '暫時沒辦法等你輸入，之後可以在 App 補。'; }
+    return TASK_DATE_HINT;
+  }
+  var key = data.d === 'pick' ? keyValue_(params.date)
+    : /^\d{1,3}$/.test(String(data.d)) ? addDaysKey_(lineTodayKey_(), Number(data.d)) : '';
+  if (!parseDateKey_(key)) return '這個日期看不懂，請再選一次。';
+  return applyTaskDue_(data.t, data.n, key, userId, input);
+}
+
+/**
+ * 寫入到期日（只動 due_date 與 notified 兩格）。一次性 nonce 與寫入包在同一把鎖裡；
+ * 寫失敗把 nonce 放回去，讓人可以再按一次（比照記帳按鈕）。
+ * 改了到期日就清 notified：延後之後要再提醒一次（補議題 ⑤）。
+ */
+function applyTaskDue_(taskId, nonce, key, userId, input) {
+  var cache = scriptCache_();
+  var nkey = TASK_DATE_NONCE_PREFIX + nonce;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(QUICK_LOCK_MS)) return '有點忙，請再試一次。';
+  try {
+    if (cache.get(nkey)) return '這筆的到期日已經設過了 👌';
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('tasks');
+    var headers = sheet ? sheetHeaders_(sheet) : [];
+    var idCol = headers.indexOf('id') + 1;
+    if (!sheet || !idCol || headers.indexOf('due_date') === -1) return '任務表還沒準備好（缺 due_date 欄），請管理者傳「' + INIT_COMMAND + '」。';
+    var rows = findRowsByKey_(sheet, [idCol], String(taskId));
+    var rec = {};
+    if (rows.length) {
+      var line = sheet.getRange(rows[0], 1, 1, headers.length).getValues()[0];
+      headers.forEach(function (h, i) { rec[h] = line[i]; });
+    }
+    if (!rows.length || truthy_(rec.del)) return '找不到這筆任務（可能已經刪掉了）。';
+    if (keyValue_(rec.line_id) !== userId) return '這筆任務是別人建的，請他自己設。';
+    setDeviceFields_(sheet, headers, rows[0], { due_date: key, notified: '' });
+    cache.put(nkey, '1', TASK_DATE_NONCE_TTL);
+    logTransaction_('任務', '成功', input, '到期日 → ' + key, 'id=' + taskId, rows[0], userId);
+    return '✅ 到期日 ' + shortDateLabel_(key);
+  } catch (err) {
+    console.log('寫入到期日失敗：' + err);
+    logTransaction_('任務', '失敗', input, '寫入到期日失敗', String(err && err.stack || err), '', userId);
+    return '寫入失敗了：' + err.message;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 等待的 key：聊天室＋人。一對一沒有聊天室 ID，用 dm 代替 */
+function taskDateWaitKey_(source, userId) {
+  return TASK_DATE_WAIT_PREFIX + (chatIdOf_(source) || 'dm') + ':' + (userId || '');
+}
+
+/** 這句話是不是任何已知指令（等待中遇到就放手，照常處理） */
+function isLineCommand_(text) {
+  var t = String(text || '').trim();
+  if (groupCommandOf_(t) !== null) return true;
+  if (t === PAIR_COMMAND || t.indexOf(RENEW_COMMAND) === 0 || t.toLowerCase() === 'whoami') return true;
+  var slash = t.indexOf('/');
+  return slash !== -1 && t.slice(0, slash).trim().toLowerCase() === REGISTER_PREFIX;
+}
+
+/**
+ * 等待中的下一句（D-21）。回 null＝不是在等、或這句不歸等待處理（照常往下走）。
+ *  - 是已知指令 → 取消等待、回 null（照常處理那個指令）
+ *  - 解析得出日期 → 寫入、清除等待
+ *  - 看不懂 → 第一次回格式提示、繼續等；之後不再插嘴（回 null，群組裡的閒聊照常不理）
+ * 逾時由 CacheService 的 TTL 處理：key 不見了就是不等了，不回覆。
+ */
+function taskDateWaitReply_(text, source, userId) {
+  if (!userId) return null;
+  var cache = scriptCache_();
+  if (!cache) return null;
+  var key = taskDateWaitKey_(source, userId);
+  var wait = cacheGetJson_(cache, key);
+  if (!wait || !wait.t) return null;
+  if (isLineCommand_(text)) { try { cache.remove(key); } catch (err) {} return null; }
+
+  var date = parseTaskDateInput_(text, lineTodayKey_());
+  if (!date) {
+    if (wait.hinted) return null;
+    wait.hinted = true;
+    try { cache.put(key, JSON.stringify(wait), TASK_DATE_WAIT_TTL); } catch (err) {}
+    return '看不懂這個日期。' + TASK_DATE_HINT;
+  }
+  var input = '任務到期日（自己輸入：' + String(text).trim() + '）';
+  if (isGroupSource_(source)) {
+    var denied = groupGate_(source, 'cmd_tasks', input, userId);
+    if (denied !== null) return denied;
+  }
+  if (!canUse_(lineUserById_(userId), FEATURE_BY_SHEET.tasks)) return '你沒有「' + FEATURE_LABEL[FEATURE_BY_SHEET.tasks] + '」功能的權限。';
+  try { cache.remove(key); } catch (err) {}
+  return applyTaskDue_(wait.t, wait.n, date, userId, input);
 }

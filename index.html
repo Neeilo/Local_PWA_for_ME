@@ -202,6 +202,10 @@
   .task input[type=checkbox]{width:20px; height:20px; accent-color:var(--accent); flex:none;}
   .task .txt{flex:1; word-break:break-word;}
   .task.done .txt{color:var(--muted); text-decoration:line-through;}
+  .task .txt.editable{cursor:pointer;}
+  .task-edit{padding:4px 4px 12px; border-bottom:1px solid var(--line);}
+  .task-edit .row{margin-top:8px;}
+  .task-edit .row .btn, .task-edit .row .btn-outline{flex:1;}
   .del{background:none; border:none; color:var(--muted); font-size:18px; padding:4px 8px; flex:none;}
   .del:active{color:var(--danger);}
   .empty-hint{color:var(--muted); font-size:14px; text-align:center; padding:16px 0;}
@@ -1784,6 +1788,10 @@ const EMPTY_STATE = () => ({ tasks:[], reviews:{}, moods:[], notes:[], expenses:
 let state = EMPTY_STATE();
 let selectedMood = null;
 let newTaskPriority = DEFAULT_PRIORITY;
+/* 正在編輯到期日的那一筆（ADR-014 T4）。一次只開一筆。
+   taskEditDraft：打到一半的值——輪詢會重畫任務列，不留著的話打到一半就被洗回原值 */
+let editingTaskId = null;
+let taskEditDraft = null;
 let expType = 'expense';
 let expCategory = null;
 let expSub = null;          // 細項（選填）
@@ -1966,7 +1974,8 @@ function taskToCloud(t){
   return {id:String(t.id), text:t.txt, is_completed:!!t.done, created_at:new Date(t.ts).toISOString(),
           priority:t.priority||DEFAULT_PRIORITY, line_id:t.line_id||'', del:t.del?'TRUE':'',
           board:t.board?'TRUE':'', due_date:t.due||'',
-          recur_interval:t.recurN||'', recur_unit:t.recurUnit||'', notified:t.notified?'TRUE':''};
+          recur_interval:t.recurN||'', recur_unit:t.recurUnit||'', notified:t.notified?'TRUE':'',
+          origin_chat:t.origin_chat||''};
 }
 function taskFromCloud(r){
   const p=String(r.priority||'').toUpperCase();
@@ -1976,7 +1985,10 @@ function taskFromCloud(r){
           line_id:String(r.line_id||'').trim(),
           board:truthy(r.board), due:localDateKey(r.due_date),
           recurN:r.recur_interval||'', recurUnit:String(r.recur_unit||'').trim(),
-          notified:truthy(r.notified)};
+          notified:truthy(r.notified),
+          // 群組建立的任務記著群組 ID（ADR-014 D-17）。App 不顯示也不改，原樣帶回去；
+          // 雲端另外守著（keepOriginChat_），舊版 App 沒帶也洗不掉
+          origin_chat:String(r.origin_chat||'').trim()};
 }
 /* ⚠️ 雲端的 upsert 是整列覆寫：這裡沒帶的欄位會被寫成空白。ADR-013 的四欄
    （細項、對象、分期）一定要原樣帶回去，不然在 App 改一下金額，LINE 記的細項就不見了。 */
@@ -2276,7 +2288,7 @@ async function archiveTombstones(){
   alert(archiveFailMessage(r));
 }
 /* ---------- 效能紀錄的管理頁（ADR-012 T1 1-4） ---------- */
-const PERF_TRIGGER_LABEL={cold:'開 App', foreground:'回前景', poll:'輪詢', manual:'手動刷新', write:'寫入'};
+const PERF_TRIGGER_LABEL={cold:'開 App', foreground:'回前景', poll:'輪詢', manual:'手動刷新', write:'寫入', schedule:'排程'};
 
 function perfAlertNeeded(){ return isAdmin() && perfRows>PERF_ALERT_ROWS; }
 
@@ -2389,7 +2401,7 @@ function sysGroupsHtml(d){
     return `<div class="sys-row">
       <div class="who">${esc(g.name||'(沒有名稱)')}<small>${esc(g.group_id)}</small></div>
       <div class="meta">${state}${g.joined_at?'・加入 '+esc(String(g.joined_at).slice(0,10)):''}</div>
-      <div class="adm-grid">${btn('is_active','✅ 啟用')}${btn('cmd_expense','記帳')}${btn('cmd_tasks','任務')}${btn('cmd_query','查詢')}</div>
+      <div class="adm-grid">${btn('is_active','✅ 啟用')}${btn('cmd_expense','記帳')}${btn('cmd_tasks','任務')}${btn('cmd_query','查詢')}${btn('notify_due','⏰ 到期推群組')}</div>
     </div>`;
   }).join('');
 }
@@ -2614,6 +2626,44 @@ function delTask(id){
   state.tasks=state.tasks.filter(x=>x.id!==id);
   renderTasks();
 }
+/* ---------- 改到期日與週期（ADR-014 D-22） ----------
+   點任務文字打開；只改 due／recurN／recurUnit，其餘原樣送回。
+   改了到期日就清 notified：不清的話「延後」之後就再也不會提醒（補議題 ⑤）。 */
+function openTaskEdit(id){ editingTaskId=(editingTaskId===id)?null:id; taskEditDraft=null; renderTasks(); }
+function closeTaskEdit(){ editingTaskId=null; taskEditDraft=null; renderTasks(); }
+function noteTaskEdit(field, value){ taskEditDraft=Object.assign({}, taskEditDraft||{}, {[field]:value}); }
+function saveTaskEdit(clear){
+  const t=state.tasks.find(x=>x.id===editingTaskId);
+  if(!t){ closeTaskEdit(); return; }
+  const val=id=>(document.getElementById(id)||{}).value||'';
+  const due=clear?'':val('editTaskDue');
+  const recurUnit=clear?'':val('editTaskRecurUnit');
+  const recurN=clear?'':val('editTaskRecurN');
+  if(recurUnit && !due){ toast('週期任務要先有到期日'); return; }
+  if(due!==(t.due||'')) t.notified=false;
+  t.due=due; t.recurUnit=recurUnit; t.recurN=recurUnit?(recurN||'1'):'';
+  editingTaskId=null; taskEditDraft=null;
+  pushTask(t); renderTasks();
+  toast(due?'到期日：'+due:'已清除到期日');
+}
+function taskEditHtml(t){
+  const units=['','天','週','月','年'];
+  const d=Object.assign({due:t.due||'', recurN:String(t.recurN||''), recurUnit:t.recurUnit||''}, taskEditDraft||{});
+  return `<div class="task-edit">
+    <div class="due-row">
+      <input type="date" id="editTaskDue" value="${esc(d.due)}" aria-label="到期日" oninput="noteTaskEdit('due',this.value)">
+      <span class="lbl">每</span>
+      <input type="number" id="editTaskRecurN" min="1" step="1" placeholder="—" value="${esc(d.recurN)}" aria-label="週期數字" oninput="noteTaskEdit('recurN',this.value)">
+      <select id="editTaskRecurUnit" aria-label="週期單位" onchange="noteTaskEdit('recurUnit',this.value)">${units.map(u=>
+        `<option value="${u}" ${u===d.recurUnit?'selected':''}>${u||'不重複'}</option>`).join('')}</select>
+    </div>
+    <div class="row">
+      <button class="btn" onclick="saveTaskEdit()">儲存</button>
+      <button class="btn-outline" onclick="saveTaskEdit(true)">清除到期日</button>
+      <button class="btn-outline" onclick="closeTaskEdit()">取消</button>
+    </div>
+  </div>`;
+}
 /* 紅→黃→綠；同色內 created_at 舊者優先（ADR-004 §2） */
 function byPriority(a,b){
   const d=PRIORITY_RANK[a.priority||DEFAULT_PRIORITY]-PRIORITY_RANK[b.priority||DEFAULT_PRIORITY];
@@ -2629,11 +2679,11 @@ function renderTasks(){
       <input type="checkbox" ${t.done?'checked':''} onchange="toggleTask(${t.id})">
       <button class="prio-dot prio-${p}" onclick="cyclePriority(${t.id})"
         aria-label="優先度 ${PRIORITY_LABEL[p]}，點擊切換" title="優先度：${PRIORITY_LABEL[p]}"></button>
-      <div class="txt">${esc(t.txt)}${t.due?` <span class="tag">${esc(t.due)}${t.recurUnit?'／每'+esc(String(t.recurN||1))+esc(t.recurUnit):''}</span>`:''}</div>
+      <div class="txt editable" role="button" tabindex="0" onclick="openTaskEdit(${t.id})" title="點一下改到期日與週期">${esc(t.txt)}${t.due?` <span class="tag">${esc(t.due)}${t.recurUnit?'／每'+esc(String(t.recurN||1))+esc(t.recurUnit):''}</span>`:''}</div>
       <button class="pin ${t.board?'on':''}" onclick="toggleBoard('tasks',${t.id})"
         aria-label="釘到白板" title="釘到共用白板">📌</button>
       <button class="del" onclick="delTask(${t.id})" aria-label="刪除">✕</button>
-    </div>`;
+    </div>${editingTaskId===t.id?taskEditHtml(t):''}`;
   };
   document.getElementById('taskListOpen').innerHTML=
     open.length?open.map(html).join(''):'<div class="empty-hint">目前沒有進行中的任務 🎉</div>';

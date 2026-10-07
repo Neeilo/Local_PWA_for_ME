@@ -385,7 +385,7 @@ describe('欄位安裝 ensureAdr009Columns（待其他環境知道的事 #7）',
 
     const summary = env.call('ensureAdr009Columns');
 
-    assert.deepEqual(summary.tasks.added, ['archive', 'board', 'due_date', 'recur_interval', 'recur_unit', 'notified']);
+    assert.deepEqual(summary.tasks.added, ['archive', 'board', 'due_date', 'recur_interval', 'recur_unit', 'notified', 'origin_chat']);
     assert.equal(sheet.values[0].filter(h => h === 'del').length, 1, 'del 不該被補第二次');
   });
 
