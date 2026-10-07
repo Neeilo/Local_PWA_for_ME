@@ -79,7 +79,9 @@ var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET, LINE_GROUPS_SHEET];
  * 用在「建表」與「註冊」；權限判斷走下面的 canUse_（ADR-012 D-3）。
  */
 var LINE_USERS_FEATURES = ['feat_expense', 'feat_tasks', 'feat_review',
-                           'feat_notes', 'feat_mood', 'feat_log'];
+                           'feat_notes', 'feat_mood'];
+/* feat_log 於 ADR-014 退場（Neil 2026-10-07）：logs 是全家所有人的 LINE 輸入（含金額），
+   改成只有管理員讀得到（見 canUseSheet_）。Sheet 上既有的 feat_log 欄不刪，只是不再被讀。 */
 
 /**
  * 分頁 ↔ 功能（ADR-012 D-3）。只寫這一份：PWA 讀寫、LINE 前綴、「查/」都查這張表。
@@ -87,13 +89,13 @@ var LINE_USERS_FEATURES = ['feat_expense', 'feat_tasks', 'feat_review',
  */
 var FEATURE_BY_SHEET = {
   tasks: 'feat_tasks', expenses: 'feat_expense', reviews: 'feat_review',
-  notes: 'feat_notes', moods: 'feat_mood', logs: 'feat_log'
+  notes: 'feat_notes', moods: 'feat_mood'
 };
 
 /** LINE 回覆與「查/」的提示詞要講人話。名稱與前端導覽列一致 */
 var FEATURE_LABEL = {
   feat_tasks: '任務', feat_expense: '記帳', feat_review: '日誌',
-  feat_notes: '雜記', feat_mood: '心情', feat_log: 'LOG'
+  feat_notes: '雜記', feat_mood: '心情'
 };
 
 /**
@@ -111,6 +113,8 @@ function canUse_(user, feature) {
 }
 
 function canUseSheet_(user, sheetName) {
+  // logs 只限管理員（ADR-014，取代 feat_log）：裡面是每個人的 LINE 輸入，不是個人資料
+  if (sheetName === 'logs') return truthy_((user || {}).is_admin);
   return canUse_(user, FEATURE_BY_SHEET[sheetName]);
 }
 

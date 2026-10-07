@@ -374,16 +374,14 @@ describe('T7 設定頁', () => {
     assert.equal(e.els.avatarDot.hidden, false);
   });
 
-  test('LOG 只給管理員，而且要開著 feat_log（後端照舊用它把關）', () => {
-    const a = env({ admin: true });
+  test('LOG 只給管理員，跟 feat_log 無關（feat_log 退場）；權限矩陣不再有 LOG 開關', () => {
+    const a = env({ admin: true, feats: Object.assign({}, ALL_FEATS, { feat_log: '' }) });
     a.call('renderLogCard');
     assert.equal(a.els.logCard.hidden, false);
-    const b = env({ admin: true, feats: Object.assign({}, ALL_FEATS, { feat_log: '' }) });
-    b.call('renderLogCard');
-    assert.equal(b.els.logCard.hidden, true);
-    const c = env();
+    const c = env({ feats: Object.assign({}, ALL_FEATS, { feat_log: 'TRUE' }) });
     c.call('renderLogCard');
     assert.equal(c.els.logCard.hidden, true);
+    assert.equal(a.read('FEATURE_KEYS').includes('feat_log'), false);
   });
 
   test('我的裝置：按了才抓，抓的是自己（不帶別人的 line_id）', async () => {

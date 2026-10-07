@@ -1083,7 +1083,6 @@ const FEATURE_ITEMS = [
   { view:'notes',    icon:'📎', label:'雜記' },
   { view:'tasks',    icon:'☑️', label:'任務' },
   { view:'review',   icon:'🌙', label:'日誌' },
-  { view:'logs',     icon:'📋', label:'LOG'  },
   { view:'mood',     icon:'💚', label:'心情' }
 ];
 
@@ -1128,12 +1127,12 @@ const LINE_USERS_SHEET = 'line_users';
 /* 分頁 ↔ 功能欄。首頁刻意不在表上：它是進 App 的第一頁，關掉沒意義（D-1）。 */
 const FEATURE_BY_VIEW = {
   expenses:'feat_expense', notes:'feat_notes', tasks:'feat_tasks',
-  review:'feat_review', logs:'feat_log', mood:'feat_mood'
+  review:'feat_review', mood:'feat_mood'
 };
 // 標籤直接沿用 FEATURE_ITEMS，避免同一個名字在兩個地方各寫一次、改了一邊忘了另一邊
 const FEATURE_KEYS = FEATURE_ITEMS.map(function(it){ return FEATURE_BY_VIEW[it.view]; });
 /* 導覽頁 ↔ 雲端分頁。雲端回的 denied 是分頁名（ADR-012 D-4） */
-const SHEET_BY_VIEW = { expenses:'expenses', notes:'notes', tasks:'tasks', review:'reviews', logs:'logs', mood:'moods' };
+const SHEET_BY_VIEW = { expenses:'expenses', notes:'notes', tasks:'tasks', review:'reviews', mood:'moods' };
 const DATA_SHEETS = ['tasks','reviews','moods','notes','expenses'];
 /* 雲端明說「沒權限」的分頁。跟讀取失敗是兩件事：這裡的會被清空、待送的會被丟掉 */
 let cloudDenied=[];
@@ -3832,9 +3831,9 @@ function toggleFold(name){
   renderFolds();
   if(foldOpen[name]) FOLD_LOAD[name]();
 }
-/* LOG 移進管理（D-10）。後端照舊用 feat_log 把關，管理員也要開著那個功能才讀得到 */
+/* LOG 移進管理（D-10），只限管理員讀（Neil 2026-10-07：feat_log 退場，後端 canUseSheet_ 同一條規則） */
 function renderLogCard(){
-  setHidden('logCard', !(isAdmin() && featureAllowed('logs')));
+  setHidden('logCard', !isAdmin());
 }
 /* 我的裝置：按了才抓（listDevices 不帶 line_id＝自己） */
 function renderMyDevices(){
