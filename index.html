@@ -1021,6 +1021,13 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       </div>
     </div>
 
+    <!-- 📣 群組推播（ADR-014 D-19）：內容由雲端組；先預覽、看會用掉幾則，再推 -->
+    <div class="slot-card fold" id="pushCard" hidden>
+      <button class="fold-head" onclick="toggleFold('push')"><h2>📣 群組推播</h2>
+        <span class="place-count"></span><span class="fold-arrow" id="foldArrow-push">▾</span></button>
+      <div class="fold-body" id="fold-push" hidden><div id="pushBody"></div></div>
+    </div>
+
     <!-- ⏱️ 效能紀錄（ADR-012 D-7）。摘要由雲端算好，點開才抓。刪舊紀錄是手動的，不開排程 -->
     <div class="slot-card fold" id="perfCard" hidden>
       <button class="fold-head" onclick="toggleFold('perf')"><h2>⏱️ 效能紀錄</h2>
@@ -1103,6 +1110,7 @@ const VIEW_NAV={ expenses:['💰','記帳'], plans:['🧾','分期'], tasks:['�
 const LEGACY_NAV_KEYS=['personal-os-nav-placement','personal-os-nav-slot'];
 let zone='finance';
 let zoneTransition=null;
+let zonePressAt=0;           // 按下首頁鈕那一刻（切區耗時從這裡算，ADR-014 D-14）
 
 /* ---------- 身份、白名單與功能矩陣（ADR-008 → ADR-010） ----------
    三件事共用同一張雲端 line_users 表，但責任分得很開：
@@ -1240,10 +1248,13 @@ function cloudPost(body){
    App 關掉前沒搭上車的就算了——少幾筆樣本，不值得為它動 localStorage。
 
    只記成功的：讀取失敗不是「慢」，是「沒讀到」，混進去中位數就不準了。 */
-const PERF_POLL_SAMPLE=20;          // 輪詢每 20 次記 1 次
 const PERF_PENDING_MAX=20;          // 跟雲端一個請求收的上限一樣
-const PERF_ALERT_ROWS=5000;         // 管理員開 App 時超過這個數就提醒整理
-let perfPending=[], perfPollCount=0, perfRows=0, perfSummaryCache=null;
+/* 管理員開 App 時超過這個數就提醒整理（ADR-014 D-13 輪詢全記後調高）。估算：
+   每次輪詢 2 列（雲端一列＋手機量的一列）× 每天開 30 分鐘 120 次 ≈ 240 列／支手機／天，
+   3 支手機 × 30 天 ≈ 21,600 列，再加開機與寫入 → 30,000 才提醒 */
+const PERF_ALERT_ROWS=30000;
+let perfPending=[], perfRows=0, perfSummaryCache=null;
+let unauthAlert=null;               // { ts, bad_token }：未驗證請求某一小時暴增（ADR-014 D-15）
 
 function perfNote(action, trigger, ms){
   perfPending.push({action, trigger, client_ms:Math.round(ms)});
@@ -1312,7 +1323,8 @@ function startSession(trigger){
    （見 pullFromCloud 上方的註解）。認證錯誤 cloudPost 已經帶去對的畫面了。 */
 async function runBoot(trigger){
   let j=null;
-  try{ j=await cloudPost(trigger ? {action:'boot', trigger} : {action:'boot'}); }catch(e){ j=null; }
+  // 「再試一次」、續期完成這兩處沒有傳 trigger：都是人按出來的，記成 manual（ADR-014 D-12：每個請求都要記）
+  try{ j=await cloudPost({action:'boot', trigger:trigger||'manual'}); }catch(e){ j=null; }
   const s=j && j.session;
   if(!s || s.status!=='ok' || !s.line_id || !Array.isArray(j.line_users) || !j.data || typeof j.data!=='object'){
     rosterStatus='unavailable';
@@ -1322,6 +1334,7 @@ async function runBoot(trigger){
   myLineId=s.line_id; myDeviceId=s.device_id||null;
   try{ localStorage.setItem(LINE_ID_KEY, myLineId); }catch(e){}
   perfRows = typeof j.perf_rows==='number' ? j.perf_rows : 0;   // 只有管理員會拿到
+  unauthAlert = j.unauth_alert || null;                           // 同上：最近 24 小時有沒有一小時 bad_token 暴增
   if(gateMode) closeAuthGate();
   roster=j.line_users.filter(u=>rosterId(u));
   rosterStatus = activeUsers().length ? 'ok' : 'empty';
@@ -1512,7 +1525,7 @@ async function pollRenewal(){
   if(gateMode!=='renew') return;
   if(renewExpired()){ stopRenewPoll(); renderAuthGate(); return; }
   let j=null;
-  try{ j=await cloudPost({action:'session'}); }catch(e){ return; }
+  try{ j=await cloudPost({action:'session', trigger:'poll'}); }catch(e){ return; }
   if(!j || gateMode!=='renew') return;
   if(j.status==='ok'){
     stopRenewPoll(); renew=null;
@@ -1604,7 +1617,7 @@ async function saveMyEmail(inputId){
   const email=String((inp&&inp.value)||'').trim();
   if(!isEmailText(email)){ toast('Email 格式不對'); return false; }
   let r=null;
-  try{ r=await cloudPost({action:'setMyEmail', email}); }catch(e){ r=null; }
+  try{ r=await cloudPost({action:'setMyEmail', email, trigger:'write'}); }catch(e){ r=null; }
   if(!r || !r.success){ toast('⚠️ 沒存成功'+(r&&r.error?'（'+r.error+'）':'，稍後再試')); return false; }
   const u=myUser(); if(u) u.email=r.email;
   emailEditing=false;
@@ -1619,7 +1632,7 @@ async function saveMyEmail(inputId){
 async function unpairThisDevice(){
   if(!confirm('解除這台裝置的配對？\n解除後要在 LINE 傳「配對」重新拿碼，才能再同步。')) return;
   let j=null;
-  try{ j=await cloudPost({action:'revokeDevice', device_id:myDeviceId||''}); }catch(e){ j=null; }
+  try{ j=await cloudPost({action:'revokeDevice', device_id:myDeviceId||'', trigger:'write'}); }catch(e){ j=null; }
   if(!j || !j.success){ toast('⚠️ 連不上雲端，這台還沒解除'); return; }
   forgetDevice('manual');
 }
@@ -1711,7 +1724,7 @@ function toggleAdminRow(i){
 
 /* ---------- 已配對的裝置（ADR-010 D-7） ---------- */
 function fetchDevicesOf(id){
-  return cloudPost({action:'listDevices', line_id:id})
+  return cloudPost({action:'listDevices', line_id:id, trigger:'manual'})
     .then(j=>(j&&j.success&&Array.isArray(j.devices)) ? j.devices : null)
     .catch(()=>null);
 }
@@ -1748,7 +1761,7 @@ async function revokeOneDevice(i, j){
   if(!dev) return;
   const warn = dev.current ? '\n\n⚠️ 這就是你正在用的這台，撤銷後要重新配對。' : '';
   if(!confirm('撤銷「'+(dev.device_label||'這台裝置')+'」？'+warn)) return;
-  const r=await cloudPost({action:'revokeDevice', device_id:dev.device_id}).catch(()=>null);
+  const r=await cloudPost({action:'revokeDevice', device_id:dev.device_id, trigger:'write'}).catch(()=>null);
   if(!r || !r.success){ toast('⚠️ 撤銷失敗，可再試一次'); return; }
   if(dev.current){ forgetDevice('manual'); return; }
   toast('已撤銷');
@@ -1759,7 +1772,7 @@ async function revokeAllDevices(i){
   const id=rosterId(u);
   const mine = id===myLineId ? '\n\n⚠️ 包含你正在用的這台，撤銷後要重新配對。' : '';
   if(!confirm('撤銷 '+rosterName(u)+' 的全部裝置？'+mine)) return;
-  const r=await cloudPost({action:'revokeDevice', all_of:id}).catch(()=>null);
+  const r=await cloudPost({action:'revokeDevice', all_of:id, trigger:'write'}).catch(()=>null);
   if(!r || !r.success){ toast('⚠️ 撤銷失敗，可再試一次'); return; }
   if(id===myLineId){ forgetDevice('manual'); return; }
   toast('已撤銷 '+r.revoked+' 台');
@@ -1847,7 +1860,7 @@ async function toggleAdminFlag(i, key){
   // （包含正在按按鈕的自己）鎖在門外。replaceAll 已於 ADR-009 退場，後端一律拒絕。
   const ok=await cloudUpsert(LINE_USERS_SHEET, u, 'line_id');
   if(ok && revokeAll){
-    const r=await cloudPost({action:'revokeDevice', all_of:id}).catch(()=>null);
+    const r=await cloudPost({action:'revokeDevice', all_of:id, trigger:'write'}).catch(()=>null);
     toast(r&&r.success ? '已停用，並撤銷 '+r.revoked+' 台裝置' : '⚠️ 已停用，但撤銷裝置失敗，可在裝置清單再試');
     if(adminOpen===id) loadAdminDevices(id);
   }else if(ok){
@@ -1872,7 +1885,7 @@ const NOTE_TAGS = ['文章','作品','系統','分享','其他'];
 let selectedNoteTag = null;
 
 /* ---------- LOG 頁（ADR-006 §C／§D） ---------- */
-const LOG_SOURCES = ['任務','記帳','收入','查詢','註冊','配對','設定'];
+const LOG_SOURCES = ['任務','記帳','收入','查詢','註冊','配對','設定','推播'];
 const LOG_WINDOW_DAYS = 7;
 // 抓回來的記錄只活在記憶體裡：不進 state、不寫 localStorage、不進待送佇列
 let logsCache = null;
@@ -2187,8 +2200,7 @@ function stopPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null;
 
 function pollTick(){
   if(document.visibilityState!=='visible') return;     // 保險：背景時不送
-  const sample=(++perfPollCount % PERF_POLL_SAMPLE)===0;
-  timedPull('poll', sample);
+  timedPull('poll');
   flushOutbox();                                       // 順手把積著的推出去
 }
 
@@ -2197,16 +2209,14 @@ function manualRefresh(){
   toast('更新中…');
   flushOutbox();
   progressStart();
-  return timedPull('manual', true).finally(progressDone);
+  return timedPull('manual').finally(progressDone);
 }
 
-/* pull 一次並記耗時。poll 沒抽中的那幾輪仍帶 trigger，但不帶 perf_sample，
-   雲端看到就不記（取樣由前端數，雲端不必記得這是第幾輪） */
-function timedPull(trigger, sample){
+/* pull 一次並記耗時。輪詢也每次都記（ADR-014 D-13，取消原本的 20 抽 1） */
+function timedPull(trigger){
   const started=Date.now();
-  const meta = (trigger==='poll' && sample) ? {trigger, perf_sample:true} : {trigger};
-  return syncFromCloud(meta).then(ok=>{
-    if(ok && sample) perfNote('pull', trigger, Date.now()-started);
+  return syncFromCloud({trigger}).then(ok=>{
+    if(ok) perfNote('pull', trigger, Date.now()-started);
     return ok;
   });
 }
@@ -2214,7 +2224,7 @@ function timedPull(trigger, sample){
 /* 統一的 pull 入口：同一時間只允許一個 pull 在跑，並記下完成時間，
    讓回前景的觸發能節流。 */
 let pullPromise=null, lastPullAt=0;
-/* meta 是給效能紀錄的 {trigger, perf_sample}，原樣夾進每個讀取請求。
+/* meta 是給效能紀錄的 {trigger}，原樣夾進每個讀取請求。
    回傳 Promise<boolean>：這次有沒有真的讀到（記耗時只記讀到的那幾次） */
 function syncFromCloud(meta){
   // 沒配對問了也是被擋；續期畫面開著時問了只會多灌幾列 token_expired 的 logs
@@ -2274,7 +2284,8 @@ function applyPendingOverlay(){
    不是讀不到。分頁還沒建出來，後端回的是空陣列，也是真的空。 */
 async function pullFromCloud(meta){
   let j=null;
-  try{ j=await cloudPost(Object.assign({action:'readMany', sheets:DATA_SHEETS}, meta)); }catch(e){ j=null; }
+  // 沒帶 meta 的是動作之後的重新整理（打勾週期任務、分期、續期…），記成 manual（ADR-014 D-12）
+  try{ j=await cloudPost(Object.assign({action:'readMany', sheets:DATA_SHEETS, trigger:'manual'}, meta)); }catch(e){ j=null; }
   if(!j || j.error || !j.data || typeof j.data!=='object') return pullFailed();
   return applyCloudData(j.data, j.denied, j);
 }
@@ -2405,7 +2416,7 @@ async function archiveTombstones(){
   alert(archiveFailMessage(r));
 }
 /* ---------- 效能紀錄的管理頁（ADR-012 T1 1-4） ---------- */
-const PERF_TRIGGER_LABEL={cold:'開 App', foreground:'回前景', poll:'輪詢', manual:'手動刷新', write:'寫入', schedule:'排程'};
+const PERF_TRIGGER_LABEL={cold:'開 App', foreground:'回前景', poll:'輪詢', manual:'手動', write:'寫入', schedule:'排程', zone:'切區', hourly:'每小時'};
 
 function perfAlertNeeded(){ return isAdmin() && perfRows>PERF_ALERT_ROWS; }
 
@@ -2438,14 +2449,18 @@ function renderPerfCard(){
   if(!card) return;
   card.hidden=!isAdmin();
   if(!isAdmin()) return;
-  document.getElementById('perfCount').textContent =
-    perfAlertNeeded() ? '⚠️ 該清了・'+perfRows+' 筆' : (perfRows ? perfRows+' 筆' : '');
-  document.getElementById('perfBody').innerHTML = perfSummaryCache ? perfSummaryHtml(perfSummaryCache) : '';
+  document.getElementById('perfCount').textContent = [
+    unauthAlert ? '⚠️ 未驗證請求暴增' : '',
+    perfAlertNeeded() ? '⚠️ 該清了・'+perfRows+' 筆' : (perfRows ? perfRows+' 筆' : '')
+  ].filter(Boolean).join('・');
+  document.getElementById('perfBody').innerHTML =
+    (unauthAlert ? `<div class="sys-warn">⚠️ ${esc(String(unauthAlert.ts||'').slice(0,16).replace('T',' '))}（UTC）那一小時有 ${esc(String(unauthAlert.bad_token))} 次用錯誤的 token 打進來。偶爾一兩次是舊裝置；暴增代表網址可能外流了。</div>` : '')
+    + (perfSummaryCache ? perfSummaryHtml(perfSummaryCache) : '');
 }
 
 async function loadPerfSummary(){
   let r=null;
-  try{ r=await cloudPost({action:'perfSummary'}); }catch(e){ r=null; }
+  try{ r=await cloudPost({action:'perfSummary', trigger:'manual'}); }catch(e){ r=null; }
   perfSummaryCache = r || {success:false};
   if(r && r.success) perfRows=r.total;
   renderPerfCard();
@@ -2454,7 +2469,7 @@ async function loadPerfSummary(){
 async function purgePerf(){
   if(!confirm('刪除 30 天前的效能紀錄？刪掉的不會備份。')) return;
   let r=null;
-  try{ r=await cloudPost({action:'perfPurge', days:30}); }catch(e){ r=null; }
+  try{ r=await cloudPost({action:'perfPurge', days:30, trigger:'write'}); }catch(e){ r=null; }
   if(!r || !r.success){
     toast(r && r.error==='busy' ? '⚠️ 另一個整理正在進行，請稍後再試' : '⚠️ 刪除失敗，請稍後再試');
     return;
@@ -2735,6 +2750,7 @@ function updateHomeLabel(){
   if(el && el.textContent!==t) el.textContent=t;
 }
 function homePress(on){
+  if(on) zonePressAt=Date.now();
   const b=document.getElementById('homeBtn');
   if(b && b.classList) b.classList[on?'add':'remove']('pressed');
 }
@@ -2752,15 +2768,19 @@ function setZone(z){
   if(!ZONES[z] || !zoneHasFeatures(z)) return;
   zone=z;
   try{ localStorage.setItem(ZONE_KEY, z); }catch(e){}
+  // 切區耗時：按下 → 動畫結束（D-14）。只放進 perfPending，搭下一個請求送上，不多打請求
+  const started=zonePressAt||Date.now(); zonePressAt=0;
+  const measured=()=>perfNote('zoneSwitch', 'zone', Date.now()-started);
   const apply=()=>{ renderNav(); renderZoneCard(); };
   const doc=document;
   if(zoneTransition){ try{ zoneTransition.skipTransition(); }catch(e){} zoneTransition=null; }
-  if(typeof doc.startViewTransition!=='function'){ apply(); return; }   // 不支援就直接換
+  if(typeof doc.startViewTransition!=='function'){ apply(); measured(); return; }   // 不支援就直接換
   doc.documentElement.setAttribute('data-zone-dir', z==='finance' ? 'from-left' : 'from-right');
   let t=null;
-  try{ t=doc.startViewTransition(apply); }catch(e){ apply(); return; }
+  try{ t=doc.startViewTransition(apply); }catch(e){ apply(); measured(); return; }
   zoneTransition=t;
-  const done=()=>{ if(zoneTransition===t) zoneTransition=null; };
+  // 被下一次點擊跳過的那段不記：那不是「切完了」，是被打斷
+  const done=()=>{ if(zoneTransition===t){ zoneTransition=null; measured(); } };
   if(t && t.finished && t.finished.then) t.finished.then(done, done);
 }
 /* 權限或身份變了：重畫導覽；目前正看著的分頁被關掉時，別把人留在不該存在的畫面上 */
@@ -3353,7 +3373,7 @@ function planRequest(){
 async function previewPlan(){
   const req=planRequest(); if(!req) return;
   let r=null;
-  try{ r=await cloudPost(Object.assign({action:'planCreate', dry_run:true}, req)); }catch(e){ r=null; }
+  try{ r=await cloudPost(Object.assign({action:'planCreate', dry_run:true, trigger:'manual'}, req)); }catch(e){ r=null; }
   if(!r){ toast('連不上雲端，沒辦法預覽'); return; }
   if(!r.success){ toast(planErrorText(r)); planDraft.schedule=null; renderPlanBox(); return; }
   planDraft.schedule=r.schedule; planDraft.previewed=JSON.stringify(req); renderPlanBox();
@@ -3772,6 +3792,7 @@ let myDevices=null;          // null＝還沒抓；{loading}／{failed}／{list}
 const FOLD_LOAD={
   members: ()=>{},
   sys:     ()=>{ if(!sysTab) openSysTab('groups'); },
+  push:    ()=>{ if(!pushState.groups) loadPushGroups(); },
   perf:    ()=>{ if(!perfSummaryCache) loadPerfSummary(); },
   logs:    ()=>{ openLogsView(); },
   archive: ()=>{}
@@ -3781,7 +3802,7 @@ function renderAvatar(){
   if(ch){ const n=rosterName(myUser()); ch.textContent = myLineId ? (n ? Array.from(n)[0] : '?') : '!'; }
   const dot=document.getElementById('avatarDot');
   // 管理員的待辦：效能紀錄該清了、有人用 LINE 註冊等核准
-  if(dot) dot.hidden = !(isAdmin() && (perfAlertNeeded() || pendingUsers().length>0));
+  if(dot) dot.hidden = !(isAdmin() && (perfAlertNeeded() || pendingUsers().length>0 || !!unauthAlert));
 }
 function openSettings(){
   const el=document.getElementById('settings');
@@ -3815,7 +3836,7 @@ function renderSettings(){
   setHidden('setPersonal', settingsTab!=='personal');
   setHidden('setAdmin', settingsTab!=='admin');
   renderMeCard(); renderMyDevices(); renderSetEmail(); renderThemeCard();
-  renderAdminCard(); renderSysCard(); renderPerfCard(); renderArchiveCard(); renderLogCard();
+  renderAdminCard(); renderSysCard(); renderPushCard(); renderPerfCard(); renderArchiveCard(); renderLogCard();
   renderFolds();
 }
 function renderFolds(){
@@ -3835,6 +3856,86 @@ function toggleFold(name){
 function renderLogCard(){
   setHidden('logCard', !isAdmin());
 }
+/* ---------- 📣 群組推播（ADR-014 D-19） ----------
+   文字一律由雲端組（pushPreview 回來的就是會送出去的那一份），這裡只選群組與內容種類。
+   預覽之後改了任何選項，預覽就作廢，要重新預覽才推得出去——推的永遠是看過的那一份。 */
+const PUSH_KIND_LABEL={board:'白板摘要', due:'快到期清單', custom:'自訂文字'};
+const PUSH_ERRORS={forbidden:'只有管理者可以推播', group_not_found:'找不到這個群組', group_inactive:'這個群組沒有啟用或 bot 已離開',
+  nothing_to_send:'沒有可以推的內容', empty:'自訂文字是空的', too_long:'自訂文字太長（上限 500 字）', push_failed:'LINE 推播失敗'};
+let pushState={groups:null, loading:false, group:'', kind:'board', text:'', preview:null, busy:false};
+async function loadPushGroups(){
+  pushState.loading=true; renderPushCard();
+  let r=null;
+  try{ r=await cloudPost({action:'adminView', what:'groups', trigger:'manual'}); }catch(e){ r=null; }
+  pushState.loading=false;
+  pushState.groups = (r&&r.success) ? r.rows.filter(g=>truthy(g.is_active) && !String(g.left_at||'').trim()) : null;
+  if(pushState.groups && !pushState.group && pushState.groups[0]) pushState.group=pushState.groups[0].group_id;
+  if(!r || !r.success) toast('⚠️ 讀不到群組清單');
+  renderPushCard();
+}
+function setPush(field, value){
+  pushState[field]=value; pushState.preview=null;
+  if(field!=='text') renderPushCard();      // 打字時不重畫，不然游標會跳
+  else { const b=document.getElementById('pushSendBtn'); if(b) b.disabled=true; }
+}
+function pushBody(action){
+  return {action, group_id:pushState.group, kind:pushState.kind, text:pushState.kind==='custom'?pushState.text:'', today:todayKey()};
+}
+async function previewPush(){
+  if(pushState.busy) return;
+  pushState.busy=true; renderPushCard();
+  let r=null;
+  try{ r=await cloudPost(Object.assign(pushBody('pushPreview'), {trigger:'manual'})); }catch(e){ r=null; }
+  pushState.busy=false;
+  if(!r || !r.success){ toast('⚠️ '+(PUSH_ERRORS[r&&r.error]||'預覽失敗，稍後再試')); pushState.preview=null; }
+  else pushState.preview=r;
+  renderPushCard();
+}
+async function sendPush(){
+  const p=pushState.preview;
+  if(!p || pushState.busy) return;
+  const cost = typeof p.cost==='number' ? '\n這次會用掉 '+p.cost+' 則。' : '';
+  if(!confirm('推送到「'+(p.group.name||p.group.id)+'」？'+cost)) return;
+  pushState.busy=true; renderPushCard();
+  let r=null;
+  try{ r=await cloudPost(Object.assign(pushBody('pushSend'), {trigger:'write'})); }catch(e){ r=null; }
+  pushState.busy=false;
+  if(!r || !r.success){ toast('⚠️ '+(PUSH_ERRORS[r&&r.error]||'沒有收到雲端回應，到 LOG 看看有沒有送出')); renderPushCard(); return; }
+  pushState.preview=null; renderPushCard();
+  toast('已推送 📣');
+}
+function pushQuotaText(p){
+  const used = typeof p.cost==='number' ? '這次會用掉 '+p.cost+' 則' : '人數查詢失敗';
+  const q=p.quota;
+  return used+'｜'+(q && q.used!=null ? '本月已用 '+q.used+(q.limit!=null?' / '+q.limit:'（無上限）') : '額度查詢失敗');
+}
+function renderPushCard(){
+  const card=document.getElementById('pushCard');
+  if(!card) return;
+  card.hidden=!isAdmin();
+  const el=document.getElementById('pushBody');
+  if(!el || !isAdmin()) return;
+  if(pushState.loading){ el.innerHTML='<div class="empty-hint">讀取中…</div>'; return; }
+  if(!pushState.groups){ el.innerHTML='<div class="empty-hint">讀不到群組 <button class="link" onclick="loadPushGroups()">重試</button></div>'; return; }
+  if(!pushState.groups.length){ el.innerHTML='<div class="empty-hint">沒有啟用中的群組。到「系統設定 ▸ 群組」打開。</div>'; return; }
+  const p=pushState.preview;
+  el.innerHTML=`
+    <div class="field-label">群組</div>
+    <select onchange="setPush('group',this.value)">${pushState.groups.map(g=>
+      `<option value="${esc(g.group_id)}" ${g.group_id===pushState.group?'selected':''}>${esc(g.name||g.group_id)}</option>`).join('')}</select>
+    <div class="field-label">內容</div>
+    <div class="seg">${Object.keys(PUSH_KIND_LABEL).map(k=>
+      `<button class="${pushState.kind===k?'sel':''}" onclick="setPush('kind','${k}')">${PUSH_KIND_LABEL[k]}</button>`).join('')}</div>
+    ${pushState.kind==='custom'?`<textarea maxlength="500" placeholder="要推給群組的話（500 字以內）" oninput="setPush('text',this.value)">${esc(pushState.text)}</textarea>`:''}
+    <p class="slot-hint">記帳內容（含金額）不提供推到群組。快到期清單只列在這個群組交代的、或釘在白板上的任務。</p>
+    <div class="row" style="margin-top:8px">
+      <button class="btn-outline" onclick="previewPush()" ${pushState.busy?'disabled':''}>預覽</button>
+      <button class="btn" id="pushSendBtn" onclick="sendPush()" ${!p||pushState.busy?'disabled':''}>推送</button>
+    </div>
+    ${p?`<div class="field-label">實際要送出的文字</div><div class="dash-review" style="border:1px solid var(--line);border-radius:10px;padding:10px">${esc(p.text)}</div>
+      <p class="slot-hint">${esc(pushQuotaText(p))}</p>`:''}`;
+}
+
 /* 我的裝置：按了才抓（listDevices 不帶 line_id＝自己） */
 function renderMyDevices(){
   const el=document.getElementById('myDevices');
@@ -3883,7 +3984,7 @@ function logFromCloud(r){
 function fetchLogs(){
   logsLoading=true; logsFailed=false;
   renderLogsView();
-  return cloudPost({action:'read', sheet:'logs'})
+  return cloudPost({action:'read', sheet:'logs', trigger:'manual'})
     .then(j=>{
       if(!j || j.error) throw new Error((j&&j.error)||'empty_response');
       logsCache=(j.data||[]).map(logFromCloud).sort((a,b)=>b.ts-a.ts);

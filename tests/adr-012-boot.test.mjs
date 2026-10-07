@@ -200,13 +200,11 @@ describe('readMany', () => {
     assert.equal(hits.n, 0);
   });
 
-  test('輪詢抽中的那一輪記一列效能紀錄', () => {
+  test('輪詢每一輪都記一列效能紀錄（ADR-014 D-13：取消 20 抽 1）', () => {
     const e = env();
     post(e, { action: 'readMany', token: TOK_ME, sheets: DATA_SHEETS, trigger: 'poll' });
-    assert.equal(e.sheets.performance, undefined, '沒抽中不記');
-    post(e, { action: 'readMany', token: TOK_ME, sheets: DATA_SHEETS, trigger: 'poll', perf_sample: true });
     const rows = e.sheets.performance.toRecords();
-    assert.equal(rows.length, 1);
+    assert.equal(rows.length, 1, '沒有 perf_sample 也要記');
     assert.equal(rows[0].action, 'readMany');
     assert.equal(rows[0].sheets, DATA_SHEETS.join(','));
   });

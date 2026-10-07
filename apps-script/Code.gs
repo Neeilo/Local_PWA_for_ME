@@ -461,7 +461,11 @@ function bootResponse_(caller, perf) {
     data: many.data,
     denied: many.denied
   };
-  if (isAdmin) out.perf_rows = perfRowCount_();
+  if (isAdmin) {
+    out.perf_rows = perfRowCount_();
+    var alert = unauthAlert_();
+    if (alert) out.unauth_alert = alert;
+  }
   return withExpenseConfig_(out, caller.user, ss, BOOT_SHEETS);
 }
 
@@ -500,27 +504,30 @@ function handlePwaSync_(e) {
   var perf = {};
   var out = routePwaSync_(body, perf);
   recordPerf_(body, perf, Date.now() - started);
+  // 沒通過驗證的請求不寫 performance（免得陌生人灌爆），改在快取裡累計，每小時彙總一列（ADR-014 D-15）
+  if (!perf.who && perf.unauth) noteUnauth_(perf.unauth, Date.now() - started);
   return out;
 }
 
 /** perf 由各分支填：who（通過驗證才有）、auth_ms、open_ms、read_ms、rows */
 function routePwaSync_(body, perf) {
   // 不需要（或還沒有）有效 token 的三扇門：配對、查狀態、過期續期（ADR-010 D-3）
-  if (body.action === 'pairClaim') return jsonOut(pairClaim_(body.code, body.device_label));
+  if (body.action === 'pairClaim') { perf.unauth = 'pairClaim'; return jsonOut(pairClaim_(body.code, body.device_label)); }
   if (body.action === 'session') {
     var authStarted = Date.now();
     var s = deviceSession_(body.token);
     perf.auth_ms = Date.now() - authStarted;
     if (s.status === 'ok') perf.who = { line_id: s.line_id, device_id: s.device_id };
+    else perf.unauth = s.status;
     return jsonOut(s);
   }
-  if (body.action === 'renewStart') return jsonOut(renewStart_(body.token));
+  if (body.action === 'renewStart') { perf.unauth = 'renewStart'; return jsonOut(renewStart_(body.token)); }
 
   // 身份一律由後端換出來，不信任 body 裡的 line_id（ADR-010 D-2）
   var callerStarted = Date.now();
   const caller = pwaCaller_(body);
   perf.auth_ms = Date.now() - callerStarted;
-  if (!caller.ok) return jsonOut({ error: caller.error, reason: caller.error });
+  if (!caller.ok) { perf.unauth = caller.error; return jsonOut({ error: caller.error, reason: caller.error }); }
   perf.who = { line_id: caller.line_id, device_id: caller.device ? caller.device.device_id : '' };
 
   if (body.action === 'boot') return jsonOut(bootResponse_(caller, perf));
@@ -549,6 +556,8 @@ function routePwaSync_(body, perf) {
   if (body.action === 'planCreate') return jsonOut(planCreate_(caller, body));
   if (body.action === 'planDelete') return jsonOut(planDelete_(caller, body.plan_id));
   if (body.action === 'planEnd') return jsonOut(planEnd_(caller, body.plan_id, body.today));
+  if (body.action === 'pushPreview') return jsonOut(pushPreview_(caller, body));
+  if (body.action === 'pushSend') return jsonOut(pushSend_(caller, body));
 
   if (NO_PWA_WRITE.indexOf(body.sheet) !== -1) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');
@@ -2149,7 +2158,7 @@ var PERFORMANCE_HEADERS = ['id', 'ts', 'action', 'trigger', 'client_ms', 'server
   'sheets', 'rows', 'device_id', 'line_id', 'reply_ms'];
 
 /** 觸發情境。不在清單裡的一律不記——欄位裡只會出現這幾個字 */
-var PERF_TRIGGERS = ['cold', 'foreground', 'poll', 'manual', 'write', 'line', 'schedule'];
+var PERF_TRIGGERS = ['cold', 'foreground', 'poll', 'manual', 'write', 'line', 'schedule', 'zone', 'hourly'];
 var PERF_CLIENT_MAX = 20;              // 一個請求最多收幾筆手機紀錄
 var PERF_CLIENT_MS_MAX = 600000;       // 超過 10 分鐘的不是耗時，是手機睡著了
 var PERF_SUMMARY_DAYS = 7;
@@ -2190,15 +2199,16 @@ function clientPerfRows_(list) {
  * 回應前寫紀錄。整支包 try/catch：紀錄是事後回頭看的東西，寫不進去不該讓一次
  * 成功的讀寫變成失敗（比照 logTransaction_）。
  *
- * **沒通過驗證的請求一列都不寫**：不然拿到網址的人就能灌爆這張表。
- * poll 只在前端帶 perf_sample:true 時寫（每 20 次 1 次，由前端計數）。
+ * **沒通過驗證的請求一列都不寫**：不然拿到網址的人就能灌爆這張表（它們另外每小時彙總一列，見 noteUnauth_）。
+ * 輪詢也每次都記（ADR-014 D-13，取消原本的 20 抽 1）。代價：每次輪詢多寫一列、表長得快，
+ * 「該清了」的門檻跟著調高（前端 PERF_ALERT_ROWS）。
  */
 function recordPerf_(body, perf, serverMs) {
   try {
     if (!perf.who) return;
     var rows = [];
     var trigger = body.trigger;
-    if (PERF_TRIGGERS.indexOf(trigger) !== -1 && (trigger !== 'poll' || body.perf_sample === true)) {
+    if (PERF_TRIGGERS.indexOf(trigger) !== -1) {
       rows.push({
         action: String(body.action || ''), trigger: trigger, server_ms: serverMs,
         auth_ms: perf.auth_ms, open_ms: perf.open_ms, read_ms: perf.read_ms,
@@ -2275,6 +2285,100 @@ function recordSchedulePerf_(action, rows, serverMs) {
   } catch (err) {
     console.log('寫排程效能紀錄失敗（主流程不受影響）：' + err);
   }
+}
+
+/* ---------- 未驗證請求每小時彙總（ADR-014 D-15） ----------
+   配對、續期、token 錯誤／過期／撤銷的請求不寫 performance（陌生人可以無限打），
+   只在 CacheService 裡依小時累加；每小時排程（flushUnauthPerf）寫成**一列**。
+   不論被打幾次，一小時最多一列；計數不碰 Sheet。
+   ⚠️ 已知限制：拿不到鎖（同一瞬間很多請求）的那幾次不計——數字是「至少這麼多」。 */
+var UNAUTH_PREFIX = 'adr014_unauth_';
+var UNAUTH_TTL = 21600;                 // CacheService 上限 6 小時：排程漏跑幾次也還補得回來
+var UNAUTH_LOCK_MS = 300;
+var UNAUTH_FLUSH_FUNCTION = 'flushUnauthPerf';
+var UNAUTH_BAD_TOKEN_ALERT = 50;        // 一小時 bad_token 超過這個數 → 管理員大頭貼紅點
+var UNAUTH_ALERT_KEY = 'adr014_unauth_alert';
+var UNAUTH_ALERT_TTL = 86400;
+var HOUR_MS = 3600000;
+
+/** 分類：查無此 token／沒帶 token 併成 bad_token（多半是亂猜或舊裝置），其餘照原因 */
+function unauthCategory_(reason) {
+  var r = String(reason || '');
+  return (r === 'no_token' || r === 'unknown_token') ? 'bad_token' : (r || 'unknown');
+}
+
+function noteUnauth_(reason, ms, nowMs) {
+  try {
+    var cache = scriptCache_();
+    if (!cache) return;
+    var lock = LockService.getScriptLock();
+    if (!lock.tryLock(UNAUTH_LOCK_MS)) return;
+    try {
+      var key = UNAUTH_PREFIX + Math.floor((nowMs || Date.now()) / HOUR_MS);
+      var cur = cacheGetJson_(cache, key) || { n: 0, ms: 0, by: {} };
+      var cat = unauthCategory_(reason);
+      cur.n++;
+      cur.ms += Math.max(0, Number(ms) || 0);
+      cur.by[cat] = (cur.by[cat] || 0) + 1;
+      cache.put(key, JSON.stringify(cur), UNAUTH_TTL);
+    } finally {
+      lock.releaseLock();
+    }
+  } catch (err) {
+    console.log('未驗證請求計數失敗（主流程不受影響）：' + err);
+  }
+}
+
+/**
+ * 每小時排程：把「已經結束的小時」寫成一列（action=unauth、trigger=hourly）。
+ * 往回看 5 小時，排程漏跑也補得回來；寫完就刪快取，同一小時不會寫第二列。
+ * 觸發器呼叫時參數是事件物件，只有測試會傳數字。
+ */
+function flushUnauthPerf(nowMs) {
+  var now = typeof nowMs === 'number' ? nowMs : Date.now();
+  var cache = scriptCache_();
+  if (!cache) return { written: 0 };
+  var cur = Math.floor(now / HOUR_MS);
+  var written = 0;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(PERF_LOCK_MS)) return { written: 0, reason: 'busy' };
+  try {
+    for (var h = cur - 5; h < cur; h++) {
+      var key = UNAUTH_PREFIX + h;
+      var b = cacheGetJson_(cache, key);
+      if (!b || !b.n) continue;
+      var sheet = ensurePerformanceSheet_();
+      var headers = perfHeaders_(sheet);
+      var r = { id: String(h * HOUR_MS), ts: new Date(h * HOUR_MS).toISOString(), action: 'unauth', trigger: 'hourly',
+                rows: b.n, server_ms: Math.round(b.ms / b.n),
+                sheets: Object.keys(b.by).sort().map(function (k) { return k + ' ' + b.by[k]; }).join('・') };
+      sheet.appendRow(headers.map(function (x) { return r[x] === undefined || r[x] === null ? '' : r[x]; }));
+      cache.remove(key);
+      written++;
+      if ((b.by.bad_token || 0) > UNAUTH_BAD_TOKEN_ALERT) {
+        cache.put(UNAUTH_ALERT_KEY, JSON.stringify({ ts: r.ts, bad_token: b.by.bad_token }), UNAUTH_ALERT_TTL);
+      }
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return { written: written };
+}
+
+/** 最近 24 小時內有哪一小時 bad_token 暴增（boot 帶給管理員；沒有就回 null） */
+function unauthAlert_() {
+  var cache = scriptCache_();
+  return cache ? cacheGetJson_(cache, UNAUTH_ALERT_KEY) : null;
+}
+
+/** 每小時排程。比照 installAdr009Triggers：先刪同名的再建，重複執行不累積 */
+function installUnauthTrigger() {
+  var removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === UNAUTH_FLUSH_FUNCTION) { ScriptApp.deleteTrigger(t); removed++; }
+  });
+  ScriptApp.newTrigger(UNAUTH_FLUSH_FUNCTION).timeBased().everyHours(1).create();
+  return { removed: removed, created: UNAUTH_FLUSH_FUNCTION };
 }
 
 /** 管理員開 App 時的門檻提醒用。讀不到就回 0：提醒不重要到要擋住開機 */
@@ -3304,4 +3408,122 @@ function configAdd_(caller, record) {
   cfg.rows.push({ row: cfg.sheet.getLastRow(), record: row });
   settingsLog_(caller, 'configAdd ' + kind + ' ' + name, '已新增' + (row.parent ? '（' + row.parent + '）' : ''));
   return configCommit_(cfg);
+}
+
+
+/* ========================================================================== */
+/* ADR-014 D-19 — 管理員手動推播到群組（交棒票 T9）                               */
+/*                                                                            */
+/* pushPreview：回要送的文字、群組人數（＝這次會用掉幾則）、本月額度與已用量。     */
+/* pushSend   ：真的推，寫 logs（來源「推播」）。performance 由 trigger 照常記。    */
+/* 內容一律由**後端**組（不信任前端送來的文字）；自訂文字限長度。                  */
+/* 記帳類內容不提供（含金額）。快到期清單只列「在這個群組交代的」或釘在白板上的任務  */
+/* ——私人的卡費提醒不會因為管理員按一下就曝光給家人（D-17 的同一個原則）。          */
+/* ========================================================================== */
+
+var PUSH_LOG_SOURCE = '推播';
+var PUSH_KINDS = { board: '白板摘要', due: '快到期清單', custom: '自訂文字' };
+var PUSH_CUSTOM_MAX = 500;
+var PUSH_DUE_BUCKETS = { overdue: true, d1: true, d3: true, d5: true };
+var LINE_API_BASE = 'https://api.line.me/v2/bot';
+
+function pushForbidden_(caller, action) {
+  if (truthy_((caller.user || {}).is_admin)) return null;
+  try { logTransaction_(PUSH_LOG_SOURCE, '失敗', action, '只有管理者可以推播', '', '', caller.line_id); } catch (err) {}
+  return { error: 'forbidden' };
+}
+
+/** 能推的群組：is_active 且 left_at 空白 */
+function pushTargetGroup_(groupId) {
+  var id = String(groupId == null ? '' : groupId).trim();
+  var all = readLineGroups_();
+  if (!all.ok) return { error: 'read_failed' };
+  var hit = id ? findGroup_(all, id) : null;
+  if (!hit) return { error: 'group_not_found' };
+  if (!truthy_(hit.record.is_active) || keyValue_(hit.record.left_at)) return { error: 'group_inactive' };
+  return { id: id, name: String(hit.record.name || '').trim() };
+}
+
+/** 要送的文字。kind 不認得、內容是空的都回 { error } */
+function pushText_(kind, groupId, custom, todayKey) {
+  if (!PUSH_KINDS[kind]) return { error: 'invalid_kind' };
+  if (kind === 'custom') {
+    var t = String(custom == null ? '' : custom).trim();
+    if (!t) return { error: 'empty' };
+    if (t.length > PUSH_CUSTOM_MAX) return { error: 'too_long', max: PUSH_CUSTOM_MAX };
+    return { text: t };
+  }
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var open = function (name) { var r = sheetRecords_(ss, name, {}); return r.error ? [] : r.rows.filter(function (x) { return !isTombstone_(x); }); };
+  var tasks = open(TASKS_SHEET).filter(function (t) { return !truthy_(t.is_completed); });
+  if (kind === 'board') {
+    var items = tasks.filter(function (t) { return truthy_(t.board); }).map(function (t) { return '☑️ ' + t.text; })
+      .concat(open('notes').filter(function (n) { return truthy_(n.board); }).map(function (n) { return '📎 ' + n.text; }));
+    if (!items.length) return { error: 'nothing_to_send' };
+    return { text: '📌 白板（' + items.length + ' 項）\n' + items.join('\n') };
+  }
+  var today = todayKeyFrom_(todayKey);
+  var due = tasks.filter(function (t) {
+    return PUSH_DUE_BUCKETS[dueBucket_(t.due_date, today)] && (keyValue_(t.origin_chat) === groupId || truthy_(t.board));
+  }).sort(function (a, b) { return keyValue_(a.due_date) < keyValue_(b.due_date) ? -1 : 1; });
+  if (!due.length) return { error: 'nothing_to_send' };
+  return { text: '⏰ 快到期（' + due.length + ' 項）\n' + due.map(function (t) {
+    var d = daysUntil_(t.due_date, today);
+    return '• ' + keyValue_(t.due_date) + ' ' + t.text + '（' + (d < 0 ? '逾期 ' + (-d) + ' 天' : d === 0 ? '今天' : '還剩 ' + d + ' 天') + '）';
+  }).join('\n') };
+}
+
+/** GET LINE API → 物件；失敗回 null（額度查不到不擋推送） */
+function lineGetJson_(path) {
+  var token = lineToken_();
+  if (!token) return null;
+  try {
+    var res = UrlFetchApp.fetch(LINE_API_BASE + path, { method: 'get', headers: { Authorization: 'Bearer ' + token }, muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) return null;
+    return JSON.parse(res.getContentText());
+  } catch (err) {
+    console.log('LINE API 失敗 ' + path + '：' + err);
+    return null;
+  }
+}
+
+/** 推到群組依人數計則：人數＝這次會用掉幾則（多人聊天室走 room 端點） */
+function pushCostOf_(groupId) {
+  var kind = groupId.charAt(0) === 'R' ? 'room' : 'group';
+  var r = lineGetJson_('/' + kind + '/' + encodeURIComponent(groupId) + '/members/count');
+  return r && typeof r.count === 'number' ? r.count : null;
+}
+
+function pushQuota_() {
+  var q = lineGetJson_('/message/quota');
+  var c = lineGetJson_('/message/quota/consumption');
+  if (!q || !c) return null;
+  return { limit: q.type === 'limited' ? q.value : null, used: typeof c.totalUsage === 'number' ? c.totalUsage : null };
+}
+
+function pushPreview_(caller, body) {
+  var forbidden = pushForbidden_(caller, 'pushPreview');
+  if (forbidden) return forbidden;
+  var g = pushTargetGroup_(body.group_id);
+  if (g.error) return g;
+  var t = pushText_(body.kind, g.id, body.text, body.today);
+  if (t.error) return t;
+  return { success: true, text: t.text, group: g, cost: pushCostOf_(g.id), quota: pushQuota_() };
+}
+
+function pushSend_(caller, body) {
+  var forbidden = pushForbidden_(caller, 'pushSend');
+  if (forbidden) return forbidden;
+  var g = pushTargetGroup_(body.group_id);
+  if (g.error) return g;
+  var t = pushText_(body.kind, g.id, body.text, body.today);
+  if (t.error) return t;
+  var r = linePush_(g.id, t.text);
+  var label = PUSH_KINDS[body.kind] + '→' + (g.name || g.id);
+  if (!r.ok) {
+    logTransaction_(PUSH_LOG_SOURCE, '失敗', label, '推播失敗', 'code=' + r.code + '｜' + r.reason, '', caller.line_id);
+    return { error: 'push_failed', code: r.code, reason: r.reason };
+  }
+  logTransaction_(PUSH_LOG_SOURCE, '成功', label, '已推送（' + t.text.length + ' 字）', 'group_id=' + g.id, '', caller.line_id);
+  return { success: true };
 }

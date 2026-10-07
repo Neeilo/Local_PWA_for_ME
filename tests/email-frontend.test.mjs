@@ -57,7 +57,7 @@ describe('Email 設定', () => {
     const e = env(' neil@example.com ');
     assert.equal(await e.callRaw('saveMyEmail'), true);
     assert.equal(sent(e).length, 1);
-    assert.deepEqual(Object.keys(sent(e)[0].body).sort(), ['action', 'email', 'token']);
+    assert.deepEqual(Object.keys(sent(e)[0].body).sort(), ['action', 'email', 'token', 'trigger'], 'trigger 是效能紀錄用（ADR-014 D-12）');
     assert.equal(sent(e)[0].body.email, 'neil@example.com');
     assert.equal(e.read('roster[0].email'), 'neil@example.com');
     assert.equal(e.els.emailCard.hidden, true);

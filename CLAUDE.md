@@ -6,6 +6,7 @@
 ## 專案速覽
 - Stack：純 HTML/CSS/JS + Google Apps Script（Web App，唯一的「後端」）+ Google Sheet（唯一的「資料庫」）+ Service Worker + GitHub Pages 靜態託管
 - 沒有傳統帳密系統：身份由 LINE 配對換來的裝置 token 證明（後端 `authDevice_`，ADR-010），讀寫都再過 `line_users` 白名單（`writeGate_`，ADR-008）。`doGet` 已關閉、`CLOUD_SECRET` 已退場（2026-10-01），所有請求都要帶 token
+- **新增任何雲端動作必須帶 trigger**（ADR-014 D-12）：`cloudPost({...})` 的引數裡要寫明 `trigger`（`cold`／`foreground`／`poll`／`manual`／`write`／`zone`），效能紀錄才記得到。只有不經驗證的 `pairClaim`／`renewStart` 例外。`tests/adr-014-perf-push.test.mjs` 會掃整份 `index.html` 守門
 - 單人維護。push 到 `main` 後 CI 會跑密鑰掃描與 `npm test`，失敗就不部署；但 **PR 本身不跑 CI**，合併前的品質關卡仍是這份檔案與本機 `npm test`
 - Notion 是決策的 single source of truth，架構決策一律先有 ADR 才實作
 

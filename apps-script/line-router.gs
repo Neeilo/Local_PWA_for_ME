@@ -629,19 +629,21 @@ function initSteps_() {
       var warn = !adr013.config_ok || !!cols.reason || (adr013.warnings || []).length > 0;
       return { level: warn ? 'warn' : 'ok', text: lines.join('\n　') };
     } },
-    { label: '排程（到期提醒＋_guide）', run: function () {
+    { label: '排程（到期提醒＋_guide＋未驗證彙總）', run: function () {
       installAdr009Triggers();
       installGuideTrigger();            // 裝好會順便更新一次 _guide
+      installUnauthTrigger();           // ADR-014 D-15：每小時把未驗證請求寫成一列
       return { level: 'ok', text: '已安裝（先刪同名的再建，不會累積）；_guide 已更新' };
     } }
   ];
 }
 
-/** 每個排程函式大約幾點跑。ScriptApp 的觸發器物件問不到時段，只能由這裡對照 */
+/** 每個排程函式什麼時候跑。ScriptApp 的觸發器物件問不到時段，只能由這裡對照 */
 function scheduleHours_() {
   var h = {};
-  h[DUE_CHECK_FUNCTION] = DUE_CHECK_HOUR;
-  h[GUIDE_REFRESH_FUNCTION] = GUIDE_REFRESH_HOUR;
+  h[DUE_CHECK_FUNCTION] = '每天約 ' + DUE_CHECK_HOUR + ' 點';
+  h[GUIDE_REFRESH_FUNCTION] = '每天約 ' + GUIDE_REFRESH_HOUR + ' 點';
+  h[UNAUTH_FLUSH_FUNCTION] = '每小時';
   return h;
 }
 
@@ -657,7 +659,7 @@ function triggerSummary_() {
   if (!names.length) return ['⚠️ 沒有任何觸發器'];
   return names.map(function (fn) {
     return (count[fn] > 1 ? '⚠️ ' : '⏰ ') + fn +
-      (hours[fn] !== undefined ? '（每天約 ' + hours[fn] + ' 點）' : '') + (count[fn] > 1 ? ' ×' + count[fn] : '');
+      (hours[fn] !== undefined ? '（' + hours[fn] + '）' : '') + (count[fn] > 1 ? ' ×' + count[fn] : '');
   });
 }
 
