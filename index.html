@@ -4096,6 +4096,19 @@ function renderLogsView(){
     +`<div class="log-note">共 ${shown.length} 筆</div>`;
 }
 
+/* ---------- Service Worker 換版（2026-10-07 效能調查） ----------
+   新版 SW 接管頁面時（controllerchange）原本一律重新載入。但部署後第一次開 App 時，
+   頁面剛載入、開機請求還在雲端跑，新 SW 就接管了 → 重新載入 → 再開機一次：
+   兩個開機請求搶同一份試算表，實測手機等到 14 秒（performance 10/6、10/7 每次部署後都有）。
+   HTML 是 network-first（sw.js），剛載入的這一份就是新版，這時重新載入只是白跑一次。
+   所以頁面載入後一小段時間內的換版不重新載入；之後（例如 App 掛在背景好幾天，回前景時
+   reg.update() 抓到新版）照舊重新載入，長時間開著的頁面還是會換到新版。 */
+const PAGE_LOADED_AT=Date.now();
+const SW_RELOAD_GRACE_MS=30000;
+function swReloadNeeded(now){
+  return (now==null ? Date.now() : now) - PAGE_LOADED_AT >= SW_RELOAD_GRACE_MS;
+}
+
 function renderAll(){
   renderTasks(); renderReviews(); loadTodayReview();
   renderMoodBtns(); renderMoods(); renderPulse();
@@ -4154,7 +4167,7 @@ function renderAll(){
       });
     }).catch(()=>{});
     navigator.serviceWorker.addEventListener('controllerchange',()=>{
-      location.reload();
+      if(swReloadNeeded()) location.reload();
     });
   }
 })();
