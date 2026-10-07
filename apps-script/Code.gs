@@ -562,7 +562,8 @@ function routePwaSync_(body, perf) {
     const headers = sheetHeaders_(sheet);
     // key_field 可以是字串或陣列：line_users 用 'line_id'，reviews 用
     // ['review_date','line_id']（那張表沒有 id 欄，ADR-009 §一.5）
-    const out = upsertRow_(sheet, headers, body.record || {}, body.sheet, body.key_field);
+    const record = body.sheet === TASKS_SHEET ? keepOriginChat_(sheet, headers, body.record || {}) : (body.record || {});
+    const out = upsertRow_(sheet, headers, record, body.sheet, body.key_field);
     if (body.sheet === LINE_USERS_SHEET) invalidateLineUsersCache_();
     return jsonOut(out);
   }
@@ -579,7 +580,7 @@ function routePwaSync_(body, perf) {
    */
   if (body.action === 'completeRecurring') {
     const headers = sheetHeaders_(sheet);
-    const rec = body.record || {};
+    const rec = keepOriginChat_(sheet, headers, body.record || {});
     const next = nextDueDate_(rec.due_date, rec.recur_interval, rec.recur_unit,
                               keyValue_(body.today) || keyValue_(new Date()));
 
@@ -904,7 +905,8 @@ function purgeTombstoneRows_(sheet, headers, sheetName, keyField, confirmedKeys)
  * 只補清單裡缺的，既有欄位與資料一概不動。
  */
 var ADR009_COLUMNS = {
-  tasks:    ['del', 'archive', 'board', 'due_date', 'recur_interval', 'recur_unit', 'notified'],
+  // origin_chat：ADR-014 D-17（群組建立的任務記下群組 ID，到期提醒推回那個群組）
+  tasks:    ['del', 'archive', 'board', 'due_date', 'recur_interval', 'recur_unit', 'notified', 'origin_chat'],
   expenses: ['del', 'archive', 'board'],
   notes:    ['del', 'archive', 'board'],
   reviews:  ['del', 'archive'],
@@ -964,6 +966,28 @@ function ensureAdr009Columns() {
 
   console.log('—— ADR-009 欄位安裝完成。此函式可重複執行，已存在的欄位不會被動到。');
   return summary;
+}
+
+/**
+ * tasks.origin_chat 只有 LINE 寫得進去（ADR-014 D-17）：PWA 送上來的值一律不信，
+ * 改用雲端那一列現有的值（新任務＝空白）。
+ *
+ * 為什麼在後端守、不只靠前端原樣帶回：upsert 是整列覆寫，而 Service Worker 快取住的
+ * 舊版 App 不知道有這一欄——它送上來的 record 沒有 origin_chat，一編輯就會把群組
+ * 任務洗成個人任務，提醒從此推錯地方，而且是安靜的。
+ * 表上還沒有這一欄就原樣回傳（多讀一次也沒東西可保留）。
+ */
+function keepOriginChat_(sheet, headers, record) {
+  var out = Object.assign({}, record);
+  var col = headers.indexOf('origin_chat') + 1;
+  var idCol = headers.indexOf('id') + 1;
+  if (!col) { delete out.origin_chat; return out; }
+  out.origin_chat = '';
+  var id = keyValue_(record && record.id);
+  if (!idCol || !id) return out;
+  var rows = findRowsByKey_(sheet, [idCol], id);
+  if (rows.length) out.origin_chat = keyValue_(sheet.getRange(rows[0], col, 1, 1).getValues()[0][0]);
+  return out;
 }
 
 /* ========================================================================== */
@@ -1178,15 +1202,51 @@ function dueRemindersToNotify_(records, todayKey) {
   return records.filter(function (r) { return shouldNotify_(r, todayKey); });
 }
 
-/** 通知內容。到期日與還剩幾天都寫進去——只說「快到了」等於要人自己去查 */
-function dueReminderMessage_(record, todayKey) {
+/**
+ * 通知內容。到期日與還剩幾天都寫進去——只說「快到了」等於要人自己去查。
+ * ownerName 有值＝推到群組（ADR-014 T2）：群組裡的人要知道這是誰交代的事。
+ */
+function dueReminderMessage_(record, todayKey, ownerName) {
   var days = daysUntil_(record.due_date, todayKey);
   var when = days === null ? ''
     : days < 0 ? ('已逾期 ' + Math.abs(days) + ' 天')
     : days === 0 ? '今天到期'
     : ('還剩 ' + days + ' 天');
-  return '⏰ 到期提醒\n' + (record.text || '(沒有內容)') +
-         '\n' + record.due_date + (when ? '（' + when + '）' : '');
+  var head = ownerName === undefined ? '⏰ 到期提醒'
+    : '⏰ ' + (ownerName || '有人') + '的任務快到期了';
+  return head + '\n' + (record.text || '(沒有內容)') +
+         '\n' + keyValue_(record.due_date) + (when ? '（' + when + '）' : '');
+}
+
+/**
+ * 這一筆要推到哪裡（ADR-014 D-17／D-18）。純函式，groups 是 group_id → line_groups 那一列。
+ *  - origin_chat 空白                              → 建立者個人（現狀）
+ *  - 群組 is_active、left_at 空白、notify_due 都成立 → 該群組
+ *  - 其他                                          → 退回建立者個人，fallback 寫原因
+ * 白板（board）與路由無關。
+ */
+function dueTarget_(record, groups) {
+  var owner = keyValue_(record.line_id);
+  var chat = keyValue_(record.origin_chat);
+  if (!chat) return { to: owner, group: false, fallback: '' };
+  var g = groups[chat];
+  var why = !g ? '群組不在 ' + LINE_GROUPS_SHEET
+    : !truthy_(g.is_active) ? '群組停用'
+    : keyValue_(g.left_at) ? 'bot 已離開群組'
+    : !truthy_(g.notify_due) ? '群組沒開 notify_due'
+    : '';
+  if (why) return { to: owner, group: false, fallback: why };
+  return { to: chat, group: true, fallback: '' };
+}
+
+/**
+ * 時間觸發器呼叫時傳的是事件物件（{authMode, triggerUid, …}），不是日期。
+ * 以前直接 keyValue_(e) → "[object Object]" 被當成今天，於是**永遠沒有東西到期**——
+ * 排程就算裝上了也會每天安靜地空跑。只認 YYYY-MM-DD 字串（測試用），其餘一律今天。
+ */
+function todayKeyFrom_(arg) {
+  var k = typeof arg === 'string' ? keyValue_(arg) : '';
+  return /^\d{4}-\d{2}-\d{2}$/.test(k) ? k : keyValue_(new Date());
 }
 
 /**
@@ -1194,41 +1254,62 @@ function dueReminderMessage_(record, todayKey) {
  *
  * 推成功才標記 notified：推失敗就標記，等於這筆從此再也不會提醒，而使用者
  * 根本不知道有過這件事。寧可明天再推一次，也不要安靜地漏掉。
+ * 推到群組失敗**不**改推個人（ADR-014 T2）：明天會再試，改推的話同一則可能兩邊都收到。
+ *
+ * 每次執行都留紀錄，含「今天 0 筆」（ADR-014 D-16）：logs 一列＋performance 一列。
+ * 9/30 到 10/7 這段排程根本沒裝，就是因為「沒紀錄」跟「今天沒事」看起來一模一樣。
  *
  * 整支包在 try/catch 裡：這是背景工作，丟例外沒有人看得到，只會在執行記錄裡
  * 留一筆紅字。出事要留在 logs，那才是回頭查得到的地方。
  */
 function checkDueReminders(todayKey) {
+  var started = Date.now();
+  var today = todayKeyFrom_(todayKey);
+  var due = [];
   try {
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TASKS_SHEET);
-    if (!sheet) { console.log('分頁「' + TASKS_SHEET + '」不存在，略過'); return { notified: 0 }; }
+    if (!sheet) {
+      console.log('分頁「' + TASKS_SHEET + '」不存在，略過');
+      logCleanup_('到期檢查 ' + today, '略過：沒有 ' + TASKS_SHEET + ' 分頁', '');
+      return { notified: 0 };
+    }
 
     var headers = sheetHeaders_(sheet);
     if (headers.indexOf('due_date') === -1) {
       console.log('分頁「' + TASKS_SHEET + '」還沒有 due_date 欄，先執行 ensureAdr009Columns()');
+      logCleanup_('到期檢查 ' + today, '略過：tasks 還沒有 due_date 欄', '先在 LINE 傳「初始化」');
       return { notified: 0, reason: 'no_due_date_column' };
     }
 
     var lastRow = sheet.getLastRow();
-    if (lastRow < 2) return { notified: 0 };
-
-    var values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+    var values = lastRow < 2 ? [] : sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
     var records = values.map(function (row) {
       var o = {};
       headers.forEach(function (h, i) { o[h] = row[i]; });
       return o;
     });
 
-    // 參數只給測試用：綁死系統時鐘的測試會跟著真實日期漂，某一天突然變紅而
-    // 沒有人改過任何東西。觸發器呼叫時不帶參數，走的仍然是今天。
-    var today = keyValue_(todayKey) || keyValue_(new Date());
-    var due = dueRemindersToNotify_(records, today);
-    if (!due.length) { console.log('今天沒有需要通知的到期項目'); return { notified: 0 }; }
+    due = dueRemindersToNotify_(records, today);
 
-    var sent = 0;
+    // 有群組任務才讀 line_groups 與名單（推群組要帶建立者名稱）
+    var groups = {}, roster = null;
+    if (due.some(function (r) { return keyValue_(r.origin_chat); })) {
+      var all = readLineGroups_();
+      (all.ok ? all.rows : []).forEach(function (r) { groups[keyValue_(r.record.group_id)] = r.record; });
+      roster = lineUsersRoster_();
+    }
+
+    var sent = 0, failed = 0, notes = [];
     due.forEach(function (rec) {
-      var result = linePush_(keyValue_(rec.line_id), dueReminderMessage_(rec, today));
+      var target = dueTarget_(rec, groups);
+      if (target.fallback) notes.push('id=' + rec.id + ' 退回個人：' + target.fallback);
+      var owner = target.group ? (((roster && roster.users) || {})[keyValue_(rec.line_id)] || {}) : null;
+      var text = target.group ? dueReminderMessage_(rec, today, String(owner.display_name || '').trim())
+                              : dueReminderMessage_(rec, today);
+      var result = linePush_(target.to, text);
       if (!result.ok) {
+        failed++;
+        notes.push('id=' + rec.id + ' 推' + (target.group ? '群組' : '個人') + '失敗：' + result.reason);
         console.log('推播失敗，這筆保留未通知狀態，明天會再試：id=' + rec.id + '／' + result.reason);
         return;
       }
@@ -1237,15 +1318,16 @@ function checkDueReminders(todayKey) {
       upsertRow_(sheet, headers, rec, TASKS_SHEET, 'id');
     });
 
-    logCleanup_('到期檢查 ' + today,
-      '通知 ' + sent + ' 筆（符合門檻 ' + due.length + ' 筆）',
-      sent === due.length ? '' : '有 ' + (due.length - sent) + ' 筆推播失敗，未標記 notified，明天會再試');
+    if (failed) notes.unshift('有 ' + failed + ' 筆推播失敗，未標記 notified，明天會再試');
+    logCleanup_('到期檢查 ' + today, '通知 ' + sent + ' 筆（符合門檻 ' + due.length + ' 筆）', notes.join('｜'));
     console.log('到期檢查完成：通知 ' + sent + ' / ' + due.length + ' 筆');
     return { notified: sent, matched: due.length };
   } catch (err) {
     console.log('到期檢查失敗：' + err);
-    try { logTransaction_('同步', '失敗', '到期檢查', '例外中止', String(err), '', ''); } catch (e) {}
+    try { logTransaction_('同步', '失敗', '到期檢查 ' + today, '例外中止', String(err), '', ''); } catch (e) {}
     return { notified: 0, error: String(err) };
+  } finally {
+    recordSchedulePerf_('dueCheck', due.length, Date.now() - started);
   }
 }
 
@@ -2063,7 +2145,7 @@ var PERFORMANCE_HEADERS = ['id', 'ts', 'action', 'trigger', 'client_ms', 'server
   'sheets', 'rows', 'device_id', 'line_id', 'reply_ms'];
 
 /** 觸發情境。不在清單裡的一律不記——欄位裡只會出現這幾個字 */
-var PERF_TRIGGERS = ['cold', 'foreground', 'poll', 'manual', 'write', 'line'];
+var PERF_TRIGGERS = ['cold', 'foreground', 'poll', 'manual', 'write', 'line', 'schedule'];
 var PERF_CLIENT_MAX = 20;              // 一個請求最多收幾筆手機紀錄
 var PERF_CLIENT_MS_MAX = 600000;       // 超過 10 分鐘的不是耗時，是手機睡著了
 var PERF_SUMMARY_DAYS = 7;
@@ -2171,6 +2253,23 @@ function recordLinePerf_(action, userId, serverMs, replyMs) {
     sheet.appendRow(headers.map(function (h) { return r[h] === undefined || r[h] === null ? '' : r[h]; }));
   } catch (err) {
     console.log('寫 LINE 效能紀錄失敗（主流程不受影響）：' + err);
+  }
+}
+
+/**
+ * 排程的一次執行（ADR-014 D-16）。排程沒有人、沒有裝置，line_id／device_id 留白——
+ * 只有這條路可以留白寫入；PWA 的 recordPerf_ 照舊「沒通過驗證一列都不寫」。
+ */
+function recordSchedulePerf_(action, rows, serverMs) {
+  try {
+    var sheet = ensurePerformanceSheet_();
+    var headers = perfHeaders_(sheet);
+    var now = Date.now();
+    var r = { id: String(now), ts: new Date(now).toISOString(), action: action, trigger: 'schedule',
+              server_ms: serverMs, rows: rows };
+    sheet.appendRow(headers.map(function (h) { return r[h] === undefined || r[h] === null ? '' : r[h]; }));
+  } catch (err) {
+    console.log('寫排程效能紀錄失敗（主流程不受影響）：' + err);
   }
 }
 
@@ -3007,7 +3106,7 @@ function planEnd_(caller, planId, today) {
 /* ========================================================================== */
 
 var SETTINGS_LOG_SOURCE = '設定';
-var GROUP_SET_FIELDS = ['is_active', 'cmd_expense', 'cmd_tasks', 'cmd_query'];
+var GROUP_SET_FIELDS = ['is_active', 'cmd_expense', 'cmd_tasks', 'cmd_query', 'notify_due'];
 var CONFIG_SET_FIELDS = ['is_active', 'color', 'targets', 'aliases', 'sort'];
 var CONFIG_KINDS = ['category', 'sub', 'target'];
 var CONFIG_NAME_MAX = 20;

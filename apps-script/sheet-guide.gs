@@ -22,9 +22,9 @@ var GUIDE_CATEGORIES = ['資料', '系統', '功能模組'];
  */
 function guideRegistry_() {
   return [
-    { sheet: 'tasks', category: '資料', purpose: '任務（含到期日、週期、提醒旗標）',
-      writers: 'PWA、LINE「任務/」、到期檢查（只寫 notified）', readers: 'PWA、「查/」、到期檢查',
-      key: 'id', adr: '004、009' },
+    { sheet: 'tasks', category: '資料', purpose: '任務（含到期日、週期、提醒旗標；origin_chat＝在哪個群組交代的，提醒推回那裡）',
+      writers: 'PWA、LINE「任務/」與到期日按鈕、到期檢查（只寫 notified）；origin_chat 只有 LINE 寫', readers: 'PWA、「查/」、到期檢查',
+      key: 'id', adr: '004、009、014' },
     { sheet: 'expenses', category: '資料', purpose: '收支記帳（大類＋細項＋對象）',
       writers: 'PWA、LINE「記帳/」「收入/」', readers: 'PWA、「查/」',
       key: 'id', adr: '004、006、013' },
@@ -46,9 +46,9 @@ function guideRegistry_() {
     { sheet: 'line_users', category: '系統', purpose: '白名單＋功能權限矩陣＋email（管理者收封存備份信）',
       writers: '註冊指令、管理頁', readers: 'GAS 閘門、PWA',
       key: 'line_id', adr: '008' },
-    { sheet: LINE_GROUPS_SHEET, category: '系統', purpose: 'bot 加入過的 LINE 群組：啟用（is_active）與開放哪些指令（cmd_*）',
-      writers: 'GAS（join／leave 事件、群組第一次下指令）；Neil 在 Sheet 上打勾啟用', readers: '只有 GAS（PWA 不可讀寫）',
-      key: 'group_id', adr: '013' },
+    { sheet: LINE_GROUPS_SHEET, category: '系統', purpose: 'bot 加入過的 LINE 群組：啟用（is_active）、開放哪些指令（cmd_*）、到期提醒推不推群組（notify_due，預設關）',
+      writers: 'GAS（join／leave 事件、群組第一次下指令）；管理員在 App 系統設定或 Sheet 上開關', readers: '只有 GAS（PWA 一般讀寫碰不到）',
+      key: 'group_id', adr: '013、014' },
     { sheet: LINE_DEVICES_SHEET, category: '系統', purpose: '已配對的裝置（token 只存雜湊）',
       writers: 'PWA 配對、LINE「驗證裝置」、管理頁撤銷（皆由 GAS 寫）', readers: '只有 GAS（PWA 不可讀）',
       key: 'device_id', adr: '010' },
@@ -82,6 +82,7 @@ var GUIDE_REFRESH_HOUR = 6;      // 在九點的到期檢查之前，早上打�
  * 也不寫任何資料內容，只寫表頭與筆數。
  */
 function refreshGuide() {
+  var started = Date.now();
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var guide = ss.getSheetByName(GUIDE_SHEET) || ss.insertSheet(GUIDE_SHEET);
   var rows = guideRows_(ss, guideNotes_(guide));
@@ -96,6 +97,9 @@ function refreshGuide() {
     .setValues([GUIDE_HEADERS].concat(rows));
 
   console.log('✅ _guide 已更新：' + rows.length + ' 張分頁');
+  // 每次執行都留紀錄（ADR-014 D-16），跟到期檢查同一套：排程有沒有在跑，看 logs 就知道
+  logCleanup_('_guide 更新', rows.length + ' 張分頁', '');
+  recordSchedulePerf_('guideRefresh', rows.length, Date.now() - started);
   return { sheets: rows.length };
 }
 
