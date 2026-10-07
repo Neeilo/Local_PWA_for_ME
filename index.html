@@ -141,6 +141,19 @@
     --shadow-home:0 3px 10px rgba(0,0,0,.45);
   }
 }
+/* PART E — 兩區主色（ADR-014 D-1）：只換 accent 這一組，其他 token 沿用晨曦配色。
+   亮／暗各一組，對比都 ≥ 4.5:1（accent 對卡片底／頁面底／accent-soft、on-accent 對 accent），
+   tests/adr-014-zones.test.mjs 會從這裡把色碼讀出來實算。選擇器多一個屬性，權重才壓得過 PART B／C。 */
+:root[data-zone="finance"]{ --accent:#855a00; --accent-soft:#f7ecd2; --on-accent:#ffffff; --shadow-home:0 3px 10px rgba(133,90,0,.32); }
+:root[data-zone="productivity"]{ --accent:#0b6b62; --accent-soft:#dcf0ec; --on-accent:#ffffff; --shadow-home:0 3px 10px rgba(11,107,98,.32); }
+:root[data-theme="dark"][data-zone="finance"]{ --accent:#e2b04a; --accent-soft:#3a3015; --on-accent:#2a1606; }
+:root[data-theme="dark"][data-zone="productivity"]{ --accent:#4fc3b3; --accent-soft:#143630; --on-accent:#04201c; }
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme])[data-zone="finance"]{ --accent:#e2b04a; --accent-soft:#3a3015; --on-accent:#2a1606; --shadow-home:0 3px 10px rgba(0,0,0,.45); }
+  :root:not([data-theme])[data-zone="productivity"]{ --accent:#4fc3b3; --accent-soft:#143630; --on-accent:#04201c; --shadow-home:0 3px 10px rgba(0,0,0,.45); }
+}
+:root[data-theme="dark"][data-zone]{ --shadow-home:0 3px 10px rgba(0,0,0,.45); }
+
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   html,body{margin:0; padding:0;}
   body{
@@ -382,6 +395,7 @@
   nav button .ico{font-size:19px;}
   nav button.active{color:var(--accent); font-weight:600;}
   nav button[hidden]{display:none;} /* 需明寫，否則 nav button 的 display:flex 會蓋掉 [hidden] */
+  nav .nav-slot{flex:1;}          /* 這一區沒有的格子留空佔位：任務在兩區永遠是同一格（D-4） */
   nav .home-btn{
     flex:none; width:58px; height:58px; margin:0 6px; border-radius:50%;
     background:var(--accent); color:var(--on-accent); box-shadow:var(--shadow-home);
@@ -391,6 +405,9 @@
   nav .home-btn .ico{font-size:22px;}
   nav .home-btn.active{color:var(--on-accent);}
   nav .home-btn:active{opacity:.9;}
+  /* 按下瞬間就回饋，不等放開（D-8）。pointerdown 加 class，比 :active 在 iOS 上可靠 */
+  nav .home-btn.pressed{transform:translateY(-14px) scale(.92); transition:transform .08s;}
+  nav .home-btn .zone-name{white-space:nowrap;}
 
   .toast{
     position:fixed; left:50%; bottom:96px; transform:translateX(-50%);
@@ -426,7 +443,6 @@
   }
   .place-btns button.sel{border-color:var(--accent); background:var(--accent-soft); color:var(--accent);}
   /* 已滿的那一側：仍可點（點了會給提示），但先讓人看出來為什麼選不動 */
-  .place-btns button.full{opacity:.4;}
 
   /* ---------- LOG 頁（ADR-006 §C） ---------- */
   .log-summary{
@@ -638,6 +654,59 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
   :root:not([data-theme]) .conn-banner{background:rgba(255,92,92,.12); color:#ff9b9b;}
   :root:not([data-theme]) .sync-badge{background:rgba(255,176,32,.14); color:#ffc766;}
 }
+
+/* ---------- ADR-014：兩區切換的動畫（D-8） ----------
+   View Transitions 只翻主題卡（view-transition-name），其餘（導覽、共用帶）直接換，不參與動畫。
+   財務從左進、生產力從右進，進出同一條路徑。≤250ms。
+   ::view-transition 不吃點擊：動畫中手指點下去直接落在真的畫面上，不鎖輸入。 */
+#zoneCard{view-transition-name:zone-card;}
+::view-transition{pointer-events:none;}
+::view-transition-old(root),::view-transition-new(root){animation:none;}
+::view-transition-old(zone-card),::view-transition-new(zone-card){animation-duration:.22s; animation-timing-function:cubic-bezier(.2,.8,.2,1); animation-fill-mode:both;}
+:root[data-zone-dir="from-left"]::view-transition-new(zone-card){animation-name:zone-in-left;}
+:root[data-zone-dir="from-left"]::view-transition-old(zone-card){animation-name:zone-out-right;}
+:root[data-zone-dir="from-right"]::view-transition-new(zone-card){animation-name:zone-in-right;}
+:root[data-zone-dir="from-right"]::view-transition-old(zone-card){animation-name:zone-out-left;}
+@keyframes zone-in-left{from{transform:translateX(-32px); opacity:0;}}
+@keyframes zone-in-right{from{transform:translateX(32px); opacity:0;}}
+@keyframes zone-out-left{to{transform:translateX(-32px); opacity:0;}}
+@keyframes zone-out-right{to{transform:translateX(32px); opacity:0;}}
+@keyframes zone-fade-in{from{opacity:0;}}
+@keyframes zone-fade-out{to{opacity:0;}}
+@media (prefers-reduced-motion: reduce){
+  :root[data-zone-dir]::view-transition-new(zone-card){animation:zone-fade-in .12s ease both;}
+  :root[data-zone-dir]::view-transition-old(zone-card){animation:zone-fade-out .12s ease both;}
+  .view.active{animation:none;}
+}
+.dash-plan{display:flex; justify-content:space-between; gap:8px; font-size:14px; padding:4px 0;}
+.dash-plan b{font-variant-numeric:tabular-nums;}
+.dash-review{font-size:14px; white-space:pre-wrap; color:var(--ink);}
+.dash-note{font-size:14px; padding:6px 0; border-bottom:1px solid var(--line);}
+.dash-note:last-child{border-bottom:none;}
+
+/* ---------- ADR-014：右上角大頭貼與設定頁（D-9、D-10） ---------- */
+.avatar-btn{
+  position:absolute; top:14px; right:58px; width:36px; height:36px; border-radius:50%;
+  border:none; background:var(--accent); color:var(--on-accent); font-size:15px; font-weight:700; line-height:1;
+}
+.avatar-dot{position:absolute; top:0; right:0; width:10px; height:10px; border-radius:50%; background:var(--danger); border:2px solid var(--bg);}
+.avatar-dot[hidden]{display:none;}
+.settings{
+  position:fixed; inset:0; z-index:15; background:var(--bg); overflow-y:auto;
+  padding:0 16px calc(24px + env(safe-area-inset-bottom));
+  transform:translateX(100%); transition:transform .24s cubic-bezier(.2,.8,.2,1);
+}
+.settings.open{transform:none;}
+.settings[hidden]{display:none;}
+.settings-head{position:sticky; top:0; background:var(--bg); padding:16px 0 10px; z-index:1;}
+.settings-head h1{margin:6px 0 0;}
+.settings-back{background:none; border:none; color:var(--accent); font-weight:600; font-size:15px; padding:4px 0;}
+.fold-head{display:flex; align-items:baseline; gap:8px; width:100%; background:none; border:none; padding:0; text-align:left; color:inherit;}
+.fold-head h2{flex:1; margin:0;}
+.fold-arrow{color:var(--muted); font-size:12px;}
+.fold-body{margin-top:10px;}
+.fold-body[hidden]{display:none;}
+@media (prefers-reduced-motion: reduce){ .settings{transition:none;} }
 </style>
 </head>
 <body>
@@ -661,20 +730,51 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
   <div class="conn-banner" id="connBanner" hidden></div>
   <div class="boot-progress-msg" id="bootProgressMsg" hidden></div>
   <button class="refresh-btn" id="refreshBtn" onclick="manualRefresh()" title="重新整理">↻</button>
+  <!-- 設定頁入口（ADR-014 D-9）：名字首字；管理員有待辦時右上角小紅點（取代首頁的「效能紀錄該清了」卡） -->
+  <button class="avatar-btn" id="avatarBtn" onclick="openSettings()" aria-label="設定"><span id="avatarChar">·</span><i class="avatar-dot" id="avatarDot" hidden></i></button>
   <div class="pulse" id="pulse"></div>
   <div class="pulse-label" id="pulseLabel">近 14 天心情脈搏</div>
 </header>
 
 <main>
-  <!-- 首頁 Dashboard -->
+  <!-- 首頁（ADR-014 D-5）：主題卡在上（切區只翻這一塊）、共用帶在下（兩區一模一樣）。
+       管理工具與個人設定全部搬到右上角大頭貼的設定頁（D-9、D-10）。 -->
   <section class="view active" id="view-home">
-    <!-- ⓪ 目前身份（ADR-008 B-2／C-3） -->
-    <div class="me-card" id="meCard" hidden></div>
+    <div class="zone-card" id="zoneCard">
+      <!-- 💰 財務 -->
+      <div id="zoneFinance">
+        <!-- 本月支出（feat_expense 關掉時整張卡收起，見 renderZoneCard） -->
+        <div class="card" id="dashExpenseCard">
+          <h2>本月支出</h2>
+          <div class="scope-bar" id="scopeHome" hidden></div>
+          <div id="dashExpense"></div>
+          <button class="dash-link" onclick="goView('expenses')">前往記帳 →</button>
+        </div>
+        <div class="card" id="dashPlanCard">
+          <h2>分期</h2>
+          <div id="dashPlans"></div>
+          <button class="dash-link" onclick="goView('plans')">全部分期 →</button>
+        </div>
+      </div>
+      <!-- ✅ 生產力 -->
+      <div id="zoneProductivity" hidden>
+        <!-- 今日日誌＋心情：feat_review／feat_mood 各管自己那一塊，兩個都關才收整張 -->
+        <div class="card" id="dashReviewCard">
+          <h2>今天</h2>
+          <div class="moods" id="dashMoodBtns"></div>
+          <div id="dashReview"></div>
+          <button class="dash-link" onclick="goView('review')">寫日誌 →</button>
+        </div>
+        <div class="card" id="dashNotesCard">
+          <h2>最近雜記</h2>
+          <div id="dashNotes"></div>
+          <button class="dash-link" onclick="goView('notes')">全部雜記 →</button>
+        </div>
+      </div>
+    </div>
 
-    <!-- 效能紀錄太多時提醒管理員（ADR-012 D-7）。筆數由 session 順便回，不另外發請求 -->
-    <div class="adm-pending" id="perfAlert" hidden></div>
-
-    <!-- Email（2026-10-01）：還沒填的人在首頁看到這張卡；填了就收起，從身份卡的「修改 Email」再打開。
+    <!-- ────── 共用帶（兩區一模一樣、不動）────── -->
+    <!-- Email（2026-10-01）：還沒填的人在這裡看到這張卡，填完消失；之後到設定頁改（D-11）。
          存在 line_users.email，家人之間看得到；管理者的 email 用來收封存備份信。 -->
     <div class="card" id="emailCard" hidden>
       <h2>設定你的 Email</h2>
@@ -683,15 +783,7 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       <div style="margin-top:10px"><button class="btn" onclick="saveMyEmail()">儲存</button></div>
     </div>
 
-    <!-- ① 記帳狀況（feat_expense 關掉時整張卡收起，見 renderDashboard） -->
-    <div class="card" id="dashExpenseCard">
-      <h2>本月支出</h2>
-      <div class="scope-bar" id="scopeHome" hidden></div>
-      <div id="dashExpense"></div>
-      <button class="dash-link" onclick="goView('expenses')">前往記帳 →</button>
-    </div>
-
-    <!-- ② 未完成任務前 3 筆（feat_tasks 關掉時整張卡收起） -->
+    <!-- 未完成任務前 3 筆（feat_tasks 關掉時整張卡收起）。兩區內容相同，不依區過濾（D-6） -->
     <div class="card" id="dashTasksCard">
       <h2>接下來要做的</h2>
       <div id="dashTasks"></div>
@@ -714,72 +806,15 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
         </section>
       </div>
     </div>
+  </section>
 
-    <!-- ③ 今日指南針的快顯已於 2026-09-15 移除。
-         它是寫死在首頁的，不跟著功能矩陣走——日誌被關掉的人照樣看得到一個
-         寫不進去的輸入框。指南針本身沒有消失，仍在「日誌」分頁裡（rvCompass）。
-         其餘模組的儀表板 UI 待重新設計，見 Notion 待辦的「儀表板與功能矩陣」票。 -->
-
-    <!-- ④ 導覽配置：點了即時反映，不需儲存 -->
-    <div class="slot-card">
-      <div class="place-head">
-        <h2>⚙️ 導覽配置</h2>
-        <span class="place-count" id="placeCount"></span>
-      </div>
-      <div class="slot-fixed">🧭 首頁固定在圓心，其餘自由排左右</div>
-      <div id="placeRows"></div>
-      <p class="slot-hint">每側最多 3 個。點了就換，不用儲存；只存這支手機，不同步雲端。</p>
+  <!-- 分期（ADR-014 D-7）：進行中的計畫。轉成分期仍從記帳明細點一筆進去；記帳月清單的分期列照舊顯示 -->
+  <section class="view" id="view-plans">
+    <div class="card">
+      <h2>進行中的分期</h2>
+      <div id="planList"></div>
     </div>
-
-    <!-- ④-2 顯示設定：亮／暗／自動，點了即時反映 -->
-    <div class="slot-card">
-      <div class="place-head">
-        <h2>🎨 顯示設定</h2>
-      </div>
-      <div class="place-row">
-        <span class="place-name">主題</span>
-        <div class="place-btns" id="themeBtns"></div>
-      </div>
-      <p class="slot-hint">「自動」跟著手機的深淺色設定。只存這支手機，不同步雲端。</p>
-    </div>
-
-    <!-- ⑤ 白名單管理（僅 is_admin 可見，ADR-008 D-4）
-         範圍刻意只到「勾選白名單與功能權限」，不含刪除他人資料——那種等級的操作
-         不能只靠前端藏，得再疊一層後端驗證，會變成同一套系統裡兩種深淺的安全模型。 -->
-    <div class="slot-card" id="adminCard" hidden>
-      <div class="place-head">
-        <h2>🔐 成員與權限</h2>
-        <span class="place-count" id="adminCount"></span>
-      </div>
-      <div class="slot-fixed">改動即時寫回 <b>line_users</b>，其他人最多等 5 分鐘生效。</div>
-      <div id="adminRows"></div>
-      <p class="slot-hint">功能權限由雲端把關：關掉的模組讀不到、寫不進，LINE 的前綴與「查/」也一樣。</p>
-    </div>
-
-    <!-- ⑥ 效能紀錄（僅 is_admin，ADR-012 D-7）。摘要由雲端算好，按了才抓——平常開 App 不為它多發請求。
-         刪舊紀錄是手動的，不開排程。 -->
-    <div class="slot-card" id="perfCard" hidden>
-      <div class="place-head">
-        <h2>⏱️ 效能紀錄</h2>
-        <span class="place-count" id="perfCount"></span>
-      </div>
-      <div id="perfBody"></div>
-      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap">
-        <button class="btn" onclick="loadPerfSummary()">看最近 7 天</button>
-        <button class="btn" onclick="purgePerf()">刪除 30 天前的紀錄</button>
-      </div>
-      <p class="slot-hint">只記耗時，不記 token 與資料內容。超過 5,000 筆時首頁會提醒整理。</p>
-    </div>
-
-    <!-- ⑦ 系統設定（僅 is_admin，2026-10-06 Neil 要求）：line_groups／_expense_config／installments／_guide
-         原本只能在 Sheet 上看、改。按了分頁才抓，平常開 App 不為它多發請求（比照效能紀錄）。
-         ADR-013 D-16 的「管理員分頁」提前做的功能面；版面留給第 2 輪重設計。 -->
-    <div class="slot-card" id="sysCard" hidden>
-      <div class="place-head"><h2>🗂️ 系統設定</h2></div>
-      <div class="seg" id="sysTabs"></div>
-      <div id="sysBody"></div>
-      <p class="slot-hint">改動即時寫回 Sheet，每一筆都記在 LOG（來源「設定」）。</p>
-    </div>
+    <p class="slot-hint">要新增分期：到「記帳」點一筆支出，按「轉成分期」。</p>
   </section>
 
   <!-- 記帳 -->
@@ -874,6 +909,15 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
 
   <!-- 日誌（升級版複盤） -->
   <section class="view" id="view-review">
+    <!-- 心情併進日誌頁（ADR-014 D-7）：上方心情、下方每日複盤。feat_mood／feat_review 各自控制自己那一塊 -->
+    <div class="card" id="moodBlock">
+      <h2>現在的心情</h2>
+      <div class="moods" id="moodBtns"></div>
+      <input type="text" id="moodNote" placeholder="想補充一句嗎？（可留空）">
+      <div style="margin-top:10px"><button class="btn" onclick="addMood()">記錄心情</button></div>
+    </div>
+
+    <div id="reviewBlock">
     <!-- Daily Compass：今日刻意選擇 -->
     <div class="compass-card">
       <div class="compass-label">🧭 今日指南針<span id="compassSaved" style="font-weight:400;font-size:12px;margin-left:6px;"></span></div>
@@ -896,17 +940,9 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       <div class="scope-bar" id="scopeReview" hidden></div>
       <div id="reviewList"></div>
     </div>
-  </section>
-
-  <!-- 心情 -->
-  <section class="view" id="view-mood">
-    <div class="card">
-      <h2>現在的心情</h2>
-      <div class="moods" id="moodBtns"></div>
-      <input type="text" id="moodNote" placeholder="想補充一句嗎？（可留空）">
-      <div style="margin-top:10px"><button class="btn" onclick="addMood()">記錄心情</button></div>
     </div>
-    <div class="card">
+
+    <div class="card" id="moodListCard">
       <h2>心情紀錄</h2>
       <div id="moodList"></div>
     </div>
@@ -924,42 +960,112 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       <h2>雜記清單</h2>
       <div id="noteList"></div>
     </div>
-    <div class="card" id="archiveCard" hidden>
-      <h2>資料備份</h2>
-      <!-- 月結算（只有管理者看得到）：已刪除的資料打包成 JSON 寄到管理者信箱，寄出成功才從雲端清掉。
-           刻意做成手動觸發、且一定要人按確認——不設自動清理，也不先斬後奏。 -->
-      <p class="dash-sub" style="margin:0 0 10px">把已刪除的資料寄到管理者信箱備份，寄出成功之後才從雲端清掉。</p>
-      <button class="btn" onclick="archiveTombstones()">封存已刪除的資料</button>
-    </div>
   </section>
 
-  <!-- LOG：LINE 快速輸入的交易記錄（ADR-006 §C／§D）
-       資料唯讀、進頁即時抓，刻意不進 state、不進 localStorage、不進待送佇列——
-       它是 Apps Script 單向寫入的記錄，前端只看不寫。 -->
-  <section class="view" id="view-logs">
-    <div id="logSummary"></div>
-    <div class="log-filters">
-      <div class="seg" id="logSourceSeg"></div>
-      <div class="log-refine">
-        <div class="seg" id="logStatusSeg"></div>
-        <div class="seg" id="logRangeSeg"></div>
-      </div>
-    </div>
-    <div id="logList"></div>
-  </section>
 </main>
 
-<nav id="nav">
-  <button data-view="expenses" onclick="switchView('expenses',this)"><span class="ico">💰</span>記帳</button>
-  <button data-view="notes" onclick="switchView('notes',this)"><span class="ico">📎</span>雜記</button>
-  <button data-view="home" class="home-btn active" onclick="switchView('home',this)"><span class="ico">🧭</span>首頁</button>
-  <button data-view="tasks" onclick="switchView('tasks',this)"><span class="ico">☑️</span>任務</button>
-  <!-- 圓心固定在中央；其餘按鈕的左右歸屬與顯示與否由首頁的「導覽配置」決定，
-       DOM 位置在 applyNavPlacement() 裡重排（這裡的順序只影響 JS 執行前的第一幀）。 -->
-  <button data-view="review" hidden onclick="switchView('review',this)"><span class="ico">🌙</span>日誌</button>
-  <button data-view="logs" hidden onclick="switchView('logs',this)"><span class="ico">📋</span>LOG</button>
-  <button data-view="mood" hidden onclick="switchView('mood',this)"><span class="ico">💚</span>心情</button>
-</nav>
+<!-- 底部導覽：依目前的區由 renderNav() 畫（ADR-014 D-4）。五格固定，任務永遠在右側第一格 -->
+<nav id="nav"></nav>
+
+<!-- 設定頁（ADR-014 D-9、D-10）：蓋在兩區之上、不跟著切區換色；從右側滑入、往右滑出。
+     個人：身份與裝置、Email、主題。管理（只有管理員）：收合卡，預設全收，點開才抓雲端。 -->
+<section class="settings" id="settings" hidden aria-label="設定">
+  <div class="settings-head">
+    <button class="settings-back" onclick="closeSettings()">← 返回</button>
+    <h1>設定</h1>
+  </div>
+  <div class="seg" id="setSeg" hidden></div>
+
+  <div id="setPersonal">
+    <!-- 目前身份（ADR-008 B-2／C-3）＋我的裝置 -->
+    <div class="me-card" id="meCard" hidden></div>
+    <div class="slot-card">
+      <div class="place-head"><h2>📱 我的裝置</h2></div>
+      <div id="myDevices"></div>
+    </div>
+    <div class="slot-card">
+      <div class="place-head"><h2>📧 Email</h2></div>
+      <div id="setEmail"></div>
+    </div>
+    <!-- 顯示設定：亮／暗／自動，點了即時反映 -->
+    <div class="slot-card">
+      <div class="place-head"><h2>🎨 主題</h2></div>
+      <div class="place-row">
+        <span class="place-name">主題</span>
+        <div class="place-btns" id="themeBtns"></div>
+      </div>
+      <p class="slot-hint">「自動」跟著手機的深淺色設定。只存這支手機，不同步雲端。</p>
+    </div>
+  </div>
+
+  <div id="setAdmin" hidden>
+    <!-- 🔐 成員與權限（ADR-008 D-4）。範圍刻意只到「勾選白名單與功能權限」，不含刪除他人資料。 -->
+    <div class="slot-card fold" id="adminCard" hidden>
+      <button class="fold-head" onclick="toggleFold('members')"><h2>🔐 成員與權限</h2>
+        <span class="place-count" id="adminCount"></span><span class="fold-arrow" id="foldArrow-members">▾</span></button>
+      <div class="fold-body" id="fold-members" hidden>
+        <div class="slot-fixed">改動即時寫回 <b>line_users</b>，其他人最多等 5 分鐘生效。</div>
+        <div id="adminRows"></div>
+        <p class="slot-hint">功能權限由雲端把關：關掉的模組讀不到、寫不進，LINE 的前綴與「查/」也一樣。</p>
+      </div>
+    </div>
+
+    <!-- 🗂️ 系統設定（line_groups／_expense_config／installments／_guide），#43 的既有功能原樣搬來 -->
+    <div class="slot-card fold" id="sysCard" hidden>
+      <button class="fold-head" onclick="toggleFold('sys')"><h2>🗂️ 系統設定</h2>
+        <span class="place-count" id="sysCount"></span><span class="fold-arrow" id="foldArrow-sys">▾</span></button>
+      <div class="fold-body" id="fold-sys" hidden>
+        <div class="seg" id="sysTabs"></div>
+        <div id="sysBody"></div>
+        <p class="slot-hint">改動即時寫回 Sheet，每一筆都記在 LOG（來源「設定」）。</p>
+      </div>
+    </div>
+
+    <!-- ⏱️ 效能紀錄（ADR-012 D-7）。摘要由雲端算好，點開才抓。刪舊紀錄是手動的，不開排程 -->
+    <div class="slot-card fold" id="perfCard" hidden>
+      <button class="fold-head" onclick="toggleFold('perf')"><h2>⏱️ 效能紀錄</h2>
+        <span class="place-count" id="perfCount"></span><span class="fold-arrow" id="foldArrow-perf">▾</span></button>
+      <div class="fold-body" id="fold-perf" hidden>
+        <div id="perfBody"></div>
+        <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap">
+          <button class="btn" onclick="loadPerfSummary()">重新整理最近 7 天</button>
+          <button class="btn" onclick="purgePerf()">刪除 30 天前的紀錄</button>
+        </div>
+        <p class="slot-hint">只記耗時，不記 token 與資料內容。筆數太多時大頭貼會亮紅點提醒整理。</p>
+      </div>
+    </div>
+
+    <!-- 📋 LOG：LINE 快速輸入與系統的交易記錄（ADR-006 §C／§D）。
+         資料唯讀、點開即時抓，刻意不進 state、不進 localStorage、不進待送佇列——
+         它是 Apps Script 單向寫入的記錄，前端只看不寫。 -->
+    <div class="slot-card fold" id="logCard" hidden>
+      <button class="fold-head" onclick="toggleFold('logs')"><h2>📋 LOG</h2>
+        <span class="place-count"></span><span class="fold-arrow" id="foldArrow-logs">▾</span></button>
+      <div class="fold-body" id="fold-logs" hidden>
+        <div id="logSummary"></div>
+        <div class="log-filters">
+          <div class="seg" id="logSourceSeg"></div>
+          <div class="log-refine">
+            <div class="seg" id="logStatusSeg"></div>
+            <div class="seg" id="logRangeSeg"></div>
+          </div>
+        </div>
+        <div id="logList"></div>
+      </div>
+    </div>
+
+    <!-- 🧹 封存已刪除資料：已刪除的資料打包成 JSON 寄到管理者信箱，寄出成功才從雲端清掉。
+         刻意做成手動觸發、且一定要人按確認——不設自動清理，也不先斬後奏。 -->
+    <div class="slot-card fold" id="archiveCard" hidden>
+      <button class="fold-head" onclick="toggleFold('archive')"><h2>🧹 封存已刪除資料</h2>
+        <span class="place-count"></span><span class="fold-arrow" id="foldArrow-archive">▾</span></button>
+      <div class="fold-body" id="fold-archive" hidden>
+        <p class="dash-sub" style="margin:0 0 10px">把已刪除的資料寄到管理者信箱備份，寄出成功之後才從雲端清掉。</p>
+        <button class="btn" onclick="archiveTombstones()">封存已刪除的資料</button>
+      </div>
+    </div>
+  </div>
+</section>
 
 <div class="toast" id="toast"></div>
 
@@ -970,31 +1076,33 @@ const STORAGE_KEY = 'personal-os-state-v1';
 const CLOUD_URL = '__CLOUD_URL__';
 const MOOD_EMOJI = ['😞','😕','😐','🙂','😄'];
 
-/* ---------- 導覽配置（左／右／不顯示） ----------
-   圓心「首頁」固定在中央，不參與配置。其餘功能各自選擇靠左、靠右或不顯示，
-   每側最多 3 個——上限來自版面：左 3 ｜ ⭕ ｜ 右 3 是 320px 螢幕仍讀得清楚的極限。
-
-   同一側的排列順序依 NAV_ITEMS 的定義順序，不另外提供拖曳排序：手機上的拖曳
-   很難做得好用，而這裡要解決的是「慣用手拿不拿得到」，左右歸屬就足夠了。
-
-   狀態存獨立的 localStorage key，刻意不放進 state——state 的每一列都會被送上雲端，而這是介面偏好，不需跨裝置一致。 */
-const NAV_PLACEMENT_KEY = 'personal-os-nav-placement';
-const NAV_SLOT_KEY_LEGACY = 'personal-os-nav-slot';   // 舊的單選版位，僅供一次性遷移
-const NAV_SIDE_LIMIT = 3;
-const NAV_SIDE_LABEL = { left:'左', right:'右', off:'隱藏' };
-const NAV_ITEMS = [
+/* ---------- 功能清單（權限矩陣的順序與標籤） ----------
+   原本兼做「導覽配置」的候選清單；ADR-014 D-4 移除導覽配置後，只剩權限矩陣在用。 */
+const FEATURE_ITEMS = [
   { view:'expenses', icon:'💰', label:'記帳' },
   { view:'notes',    icon:'📎', label:'雜記' },
   { view:'tasks',    icon:'☑️', label:'任務' },
   { view:'review',   icon:'🌙', label:'日誌' },
-  { view:'logs',     icon:'📋', label:'LOG'  },
   { view:'mood',     icon:'💚', label:'心情' }
 ];
-// 預設就是改版前的版面（左 2 ｜ ⭕ ｜ 右 2）：升級不該偷偷換掉使用者習慣的導覽
-const DEFAULT_PLACEMENT = {
-  expenses:'left', notes:'left', tasks:'right', review:'right', logs:'off', mood:'off'
+
+/* ---------- 兩區（ADR-014 D-1～D-8） ----------
+   💰 財務、✅ 生產力。切區＝導覽圖示、主色、首頁主題卡一起換；任務與白板是兩區共用的地基。
+   每支手機記住上次的區（localStorage，介面偏好，不上雲端）；第一次預設財務。
+   導覽五格固定：任務永遠在右側第一格，切區不移位。null＝這一區沒有東西放，留空佔位。
+   股票格第 3 輪才開，現在一律隱藏（viewAllowed 回 false）。 */
+const ZONE_KEY='personal-os-zone';
+const ZONE_HINT_KEY='personal-os-zone-hint';
+const ZONES={
+  finance:      { label:'財務',   nav:['expenses','plans','home','tasks','stocks'] },
+  productivity: { label:'生產力', nav:['notes','review','home','tasks',null] }
 };
-let navPlacement = Object.assign({}, DEFAULT_PLACEMENT);
+const VIEW_NAV={ expenses:['💰','記帳'], plans:['🧾','分期'], tasks:['☑️','任務'],
+                 notes:['📎','雜記'], review:['🌙','日誌'], stocks:['📈','股票'] };
+/* 舊版「導覽配置」留在手機裡的設定。不讀、不遷移，開機時刪掉 */
+const LEGACY_NAV_KEYS=['personal-os-nav-placement','personal-os-nav-slot'];
+let zone='finance';
+let zoneTransition=null;
 
 /* ---------- 身份、白名單與功能矩陣（ADR-008 → ADR-010） ----------
    三件事共用同一張雲端 line_users 表，但責任分得很開：
@@ -1019,17 +1127,17 @@ const LINE_USERS_SHEET = 'line_users';
 /* 分頁 ↔ 功能欄。首頁刻意不在表上：它是進 App 的第一頁，關掉沒意義（D-1）。 */
 const FEATURE_BY_VIEW = {
   expenses:'feat_expense', notes:'feat_notes', tasks:'feat_tasks',
-  review:'feat_review', logs:'feat_log', mood:'feat_mood'
+  review:'feat_review', mood:'feat_mood'
 };
-// 標籤直接沿用 NAV_ITEMS，避免同一個名字在兩個地方各寫一次、改了一邊忘了另一邊
-const FEATURE_KEYS = NAV_ITEMS.map(function(it){ return FEATURE_BY_VIEW[it.view]; });
+// 標籤直接沿用 FEATURE_ITEMS，避免同一個名字在兩個地方各寫一次、改了一邊忘了另一邊
+const FEATURE_KEYS = FEATURE_ITEMS.map(function(it){ return FEATURE_BY_VIEW[it.view]; });
 /* 導覽頁 ↔ 雲端分頁。雲端回的 denied 是分頁名（ADR-012 D-4） */
-const SHEET_BY_VIEW = { expenses:'expenses', notes:'notes', tasks:'tasks', review:'reviews', logs:'logs', mood:'moods' };
+const SHEET_BY_VIEW = { expenses:'expenses', notes:'notes', tasks:'tasks', review:'reviews', mood:'moods' };
 const DATA_SHEETS = ['tasks','reviews','moods','notes','expenses'];
 /* 雲端明說「沒權限」的分頁。跟讀取失敗是兩件事：這裡的會被清空、待送的會被丟掉 */
 let cloudDenied=[];
 const FEATURE_LABEL = {};
-NAV_ITEMS.forEach(function(it){ FEATURE_LABEL[FEATURE_BY_VIEW[it.view]] = it.icon + ' ' + it.label; });
+FEATURE_ITEMS.forEach(function(it){ FEATURE_LABEL[FEATURE_BY_VIEW[it.view]] = it.icon + ' ' + it.label; });
 
 let deviceToken = null;
 let myLineId = null;
@@ -1246,7 +1354,9 @@ async function refreshRoster(trigger){
 
 /* 身份一變，導覽、身份卡、管理頁、篩選鈕與所有列表都要跟著換一輪 */
 function applyIdentity(){
-  applyNavPlacement();
+  applyZone();
+  renderAvatar();
+  if(settingsOpen) renderSettings();
   renderMeCard();
   renderEmailCard();
   renderArchiveCard();
@@ -1462,7 +1572,6 @@ function renderMeCard(){
   el.innerHTML=`<span class="me-who">👤 ${esc(rosterName(myUser())||myLineId)}
       <span class="sub">${isAdmin()?'管理者・':''}之後記的東西會標記成你的</span></span>
     ${n?`<button class="link" onclick="claimOrphans()">認領舊資料 ${n}</button>`:''}
-    ${myEmail()?'<button class="link" onclick="editMyEmail()">修改 Email</button>':''}
     <button class="link" onclick="unpairThisDevice()">解除這台裝置的配對</button>`;
 }
 
@@ -1482,8 +1591,16 @@ function renderEmailCard(){
   if(show && inp && !inp.value) inp.value=myEmail();
 }
 function editMyEmail(){ emailEditing=true; renderEmailCard(); }
-async function saveMyEmail(){
-  const inp=document.getElementById('emailInput');
+/* 設定頁「個人」的 Email（D-10）：一直都能改；首頁那張只在還沒填時出現（D-11） */
+function renderSetEmail(){
+  const el=document.getElementById('setEmail');
+  if(!el) return;
+  if(!myLineId || !myUser()){ el.innerHTML='<div class="empty-hint">配對、讀到成員名單之後才能設定</div>'; return; }
+  el.innerHTML=`<input type="text" id="setEmailInput" inputmode="email" autocomplete="email" placeholder="you@example.com" value="${esc(myEmail())}">
+    <div style="margin-top:10px"><button class="btn" onclick="saveMyEmail('setEmailInput')">儲存</button></div>`;
+}
+async function saveMyEmail(inputId){
+  const inp=document.getElementById(inputId||'emailInput');
   const email=String((inp&&inp.value)||'').trim();
   if(!isEmailText(email)){ toast('Email 格式不對'); return false; }
   let r=null;
@@ -1491,7 +1608,7 @@ async function saveMyEmail(){
   if(!r || !r.success){ toast('⚠️ 沒存成功'+(r&&r.error?'（'+r.error+'）':'，稍後再試')); return false; }
   const u=myUser(); if(u) u.email=r.email;
   emailEditing=false;
-  renderEmailCard(); renderMeCard();
+  renderEmailCard(); renderMeCard(); renderSetEmail();
   toast('Email 已儲存');
   return true;
 }
@@ -1724,7 +1841,7 @@ async function toggleAdminFlag(i, key){
   const before=u[key], beforeStamp=u.updated_at;
   u[key]=next?'TRUE':'FALSE';
   u.updated_at=new Date().toISOString();
-  renderAdminCard(); applyNavPlacement(); renderScopeBars();
+  renderAdminCard(); applyZone(); renderScopeBars();
 
   // 單列 upsert，不走 replaceAll：整包覆蓋一旦送出不完整的名單，會把所有人
   // （包含正在按按鈕的自己）鎖在門外。replaceAll 已於 ADR-009 退場，後端一律拒絕。
@@ -1737,7 +1854,7 @@ async function toggleAdminFlag(i, key){
     toast('已更新');
   }else{
     u[key]=before; u.updated_at=beforeStamp;
-    renderAdminCard(); applyNavPlacement(); renderScopeBars();
+    renderAdminCard(); applyZone(); renderScopeBars();
     toast('⚠️ 寫回雲端失敗，已復原');
   }
 }
@@ -2236,7 +2353,7 @@ function applyDenied(list){
     const names=[...new Set(dropped.map(j=>sheetLabel(j.sheet)))].join('、');
     toast(`⚠️ 你沒有「${names}」的權限，${dropped.length} 筆還沒送出的資料已捨棄`);
   }
-  if(changed) applyNavPlacement();
+  if(changed) applyZone();
 }
 
 /* ---------- 封存：寄信給管理者（2026-10-01 Neil 裁決，取代 ADR-009 §一.4 的下載流程） ----------
@@ -2316,16 +2433,13 @@ function perfSummaryHtml(r){
 }
 
 function renderPerfCard(){
-  const alertEl=document.getElementById('perfAlert');
-  if(alertEl){
-    alertEl.hidden=!perfAlertNeeded();
-    alertEl.textContent=`⏱️ 效能紀錄 ${perfRows} 筆，要整理嗎？到下方「效能紀錄」刪除 30 天前的紀錄。`;
-  }
+  renderAvatar();                       // 筆數太多＝管理員的待辦，亮在大頭貼上（D-9）
   const card=document.getElementById('perfCard');
   if(!card) return;
   card.hidden=!isAdmin();
   if(!isAdmin()) return;
-  document.getElementById('perfCount').textContent = perfRows ? perfRows+' 筆' : '';
+  document.getElementById('perfCount').textContent =
+    perfAlertNeeded() ? '⚠️ 該清了・'+perfRows+' 筆' : (perfRows ? perfRows+' 筆' : '');
   document.getElementById('perfBody').innerHTML = perfSummaryCache ? perfSummaryHtml(perfSummaryCache) : '';
 }
 
@@ -2364,6 +2478,8 @@ function renderSysCard(){
   if(!card) return;
   card.hidden=!isAdmin();
   if(!isAdmin()) return;
+  const cnt=document.getElementById('sysCount');       // 摘要只用 boot 已有的資料，不為它多發請求
+  if(cnt){ const n=installmentPlans.filter(p=>p.status==='active').length; cnt.textContent=n?'分期 '+n+' 筆進行中':''; }
   document.getElementById('sysTabs').innerHTML=SYS_TABS.map(([k,l])=>
     `<button class="${sysTab===k?'sel':''}" onclick="openSysTab('${k}')">${l}</button>`).join('');
   const body=document.getElementById('sysBody');
@@ -2493,10 +2609,16 @@ async function addConfigItem(){
 }
 
 /* 分期：所有計畫一覽，結束／刪除走記帳分頁同一組動作 */
-function sysPlansHtml(){
-  if(!installmentPlans.length) return '<div class="empty-hint">還沒有分期計畫</div>';
+function sysPlansHtml(){ return planRowsHtml(installmentPlans, '還沒有分期計畫'); }
+/* 分期頁（ADR-014 D-7）：只列進行中的計畫，同一套列表 */
+function renderPlansView(){
+  const el=document.getElementById('planList');
+  if(el) el.innerHTML=planRowsHtml(installmentPlans.filter(p=>p.status==='active'), '沒有進行中的分期');
+}
+function planRowsHtml(plans, empty){
+  if(!plans.length) return `<div class="empty-hint">${empty}</div>`;
   const label={active:'進行中', ended:'已結束'};
-  return installmentPlans.map(p=>{
+  return plans.map(p=>{
     const s=planSummary(p.plan_id);
     return `<div class="sys-row">
       <div class="who">${esc(p.category||'')}${p.subcategory?'＞'+esc(p.subcategory):''} NT$ ${fmtAmount(Number(p.total)||0)}<small>${esc(p.plan_id)}</small></div>
@@ -2528,28 +2650,135 @@ function renderArchiveCard(){
 }
 
 /* ---------- 導覽 ---------- */
-const TITLES={home:'首頁',expenses:'記帳',tasks:'任務',review:'日誌',mood:'心情',notes:'雜記',logs:'LOG'};
-function switchView(name,btn){
+const TITLES={home:'首頁',expenses:'記帳',plans:'分期',tasks:'任務',review:'日誌',notes:'雜記'};
+/* 分頁能不能進。日誌頁也放心情：兩個功能有一個開就進得去（D-7）。股票第 3 輪才開 */
+function viewAllowed(name){
+  if(name==='stocks') return false;
+  if(name==='plans') return featureAllowed('expenses');     // 分期就是記帳的一部分（各期是 expenses 的列）
+  if(name==='review') return featureAllowed('review') || featureAllowed('mood');
+  return featureAllowed(name);
+}
+function currentView(){
+  const el=document.querySelector('.view.active');
+  return el && el.id ? el.id.replace('view-','') : 'home';
+}
+function switchView(name){
   // 沒開放的分頁連切都不該切得過去——導覽藏起來了，但首頁捷徑與舊的深連結還在
-  if(!featureAllowed(name)){ toast('這個功能還沒對你開放'); return; }
+  if(!TITLES[name] || !viewAllowed(name)){ toast('這個功能還沒對你開放'); return; }
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.getElementById('view-'+name).classList.add('active');
-  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
-  if(btn) btn.classList.add('active');
   document.getElementById('viewTitle').textContent=TITLES[name];
-  // 心情脈搏隸屬心情模組：心情沒被調進導覽時，它的視覺元件也不該自己跑出來
-  const showPulse = navPlacement.mood!=='off' && featureAllowed('mood') && (name==='tasks'||name==='mood');
-  document.getElementById('pulse').style.display=showPulse?'flex':'none';
-  document.getElementById('pulseLabel').style.display=showPulse?'block':'none';
+  syncPulse(name);
   if(name==='home') renderDashboard();
   if(name==='expenses') renderExpenseView();
-  if(name==='review') loadTodayReview();
-  if(name==='logs') openLogsView();
+  if(name==='plans') renderPlansView();
+  if(name==='review'){ loadTodayReview(); renderReviewView(); }
   window.scrollTo(0,0);
+  renderNav();
 }
-/* 首頁卡片上的捷徑：切分頁並同步底部導覽的選取狀態 */
-function goView(name){
-  switchView(name, document.querySelector(`nav button[data-view="${name}"]`));
+/* 心情脈搏隸屬心情：只在放心情的日誌頁出現（開機停在首頁時也要藏，見 applyZone） */
+function syncPulse(name){
+  const show = featureAllowed('mood') && name==='review';
+  const p=document.getElementById('pulse'), l=document.getElementById('pulseLabel');
+  if(p) p.style.display=show?'flex':'none';
+  if(l) l.style.display=show?'block':'none';
+}
+/* 首頁卡片上的捷徑與導覽按鈕共用 */
+function goView(name){ switchView(name); }
+
+/* ---------- 兩區：導覽、首頁鈕、切換（ADR-014 D-1～D-8） ---------- */
+function loadZone(){
+  let z=null;
+  try{ z=localStorage.getItem(ZONE_KEY); }catch(e){}
+  return ZONES[z] ? z : 'finance';
+}
+/* 這一區對這個人有沒有東西：財務看記帳；生產力看雜記、日誌、心情。任務是共用的，不算 */
+function zoneHasFeatures(z){
+  return z==='finance' ? featureAllowed('expenses')
+    : (featureAllowed('notes') || featureAllowed('review') || featureAllowed('mood'));
+}
+function availableZones(){ return Object.keys(ZONES).filter(zoneHasFeatures); }
+/* 只有一區有功能的人不顯示「⇄」，固定在那區（D-7） */
+function canSwitchZone(){ return availableZones().length>1; }
+function effectiveZone(){
+  const av=availableZones();
+  return av.includes(zone) ? zone : (av[0] || 'finance');
+}
+function atTop(){ return (window.scrollY||0) <= 4; }
+function reducedMotion(){
+  try{ return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }catch(e){ return false; }
+}
+/* 「⇄」只在「現在點會切區」的時候出現：首頁、在頂端、有兩區可切（D-3 審查修正） */
+function homeLabel(){
+  const z=effectiveZone();
+  return ZONES[z].label + (currentView()==='home' && atTop() && canSwitchZone() ? ' ⇄' : '');
+}
+function renderNav(){
+  const nav=document.getElementById('nav');
+  if(!nav) return;
+  const z=effectiveZone(), cur=currentView();
+  if(document.documentElement) document.documentElement.setAttribute('data-zone', z);
+  nav.innerHTML=ZONES[z].nav.map(v=>{
+    if(v==='home'){
+      return `<button data-view="home" class="home-btn${cur==='home'?' active':''}" id="homeBtn"
+        onpointerdown="homePress(true)" onpointerup="homePress(false)" onpointercancel="homePress(false)" onpointerleave="homePress(false)"
+        onclick="homeTap()" aria-label="首頁"><span class="ico">🧭</span><span class="zone-name" id="homeLabel">${homeLabel()}</span></button>`;
+    }
+    if(!v || !viewAllowed(v)) return '<span class="nav-slot" aria-hidden="true"></span>';
+    return `<button data-view="${v}" class="${cur===v?'active':''}" onclick="goView('${v}')"><span class="ico">${VIEW_NAV[v][0]}</span>${VIEW_NAV[v][1]}</button>`;
+  }).join('');
+}
+/* 捲動時只改首頁鈕的小字，不重畫整列 */
+function updateHomeLabel(){
+  const el=document.getElementById('homeLabel');
+  const t=homeLabel();
+  if(el && el.textContent!==t) el.textContent=t;
+}
+function homePress(on){
+  const b=document.getElementById('homeBtn');
+  if(b && b.classList) b.classList[on?'add':'remove']('pressed');
+}
+/* 首頁鈕分層觸發（D-3）：別頁 → 回首頁；首頁已往下捲 → 捲回頂端；首頁頂端 → 切區 */
+function homeTap(){
+  homePress(false);
+  if(currentView()!=='home'){ goView('home'); return; }
+  if(!atTop()){ window.scrollTo({top:0, behavior: reducedMotion()?'auto':'smooth'}); return; }
+  if(canSwitchZone()) switchZone();
+}
+function switchZone(){ setZone(effectiveZone()==='finance' ? 'productivity' : 'finance'); }
+/* 切區不打任何雲端請求（D-8）：資料 boot／輪詢已經拿到了，這裡只換畫面。
+   動畫中再點：先跳過上一段動畫，zone 已經是最後一次點的那區，畫出來的就是它 */
+function setZone(z){
+  if(!ZONES[z] || !zoneHasFeatures(z)) return;
+  zone=z;
+  try{ localStorage.setItem(ZONE_KEY, z); }catch(e){}
+  const apply=()=>{ renderNav(); renderZoneCard(); };
+  const doc=document;
+  if(zoneTransition){ try{ zoneTransition.skipTransition(); }catch(e){} zoneTransition=null; }
+  if(typeof doc.startViewTransition!=='function'){ apply(); return; }   // 不支援就直接換
+  doc.documentElement.setAttribute('data-zone-dir', z==='finance' ? 'from-left' : 'from-right');
+  let t=null;
+  try{ t=doc.startViewTransition(apply); }catch(e){ apply(); return; }
+  zoneTransition=t;
+  const done=()=>{ if(zoneTransition===t) zoneTransition=null; };
+  if(t && t.finished && t.finished.then) t.finished.then(done, done);
+}
+/* 權限或身份變了：重畫導覽；目前正看著的分頁被關掉時，別把人留在不該存在的畫面上 */
+function applyZone(){
+  renderNav();
+  renderZoneCard();
+  syncPulse(currentView());
+  if(!viewAllowed(currentView())) goView('home');
+  maybeZoneHint();
+}
+/* 第一次有兩區可切時提示一次（D-3）。記在 localStorage，只提示一次 */
+function maybeZoneHint(){
+  if(!canSwitchZone() || !myUser()) return;
+  let seen=false;
+  try{ seen=localStorage.getItem(ZONE_HINT_KEY)==='1'; }catch(e){ seen=true; }
+  if(seen) return;
+  try{ localStorage.setItem(ZONE_HINT_KEY,'1'); }catch(e){}
+  toast('首頁頂端再點 🧭 就能切換財務／生產力');
 }
 
 /* ---------- 導覽版位開關（ADR-006 §C） ---------- */
@@ -2732,6 +2961,13 @@ function renderReviews(){
     if(r.next)    parts.push('🎯 '+esc(r.next));
     return `<div class="review-item"><div class="review-date">${esc(reviewDateOf(k))}${by}</div><div class="review-body">${parts.join('\n')}</div></div>`;
   }).join('');
+}
+
+/* 日誌頁的兩塊（D-7）：feat_mood 管上面的心情，feat_review 管下面的複盤 */
+function renderReviewView(){
+  setHidden('moodBlock', !featureAllowed('mood'));
+  setHidden('moodListCard', !featureAllowed('mood'));
+  setHidden('reviewBlock', !featureAllowed('review'));
 }
 
 /* ---------- 心情 ---------- */
@@ -3263,14 +3499,79 @@ function toggleTaskFromHome(id){
    沒有配對（先在本機用）的人不等雲端，照常畫本機的東西——不然會永遠卡在骨架 */
 let firstLoadDone=false;
 function renderDashboard(){
-  toggleDashCard('dashExpenseCard','expenses');
+  renderZoneCard();
   toggleDashCard('dashTasksCard','tasks');
   if(!firstLoadDone && deviceToken){ renderSkeletons(); return; }
-  renderDashExpense(); renderDashTasks();
-  renderBoard(); renderDue();
+  renderDashExpense(); renderDashPlans(); renderDashReview(); renderDashNotes();
+  renderDashTasks(); renderBoard(); renderDue();
+}
+/* 主題卡（D-5）：依區只露一半，各卡照舊依 feat_* 收起。只動 hidden，內容由 renderDashboard 畫 */
+function renderZoneCard(){
+  const z=effectiveZone();
+  setHidden('zoneFinance', z!=='finance');
+  setHidden('zoneProductivity', z!=='productivity');
+  toggleDashCard('dashExpenseCard','expenses');
+  setHidden('dashPlanCard', !viewAllowed('plans'));
+  setHidden('dashReviewCard', !featureAllowed('review') && !featureAllowed('mood'));
+  setHidden('dashMoodBtns', !featureAllowed('mood'));
+  setHidden('dashReview', !featureAllowed('review'));
+  toggleDashCard('dashNotesCard','notes');
+}
+function setHidden(id, h){ const el=document.getElementById(id); if(el) el.hidden=!!h; }
+/* 分期：本月應付＝這個月的各期加總；剩餘＝今天之後還沒到期的各期加總（都在 state.expenses 裡） */
+function dashPlanFigures(){
+  const mk=monthKey(), today=todayKey();
+  const rows=state.expenses.filter(e=>e.plan_id && e.plan_seq && e.type!=='income' && inScope(e));
+  return {
+    month: rows.filter(e=>e.date.slice(0,7)===mk).reduce((s,e)=>s+e.amount,0),
+    left:  rows.filter(e=>e.date>today).reduce((s,e)=>s+e.amount,0),
+    plans: installmentPlans.filter(p=>p.status==='active').length
+  };
+}
+function renderDashPlans(){
+  const el=document.getElementById('dashPlans');
+  if(!el) return;
+  const f=dashPlanFigures();
+  el.innerHTML = !f.plans && !f.left
+    ? '<div class="empty-hint">沒有進行中的分期</div>'
+    : `<div class="dash-plan"><span>本月應付</span><b>NT$ ${fmtAmount(f.month)}</b></div>
+       <div class="dash-plan"><span>剩餘總額（${f.plans} 個計畫）</span><b>NT$ ${fmtAmount(f.left)}</b></div>`;
+}
+/* 今天：心情一點就記（不必開日誌頁），下面是今天的日誌摘要 */
+function renderDashReview(){
+  const btns=document.getElementById('dashMoodBtns');
+  if(btns){
+    const today=todayKey();
+    const mine=state.moods.find(m=>m.line_id===(myLineId||'') && todayKey(new Date(m.ts))===today);
+    btns.innerHTML=MOOD_EMOJI.map((e,i)=>
+      `<button class="mood-btn ${mine&&mine.level===i+1?'sel':''}" onclick="quickMood(${i+1})" aria-label="心情 ${i+1}">${e}</button>`).join('');
+  }
+  const el=document.getElementById('dashReview');
+  if(!el) return;
+  const r=state.reviews[myReviewKey()];
+  const parts=[];
+  if(r&&r.compass) parts.push('🧭 '+esc(r.compass));
+  if(r&&r.good)    parts.push('✅ '+esc(r.good));
+  if(r&&r.next)    parts.push('🎯 '+esc(r.next));
+  el.innerHTML = parts.length ? `<div class="dash-review">${parts.join('\n')}</div>`
+                              : '<div class="empty-hint">今天的日誌還沒寫</div>';
+}
+function quickMood(level){
+  const m={id:Date.now(), level, note:'', ts:Date.now(), line_id:myLineId||''};
+  state.moods.unshift(m);
+  pushMood(m); renderMoods(); renderPulse(); renderDashReview();
+  toast('心情已記錄 '+MOOD_EMOJI[level-1]);
+}
+function renderDashNotes(){
+  const el=document.getElementById('dashNotes');
+  if(!el) return;
+  const list=state.notes.filter(inScope).slice(0,2);
+  el.innerHTML = list.length ? list.map(n=>`<div class="dash-note">${esc(n.txt)}</div>`).join('')
+                             : '<div class="empty-hint">還沒有雜記</div>';
 }
 function renderSkeletons(){
-  ['dashExpense','dashTasks','boardList','dueList'].forEach(id=>{
+  ['dashExpense','dashPlans','dashReview','dashNotes','dashTasks','boardList','dueList'].forEach(id=>{
+
     const el=document.getElementById(id);
     if(el) el.innerHTML='<div class="skel" aria-label="讀取中"><i></i><i></i><i></i></div>';
   });
@@ -3420,92 +3721,11 @@ function toggleDashCard(id, view){
   if(el) el.hidden=!featureAllowed(view);
 }
 
-/* ---------- 初始化 ---------- */
-/* ---------- 導覽配置（ADR-006 §C 的單選版位，於此擴充為左右三態） ---------- */
-function loadNavPlacement(){
-  var saved=null;
-  // 私密瀏覽或封鎖網站資料時，讀 localStorage 會直接 throw
-  try{ saved=JSON.parse(localStorage.getItem(NAV_PLACEMENT_KEY)||'null'); }catch(e){}
-
-  navPlacement=Object.assign({}, DEFAULT_PLACEMENT);
-  if(saved && typeof saved==='object'){
-    NAV_ITEMS.forEach(function(it){
-      // 只收合法值：存壞或殘留舊功能名時退回預設，不要留下切不掉的導覽
-      if(NAV_SIDE_LABEL[saved[it.view]]) navPlacement[it.view]=saved[it.view];
-    });
-  }else{
-    migrateLegacyNavSlot();
-  }
-  enforceSideLimits();
-}
-/* 從舊的「第 5 格單選」遷移：原本選中的那一頁放到右側，其餘沿用預設。
-   預設右側是任務＋日誌兩格，補上第三個剛好滿額，不會撞到上限。 */
-function migrateLegacyNavSlot(){
-  var old=null;
-  try{ old=localStorage.getItem(NAV_SLOT_KEY_LEGACY); }catch(e){}
-  if(old && navPlacement.hasOwnProperty(old) && navPlacement[old]==='off') navPlacement[old]='right';
-}
-/* 存壞的設定可能讓某側超額，把溢出的推成隱藏，確保畫面永遠合法 */
-function enforceSideLimits(){
-  ['left','right'].forEach(function(side){
-    var n=0;
-    NAV_ITEMS.forEach(function(it){
-      if(navPlacement[it.view]!==side) return;
-      n++;
-      if(n>NAV_SIDE_LIMIT) navPlacement[it.view]='off';
-    });
-  });
-}
-/* 上限是版面問題，而版面只在乎「畫面上真的有幾格」——被功能矩陣關掉的分頁
-   不佔位，所以不算進去。enforceSideLimits 刻意不跟著改：它是存壞設定的防護網，
-   看的是儲存的值本身，跟這個帳號當下開了哪些功能無關。 */
-function sideCount(side){
-  return NAV_ITEMS.filter(function(it){
-    return navPlacement[it.view]===side && featureAllowed(it.view);
-  }).length;
-}
-function setNavPlacement(view, side){
-  if(!navPlacement.hasOwnProperty(view) || !NAV_SIDE_LABEL[side]) return;
-  if(navPlacement[view]===side) return;
-  // 已滿時明確擋下並說明，不自作主張把別人擠掉——那種「魔法」事後最難理解
-  if(side!=='off' && sideCount(side)>=NAV_SIDE_LIMIT){
-    toast(NAV_SIDE_LABEL[side]+'側已經 '+NAV_SIDE_LIMIT+' 個了');
-    return;
-  }
-  navPlacement[view]=side;
-  try{ localStorage.setItem(NAV_PLACEMENT_KEY,JSON.stringify(navPlacement)); }catch(e){}
-  applyNavPlacement();
-}
-/* 把配置套到導覽列：依 NAV_ITEMS 順序重排 DOM，左側插在圓心前、右側接在其後 */
-function applyNavPlacement(){
-  const nav=document.getElementById('nav');
-  const home=nav.querySelector('.home-btn');
-  NAV_ITEMS.forEach(function(it){
-    const btn=nav.querySelector('button[data-view="'+it.view+'"]');
-    if(!btn) return;
-    const side=navPlacement[it.view];
-    // 兩套機制串聯但不混用（ADR-008 H-8）：版位是「放左邊還右邊」，功能矩陣是
-    // 「這個帳號有沒有這個功能」。功能被關掉不會動到 navPlacement 的值——
-    // 日後重新開放時，使用者原本選的左右位置還在。
-    btn.hidden = side==='off' || !featureAllowed(it.view);
-    if(side==='left') nav.insertBefore(btn, home);
-    else if(side==='right') nav.appendChild(btn);
-  });
-  // 目前正看著的分頁被關掉時，別把人留在一個已經不該存在的畫面上
-  const cur=document.querySelector('.view.active');
-  if(cur && !featureAllowed(cur.id.replace('view-',''))) goView('home');
-  // 心情脈搏隸屬心情模組：心情沒在導覽上時，它的視覺元件也不該自己跑出來
-  if(navPlacement.mood==='off' || !featureAllowed('mood')){
-    document.getElementById('pulse').style.display='none';
-    document.getElementById('pulseLabel').style.display='none';
-  }
-  renderPlacementCard();
-}
 /* ---------- 顯示設定：亮／暗／自動（2026-09-24 晨曦配色票 ①） ----------
    亮／暗 → <html data-theme="…">；自動 → 移除屬性，交給 CSS 的 prefers-color-scheme，
    所以手機切換深淺色時不需要 JS 監聽。<head> 最前面那段同步腳本做的是同一件事，
    只是趕在 CSS 之前，避免重開 App 先閃白。
-   與導覽配置同一條規則：存獨立的 localStorage key，不放進 state（不上雲端）。 */
+   介面偏好的規則：存獨立的 localStorage key，不放進 state（不上雲端）。 */
 const THEME_KEY = 'personal-os-theme';
 const THEME_LABEL = { light:'亮', dark:'暗', auto:'自動' };
 function loadTheme(){
@@ -3540,30 +3760,103 @@ function renderThemeCard(){
   }).join('');
 }
 
-function renderPlacementCard(){
-  const box=document.getElementById('placeRows');
-  if(!box) return;
-  const counts=document.getElementById('placeCount');
-  if(counts) counts.textContent='左 '+sideCount('left')+'/'+NAV_SIDE_LIMIT+'\u3000右 '+sideCount('right')+'/'+NAV_SIDE_LIMIT;
-
-  const items=NAV_ITEMS.filter(function(it){ return featureAllowed(it.view); });
-  const hidden=NAV_ITEMS.length-items.length;
-  box.innerHTML=items.map(function(it){
-    const cur=navPlacement[it.view];
-    const btns=['left','right','off'].map(function(side){
-      // 已滿的那側標成 full：仍可點（會給提示），但先讓人看出來為什麼選不動
-      const full = side!=='off' && cur!==side && sideCount(side)>=NAV_SIDE_LIMIT;
-      return '<button class="'+(cur===side?'sel':'')+(full?' full':'')+'"'
-        +' onclick="setNavPlacement(\''+it.view+'\',\''+side+'\')">'+NAV_SIDE_LABEL[side]+'</button>';
-    }).join('');
-    return '<div class="place-row"><span class="place-name">'+it.icon+' '+esc(it.label)+'</span>'
-      +'<div class="place-btns">'+btns+'</div></div>';
-  }).join('');
-  // 少了幾個選項是要說出來的——沉默會被讀成「壞掉了」
-  if(hidden){
-    box.innerHTML+='<p class="slot-hint">還有 '+hidden+' 個功能沒有對你開放，'
-      +'需要的話請管理者到「成員與權限」勾起來。</p>';
+/* ---------- 設定頁（ADR-014 D-9、D-10） ----------
+   入口是右上角大頭貼。個人：身份與裝置、Email、主題；管理（只有管理員）：收合卡、預設全收，
+   點開才抓雲端，標題列的摘要只用 boot 已經有的資料。設定頁不跟著切區換色：它蓋在兩區之上，
+   開關設定頁本身不觸發任何主色變化。 */
+let settingsOpen=false;
+let settingsTab='personal';
+let foldOpen={};
+let myDevices=null;          // null＝還沒抓；{loading}／{failed}／{list}
+/* 點開管理卡時才做的事。成員名單 boot 就有，不必抓；裝置清單點開那一列才抓（既有） */
+const FOLD_LOAD={
+  members: ()=>{},
+  sys:     ()=>{ if(!sysTab) openSysTab('groups'); },
+  perf:    ()=>{ if(!perfSummaryCache) loadPerfSummary(); },
+  logs:    ()=>{ openLogsView(); },
+  archive: ()=>{}
+};
+function renderAvatar(){
+  const ch=document.getElementById('avatarChar');
+  if(ch){ const n=rosterName(myUser()); ch.textContent = myLineId ? (n ? Array.from(n)[0] : '?') : '!'; }
+  const dot=document.getElementById('avatarDot');
+  // 管理員的待辦：效能紀錄該清了、有人用 LINE 註冊等核准
+  if(dot) dot.hidden = !(isAdmin() && (perfAlertNeeded() || pendingUsers().length>0));
+}
+function openSettings(){
+  const el=document.getElementById('settings');
+  if(!el) return;
+  settingsOpen=true;
+  if(!isAdmin()) settingsTab='personal';
+  el.hidden=false;
+  renderSettings();
+  // 先讓它以「在右邊」的狀態出現，下一格畫面再滑進來
+  requestAnimationFrame(()=>requestAnimationFrame(()=>el.classList.add('open')));
+}
+function closeSettings(){
+  const el=document.getElementById('settings');
+  if(!el) return;
+  settingsOpen=false;
+  el.classList.remove('open');
+  setTimeout(()=>{ if(!settingsOpen) el.hidden=true; }, reducedMotion()?0:260);
+}
+function setSettingsTab(t){
+  settingsTab = (t==='admin' && isAdmin()) ? 'admin' : 'personal';
+  renderSettings();
+}
+function renderSettings(){
+  if(!isAdmin()) settingsTab='personal';
+  const seg=document.getElementById('setSeg');
+  if(seg){
+    seg.hidden=!isAdmin();                  // 非管理員只有「個人」，連分段鈕都不出現
+    seg.innerHTML=[['personal','個人'],['admin','管理']].map(([k,l])=>
+      `<button class="${settingsTab===k?'sel':''}" onclick="setSettingsTab('${k}')">${l}</button>`).join('');
   }
+  setHidden('setPersonal', settingsTab!=='personal');
+  setHidden('setAdmin', settingsTab!=='admin');
+  renderMeCard(); renderMyDevices(); renderSetEmail(); renderThemeCard();
+  renderAdminCard(); renderSysCard(); renderPerfCard(); renderArchiveCard(); renderLogCard();
+  renderFolds();
+}
+function renderFolds(){
+  Object.keys(FOLD_LOAD).forEach(k=>{
+    setHidden('fold-'+k, !foldOpen[k]);
+    const a=document.getElementById('foldArrow-'+k);
+    if(a) a.textContent = foldOpen[k] ? '▴' : '▾';
+  });
+}
+function toggleFold(name){
+  if(!FOLD_LOAD[name]) return;
+  foldOpen[name]=!foldOpen[name];
+  renderFolds();
+  if(foldOpen[name]) FOLD_LOAD[name]();
+}
+/* LOG 移進管理（D-10），只限管理員讀（Neil 2026-10-07：feat_log 退場，後端 canUseSheet_ 同一條規則） */
+function renderLogCard(){
+  setHidden('logCard', !isAdmin());
+}
+/* 我的裝置：按了才抓（listDevices 不帶 line_id＝自己） */
+function renderMyDevices(){
+  const el=document.getElementById('myDevices');
+  if(!el) return;
+  if(!myLineId){ el.innerHTML='<div class="empty-hint">這台還沒配對</div>'; return; }
+  const d=myDevices;
+  if(!d) { el.innerHTML='<button class="btn-outline" onclick="loadMyDevices()">看我配對過的裝置</button>'; return; }
+  if(d.loading){ el.innerHTML='<div class="empty-hint">讀取中…</div>'; return; }
+  if(d.failed){ el.innerHTML='<div class="empty-hint">讀不到裝置清單 <button class="link" onclick="loadMyDevices()">重試</button></div>'; return; }
+  if(!d.list.length){ el.innerHTML='<div class="empty-hint">還沒有配對任何裝置</div>'; return; }
+  el.innerHTML=d.list.map(dev=>{
+    const when=dev.last_used_at ? fmtTime(new Date(dev.last_used_at).getTime()) : '—';
+    return `<div class="adm-dev"><span class="who">${esc(dev.device_label||'(未命名裝置)')}
+        <small>最後使用 ${esc(when)}${dev.current?'・就是這台':''}</small></span>
+      <span class="state${dev.status==='active'?' on':''}">${DEVICE_STATUS_LABEL[dev.status]||esc(dev.status)}</span></div>`;
+  }).join('');
+}
+async function loadMyDevices(){
+  myDevices={loading:true}; renderMyDevices();
+  const list=await fetchDevicesOf('');
+  myDevices = list ? {list} : {failed:true};
+  renderMyDevices();
 }
 
 /* ---------- LOG 頁（ADR-006 §C／§D） ----------
@@ -3706,7 +3999,7 @@ function renderAll(){
   renderTasks(); renderReviews(); loadTodayReview();
   renderMoodBtns(); renderMoods(); renderPulse();
   renderNotes(); renderNoteTagRow();
-  renderExpenseView(); renderCatRow(); renderDashboard();
+  renderExpenseView(); renderCatRow(); renderDashboard(); renderPlansView(); renderReviewView();
   if(sysTab==='plans') renderSysCard();   // 只有分期分頁跟著資料重畫；其他分頁有輸入框，輪詢重畫會吃掉打到一半的字
   renderMeCard();          // 認領數會隨資料增減，跟著列表一起刷新
 }
@@ -3721,9 +4014,14 @@ function renderAll(){
   renderCatRow();
   applyTheme(loadTheme());
   renderThemeCard();
-  loadNavPlacement();
+  zone=loadZone();
+  LEGACY_NAV_KEYS.forEach(k=>{ try{ localStorage.removeItem(k); }catch(e){} });   // 舊的導覽配置（D-4 移除）
   loadIdentity();
-  applyNavPlacement();
+  applyZone();
+  renderAvatar();
+  // 捲動時更新首頁鈕的「⇄」：只有在首頁頂端才顯示（D-3）
+  window.addEventListener('scroll', updateHomeLabel, {passive:true});
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape' && settingsOpen) closeSettings(); });
   renderScopeBars();
   try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}   // 舊版的本機快照（ADR-012 D-8）
   load();

@@ -261,9 +261,16 @@ describe('feat_* 是雲端權限（D-3）', () => {
     assert.equal(out.error, 'forbidden');
   });
 
-  test('feat_log 關掉：LOG 頁讀 logs → forbidden', () => {
-    const e = env({ users: roster(Object.assign({}, NO_EXPENSE, { feat_expense: 'TRUE', feat_log: '' })) });
+  test('logs 只限管理員（ADR-014，feat_log 退場）：一般成員就算 feat_log 開著也讀不到', () => {
+    const e = env({ users: roster(Object.assign({}, NO_EXPENSE, { feat_expense: 'TRUE', feat_log: 'TRUE' })) });
     assert.equal(post(e, { action: 'read', token: TOK_MOM, sheet: 'logs' }).error, 'forbidden');
+  });
+
+  test('logs：管理員讀得到，跟 feat_log 欄位無關', () => {
+    const e = env();
+    e.sheets.line_users.values[1][e.sheets.line_users.values[0].indexOf('feat_log')] = '';
+    const out = post(e, { action: 'read', token: TOK_ME, sheet: 'logs' });
+    assert.equal(out.error, undefined, JSON.stringify(out));
   });
 
   test('line_users 一律讀得到（前端要靠它知道自己的權限），就算功能全關', () => {
@@ -344,7 +351,7 @@ describe('LINE 也套用功能權限', () => {
 /* ========================================================================== */
 describe('canUse_ 與前端 featureAllowed 一字不差', () => {
 
-  const VIEW_OF = { feat_expense: 'expenses', feat_tasks: 'tasks', feat_review: 'review', feat_notes: 'notes', feat_mood: 'mood', feat_log: 'logs' };
+  const VIEW_OF = { feat_expense: 'expenses', feat_tasks: 'tasks', feat_review: 'review', feat_notes: 'notes', feat_mood: 'mood' };
   const USERS = [
     { line_id: 'U1' },                                         // 沒有任何 feat_ 欄 → 全開
     { line_id: 'U2', feat_expense: '', feat_tasks: 'TRUE' },  // 有欄但留空 → 關
@@ -357,7 +364,7 @@ describe('canUse_ 與前端 featureAllowed 一字不差', () => {
       const back = env();
       const front = loadFrontend();
       front.raw('roster = ' + JSON.stringify([u]) + '; myLineId = "' + u.line_id + '"; cloudDenied = []');
-      for (const feat of FEATS) {
+      for (const feat of Object.keys(VIEW_OF)) {
         assert.equal(front.call('featureAllowed', VIEW_OF[feat]), back.call('canUse_', u, feat), u.line_id + ' ' + feat);
       }
     });
@@ -368,7 +375,7 @@ describe('canUse_ 與前端 featureAllowed 一字不差', () => {
     const front = loadFrontend();
     const bySheet = back.read('FEATURE_BY_SHEET');
     assert.deepEqual(bySheet, { tasks: 'feat_tasks', expenses: 'feat_expense', reviews: 'feat_review',
-      notes: 'feat_notes', moods: 'feat_mood', logs: 'feat_log' });
+      notes: 'feat_notes', moods: 'feat_mood' });
     const byView = front.read('FEATURE_BY_VIEW');
     assert.deepEqual(Object.values(byView).sort(), Object.values(bySheet).sort());
   });

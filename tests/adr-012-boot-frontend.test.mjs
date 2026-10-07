@@ -50,7 +50,7 @@ function env(handler = () => null) {
   });
   e.raw('myLineId = "' + ME + '"; deviceToken = "' + TOKEN + '"; localOnly = false; outbox = []; gateMode = null');
   e.raw('state = EMPTY_STATE()');
-  e.raw('applyIdentity = function(){}; applyNavPlacement = function(){ __nav = (typeof __nav === "number" ? __nav : 0) + 1; }');
+  e.raw('applyIdentity = function(){}; applyZone = function(){ __nav = (typeof __nav === "number" ? __nav : 0) + 1; }');
   return e;
 }
 
@@ -337,7 +337,7 @@ describe('前端接真的 Code.gs：feat_expense 關掉的人', () => {
       fetchImpl: ({ body }) => json(JSON.parse(back.call('handlePwaSync_', { postData: { contents: JSON.stringify(body) } }).body))
     });
     front.raw('deviceToken = "' + TOKEN + '"; myLineId = null; outbox = []; gateMode = null');
-    front.raw('applyIdentity = function(){}; applyNavPlacement = function(){}');
+    front.raw('applyIdentity = function(){}; applyZone = function(){}');
 
     assert.equal(await front.callRaw('startSession', 'cold'), true);
     assert.equal(front.read('myLineId'), ME);
