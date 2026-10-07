@@ -259,6 +259,7 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
       timeBased: () => builder,
       atHour: (h) => { spec.hour = h; return builder; },
       everyDays: (d) => { spec.days = d; return builder; },
+      everyHours: (h) => { spec.everyHours = h; return builder; },
       create: () => { triggers.push(spec); return spec; }
     };
     return builder;

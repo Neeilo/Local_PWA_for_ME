@@ -90,7 +90,8 @@ describe('T1 排程修復：「初始化」一次裝好所有排程與欄位', (
     const e = env();
     for (let i = 0; i < 3; i++) say(e, ME, '初始化', 'user');
     const handlers = e.triggers.map((t) => t.handler).sort();
-    assert.deepEqual(handlers, ['checkDueReminders', 'refreshGuide']);
+    assert.deepEqual(handlers, ['checkDueReminders', 'flushUnauthPerf', 'refreshGuide']);
+    assert.match(e.lastText(), /flushUnauthPerf（每小時）/);
     assert.match(e.lastText(), /checkDueReminders/);
     assert.match(e.lastText(), /refreshGuide/);
     assert.doesNotMatch(e.lastText(), /初始化沒有完成/);
@@ -114,7 +115,7 @@ describe('T1 排程修復：「初始化」一次裝好所有排程與欄位', (
     const e = env();
     e.call('installAll');
     e.call('installAll');
-    assert.deepEqual(e.triggers.map((t) => t.handler).sort(), ['checkDueReminders', 'refreshGuide']);
+    assert.deepEqual(e.triggers.map((t) => t.handler).sort(), ['checkDueReminders', 'flushUnauthPerf', 'refreshGuide']);
   });
 
   test('非管理者不能初始化（不變）', () => {

@@ -101,14 +101,13 @@ describe('記錄規則：哪些請求會留一列', () => {
     assert.equal(typeof w.open_ms, 'number', '寫入也量開表的時間');
   });
 
-  test('poll：沒帶 perf_sample 不記；帶了才記（取樣由前端決定）', () => {
+  test('poll：每一輪都記（ADR-014 D-13 取消抽樣），perf_sample 不再有作用', () => {
     const e = env();
     post(e, { token: TOK_ME, action: 'read', sheet: 'tasks', trigger: 'poll' });
     post(e, { token: TOK_ME, action: 'read', sheet: 'tasks', trigger: 'poll', perf_sample: false });
-    assert.equal(perfRows(e).length, 0);
     post(e, { token: TOK_ME, action: 'read', sheet: 'tasks', trigger: 'poll', perf_sample: true });
-    assert.equal(perfRows(e).length, 1);
-    assert.equal(perfRows(e)[0].trigger, 'poll');
+    assert.equal(perfRows(e).length, 3);
+    assert.deepEqual(perfRows(e).map((r) => r.trigger), ['poll', 'poll', 'poll']);
   });
 
   test('沒有 trigger 的請求不記（LOG 頁、管理頁、續期輪詢的 session）', () => {

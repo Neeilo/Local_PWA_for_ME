@@ -108,23 +108,23 @@ describe('請求帶 trigger', () => {
     assert.equal(pending(e).length, 0);
   });
 
-  test('續期畫面的 session 輪詢：不帶 trigger、不帶 perf', async () => {
+  test('續期畫面的 session 輪詢：帶 trigger=poll（ADR-014 D-12 每個請求都記），但不夾帶 perf', async () => {
     const e = env((b) => (b.action === 'session' ? { status: 'token_expired' } : null));
     e.raw('perfPending = [{action:"startup", trigger:"cold", client_ms: 100}]');
     e.raw('gateMode = "renew"; renew = {code:"123456", until: Date.now() + 600000}');
     await e.callRaw('pollRenewal');
     const s = bodies(e, (b) => b.action === 'session');
     assert.equal(s.length, 1);
-    assert.equal('trigger' in s[0], false);
-    assert.equal('perf' in s[0], false);
+    assert.equal(s[0].trigger, 'poll');
+    assert.equal('perf' in s[0], false, '那扇門不經過驗證，夾了也寫不進去');
     assert.equal(pending(e).length, 1, '沒帶走就還在');
   });
 });
 
 /* ========================================================================== */
-describe('輪詢取樣：20 次記 1 次', () => {
+describe('輪詢全記（ADR-014 D-13，取消 20 抽 1）', () => {
 
-  test('20 輪：每輪一個 readMany 帶 poll；只有第 20 輪帶 perf_sample，也只記一筆', async () => {
+  test('20 輪：每輪一個 readMany 帶 poll、不帶 perf_sample；20 輪都記耗時', async () => {
     const e = env();
     for (let i = 0; i < 20; i++) {
       await e.callRaw('pollTick');
@@ -135,18 +135,16 @@ describe('輪詢取樣：20 次記 1 次', () => {
     assert.equal(reads.length, 20, '輪詢一輪只發 1 個請求（ADR-012 D-4）');
     assert.ok(reads.every((b) => b.trigger === 'poll'));
     assert.ok(reads.every((b) => !b.sheets.includes('line_users')), '名單不放進輪詢');
-    const sampled = reads.filter((b) => b.perf_sample === true);
-    assert.equal(sampled.length, 1, '只有一輪帶 perf_sample');
-    assert.equal(reads[19].perf_sample, true, '是第 20 輪');
+    assert.ok(reads.every((b) => !('perf_sample' in b)), '抽樣旗標退場');
 
     const carried = e.calls.flatMap((c) => (c.body && c.body.perf) || []);
     const all = carried.concat(pending(e));
-    assert.deepEqual(all.map((p) => p.action + '/' + p.trigger), ['pull/poll']);
+    assert.equal(all.length, 20);
+    assert.ok(all.every((p) => p.action === 'pull' && p.trigger === 'poll'));
   });
 
   test('讀取失敗的那輪：不記耗時', async () => {
     const e = env((b) => (b.action === 'readMany' ? { __reject: true } : null));
-    e.raw('perfPollCount = 19');
     await e.callRaw('pollTick');
     await settle();
     assert.equal(pending(e).length, 0);
@@ -221,15 +219,15 @@ describe('夾在下一個請求裡', () => {
 /* ========================================================================== */
 describe('管理員：門檻提醒與效能頁', () => {
 
-  test('boot 回的 perf_rows 記下來；超過 5,000 才提醒，而且只提醒管理員', async () => {
-    const e = env((b) => (b.action === 'boot' ? BOOT_OK({ perf_rows: 5001 }) : null));
+  test('boot 回的 perf_rows 記下來；超過 30,000 才提醒（ADR-014 輪詢全記後調高），而且只提醒管理員', async () => {
+    const e = env((b) => (b.action === 'boot' ? BOOT_OK({ perf_rows: 30001 }) : null));
     await e.callRaw('startSession', 'cold');
-    assert.equal(e.read('perfRows'), 5001);
+    assert.equal(e.read('perfRows'), 30001);
     assert.equal(e.call('perfAlertNeeded'), true);
-    assert.equal(e.read('PERF_ALERT_ROWS'), 5000);
+    assert.equal(e.read('PERF_ALERT_ROWS'), 30000);
 
-    e.raw('perfRows = 5000');
-    assert.equal(e.call('perfAlertNeeded'), false, '剛好 5,000 不提醒');
+    e.raw('perfRows = 30000');
+    assert.equal(e.call('perfAlertNeeded'), false, '剛好 30,000 不提醒');
 
     e.raw('perfRows = 9999; roster = [{line_id:"' + ME + '", display_name:"Neil", is_active:"TRUE", is_admin:""}]');
     assert.equal(e.call('perfAlertNeeded'), false, '不是管理員不提醒');

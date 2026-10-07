@@ -631,7 +631,7 @@ describe('LINE「初始化」：管理者在手機上跑部署後的安裝步驟
     assert.match(reply, /✅ ADR-013 記帳分類\n　補上欄位：subcategory、targets、plan_id、plan_seq/);
     assert.match(reply, /分類設定讀得到（8 個大類）/);
     assert.match(reply, /餐飲→飲食：改了 1 列/);
-    assert.match(reply, /✅ 排程（到期提醒＋_guide）\n　已安裝.*_guide 已更新/);
+    assert.match(reply, /✅ 排程（到期提醒＋_guide＋未驗證彙總）\n　已安裝.*_guide 已更新/);
     assert.deepEqual(e.sheets.expenses.values[0].slice(-4), ['subcategory', 'targets', 'plan_id', 'plan_seq']);
     assert.equal(e.sheets.expenses.toRecords()[0].category, '飲食');
     assert.ok(e.ss.getSheetByName('_expense_config'));
@@ -665,7 +665,7 @@ describe('LINE「初始化」：管理者在手機上跑部署後的安裝步驟
     const reply = line(e, ME, '初始化');
     assert.match(reply, /^🛑 初始化沒有完成/);
     assert.match(reply, /❌ ADR-013 記帳分類：Sheet 暫時無法存取/);
-    assert.match(reply, /⏭️ 排程（到期提醒＋_guide）：前一步失敗，沒有執行/);
+    assert.match(reply, /⏭️ 排程（到期提醒＋_guide＋未驗證彙總）：前一步失敗，沒有執行/);
     assert.doesNotMatch(reply, /初始化完成/);
     assert.equal(e.ss.getSheetByName('_guide'), null, '_guide 沒有被跑');
     assert.ok(e.transactions.some((t) => t[1] === '失敗' && t[2] === '初始化'));
@@ -681,7 +681,7 @@ describe('LINE「初始化」：管理者在手機上跑部署後的安裝步驟
     const reply = line(e, ME, '初始化');
     assert.match(reply, /^🛠️ 初始化完成，但有要處理的地方/);
     assert.match(reply, /⚠️ 細項「外食」重複/);
-    assert.match(reply, /✅ 排程（到期提醒＋_guide）/);
+    assert.match(reply, /✅ 排程（到期提醒＋_guide＋未驗證彙總）/);
   });
 
   test('另一個初始化正在跑：不重疊執行', () => {
