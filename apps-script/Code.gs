@@ -573,16 +573,17 @@ function routePwaSync_(body, perf) {
   if (body.action === 'planEnd') return jsonOut(planEnd_(caller, body.plan_id, body.today));
   if (body.action === 'pushPreview') return jsonOut(pushPreview_(caller, body));
   if (body.action === 'pushSend') return jsonOut(pushSend_(caller, body));
+  if (body.action === 'stockConfigSet') return jsonOut(stockConfigSet_(caller, body.key, body.value));
+  if (body.action === 'stockPushMe') return jsonOut(stockPushMe_(caller, body.symbol));
 
   if (NO_PWA_WRITE.indexOf(body.sheet) !== -1) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');
     return jsonOut({ error: 'sheet_not_writable', sheet: body.sheet });
   }
   if (!canUseSheet_(caller.user, body.sheet)) return jsonOut(featureForbidden_(caller, body.action, body.sheet));
-  // 股票表只開 upsert（有專屬把關）與封存；提醒規則（stock_rules）的寫入跟 PR-B 一起開
-  if ((body.sheet === STOCK_TRADES_SHEET || body.sheet === STOCK_WATCH_SHEET) &&
+  // 股票表只開 upsert（有專屬把關）與封存
+  if ((body.sheet === STOCK_TRADES_SHEET || body.sheet === STOCK_WATCH_SHEET || body.sheet === STOCK_RULES_SHEET) &&
       ['upsert', 'archivePurge'].indexOf(body.action) === -1) return jsonOut({ error: 'unknown_action' });
-  if (body.sheet === STOCK_RULES_SHEET) return jsonOut({ error: 'sheet_not_writable', sheet: body.sheet });
   // 名單只有管理者能改（2026-10-08 補）：line_users 不對應任何 feat，原本任何啟用中的成員都能 upsert，
   // 包括把自己設成管理者、或改自己的 member 去記別人名下的股票（ADR-015 D-8 的持有者強制就形同虛設）。
   // 前端只有管理者的「成員與權限」會寫這張表；email 走自己的 setMyEmail
@@ -604,8 +605,9 @@ function routePwaSync_(body, perf) {
     var record = body.sheet === TASKS_SHEET ? keepOriginChat_(sheet, headers, body.record || {}) : (body.record || {});
     var keyField = body.key_field;
     // 股票（ADR-015 D-8／D-9）：持有者、誰能改、賣超、自選上限都由後端決定
-    if (body.sheet === STOCK_TRADES_SHEET || body.sheet === STOCK_WATCH_SHEET) {
-      var guarded = body.sheet === STOCK_TRADES_SHEET ? guardStockTrade_(caller, record) : guardStockWatch_(caller, record);
+    if (body.sheet === STOCK_TRADES_SHEET || body.sheet === STOCK_WATCH_SHEET || body.sheet === STOCK_RULES_SHEET) {
+      var guarded = body.sheet === STOCK_TRADES_SHEET ? guardStockTrade_(caller, record)
+        : body.sheet === STOCK_RULES_SHEET ? guardStockRule_(caller, record) : guardStockWatch_(caller, record);
       if (guarded.error) {
         logTransaction_(STOCK_LOG_SOURCE, '失敗', 'PWA upsert → ' + body.sheet, '被擋下：' + guarded.error,
           JSON.stringify(guarded), '', caller.line_id);

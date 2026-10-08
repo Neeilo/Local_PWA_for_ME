@@ -371,6 +371,16 @@
   .stk-row .num small{display:block; font-weight:400; font-size:12px;}
   .stk-row.tap{cursor:pointer;}
   .stk-sum{font-size:13px; color:var(--muted); margin:2px 0 8px;}
+  .stk-row.hit{background:var(--accent-soft); border-radius:10px; padding-left:8px; padding-right:8px;}
+  .stk-why{grid-column:1 / -1; font-size:12px; color:var(--accent); display:flex; gap:8px; align-items:center; justify-content:space-between;}
+  .stk-why button{flex:none; width:auto; padding:5px 10px; font-size:12px;}
+  .stk-mini{display:flex; gap:8px; overflow-x:auto; padding-bottom:2px;}
+  .stk-mini button{flex:none; text-align:left; background:var(--field); border:1.5px solid var(--line); border-radius:10px; padding:8px 10px; color:var(--ink); font-variant-numeric:tabular-nums;}
+  .stk-mini button.hit{border-color:var(--accent); background:var(--accent-soft);}
+  .stk-mini b{display:block; font-size:13px;}
+  .stk-mini small{font-size:12px;}
+  .rebal-big{font-size:26px; font-weight:700; font-variant-numeric:tabular-nums;}
+  .rebal-act{font-weight:600; margin-top:4px;}
   .stk-form .row{display:flex; gap:8px;}
   .stk-form .row > *{flex:1; min-width:0;}
   .stk-form select{width:100%;}
@@ -769,6 +779,15 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
           <div id="dashPlans"></div>
           <button class="dash-link" onclick="goView('plans')">全部分期 →</button>
         </div>
+        <!-- 股票（ADR-015 T8）：再平衡只給管理者＋有持股＋有現金；自選小卡給有 feat_stock 的人 -->
+        <div class="card" id="dashRebalCard" hidden>
+          <h2 id="dashRebalTitle">⚖️ 再平衡</h2>
+          <div id="dashRebal"></div>
+        </div>
+        <div class="card" id="dashStockCard" hidden>
+          <h2>📈 自選股</h2>
+          <div id="dashStocks"></div>
+        </div>
       </div>
       <!-- ✅ 生產力 -->
       <div id="zoneProductivity" hidden>
@@ -873,6 +892,40 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
         <input type="text" id="stkWatchInput" autocapitalize="characters" placeholder="代號，例如 2330">
         <button class="btn" style="flex:none; width:auto" onclick="addStockWatch()">加入</button>
       </div></div>
+    </div>
+    <div class="card stk-form" id="stockCfgCard" hidden>
+      <h2>⚖️ 再平衡設定（只有管理者看得到）</h2>
+      <div class="row">
+        <div><div class="field-label">現金</div><input type="number" id="stkCfgCash" inputmode="decimal" min="0"></div>
+        <div><div class="field-label">持有者</div><select id="stkCfgOwner"></select></div>
+      </div>
+      <div class="row">
+        <div><div class="field-label">目標比例 %</div><input type="number" id="stkCfgTarget" inputmode="decimal" min="1" max="99"></div>
+        <div><div class="field-label">相對門檻 %</div><input type="number" id="stkCfgThr" inputmode="decimal" min="1" max="99"></div>
+      </div>
+      <p class="slot-hint" id="stkCfgHint"></p>
+      <button class="btn" onclick="saveStockConfig()">儲存設定</button>
+    </div>
+    <div class="card stk-form" id="stockRuleCard" hidden>
+      <h2>🔔 新增提醒規則</h2>
+      <div class="row">
+        <div><div class="field-label">代號</div><input type="text" id="stkRuleSymbol" autocapitalize="characters" placeholder="2330"></div>
+        <div><div class="field-label">條件</div><select id="stkRuleType" onchange="syncStockRuleForm()">
+          <option value="price_above">價格高於</option>
+          <option value="price_below">價格低於</option>
+          <option value="change_pct">當日漲跌超過 ±%</option>
+          <option value="cost_pct">相對成本 %（負＝跌破）</option>
+        </select></div>
+      </div>
+      <div class="row">
+        <div><div class="field-label" id="stkRuleValLabel">價格</div><input type="number" id="stkRuleVal" inputmode="decimal" step="any"></div>
+        <div id="stkRuleOwnerWrap" hidden><div class="field-label">持有者</div><select id="stkRuleOwner"></select></div>
+      </div>
+      <div class="row">
+        <div><div class="field-label">冷卻天數</div><input type="number" id="stkRuleCooldown" inputmode="numeric" min="1" step="1" value="1"></div>
+        <div><div class="field-label">自動推播</div><select id="stkRulePush"><option value="1">開</option><option value="">關（只亮燈）</option></select></div>
+      </div>
+      <button class="btn" onclick="addStockRule()">新增規則</button>
     </div>
     <div class="card" id="stockBody"></div>
   </section>
@@ -2821,13 +2874,17 @@ function pickStockTab(t){
   stockTab=t;
   document.querySelectorAll('#stockSeg button').forEach(b=>b.classList.toggle('sel', b.dataset.val===t));
   if(t!=='trades') closeStockForm(true);
+  if(t==='settings') fillStockSettingsForms();
   renderStocksView();
 }
 function renderStocksView(){
   const body=document.getElementById('stockBody');
   if(!body) return;
+  const onSettings = stockTab==='settings' && !!stockData && !!stockData.ready;
   const add=document.getElementById('stockWatchAdd');
-  if(add) add.hidden = !(stockTab==='settings' && isAdmin() && stockData && stockData.ready);
+  if(add) add.hidden = !(onSettings && isAdmin());
+  setHidden('stockRuleCard', !onSettings);
+  setHidden('stockCfgCard', !(onSettings && isAdmin() && !!stockData.config));
   if(!stockData){
     body.innerHTML=`<div class="empty-hint">${stockFailed ? '⚠️ 股票資料讀不到，稍後會再試' : (cloudOnline===false ? '⚠️ 連不上雲端' : '讀取中…')}</div>`;
     return;
@@ -2844,9 +2901,11 @@ function stockWatchHtml(){
   if(!list.length) return `<div class="empty-hint">自選清單是空的${isAdmin()?'，到「設定」加入':'（由管理者維護）'}</div>`;
   return list.map(w=>{
     const q=(stockData.quotes||{})[w.symbol];
-    return `<div class="stk-row">
+    const hits=stockHits(w.symbol);
+    return `<div class="stk-row${hits.length?' hit':''}">
       <div class="who">${esc(w.symbol)} ${esc(stockName(w.symbol)||w.name||'')}<small>${esc(quoteStampText(q))}</small></div>
       <div class="num">${q?fmtStk(q.price,4):'—'}<small class="${q?stkTone(q.change):''}">${q&&q.changePct!==''?signedStk(q.changePct,2)+'%':''}</small></div>
+      ${hits.length?`<div class="stk-why"><span>🔔 ${hits.map(h=>esc(h.reason)).join('；')}</span><button class="btn-ghost" onclick="pushStockToMe('${esc(w.symbol)}')">推給我</button></div>`:''}
     </div>`;
   }).join('');
 }
@@ -2874,7 +2933,8 @@ function stockHoldHtml(){
       <div class="num">${fmtStk(h.qty,2)} 公克<small>投入成本 ${fmtStk(h.cost,0)}</small></div>
     </div>`).join('');
   const sum = stocks.length ? `<div class="stk-sum">市值 ${fmtStk(value,0)}・未實現損益 <span class="${stkTone(value-cost)}">${signedStk(value-cost,0)}</span>${priced?'':'（有幾檔沒有報價，沒算進去）'}</div>` : '';
-  return `<div class="cat-row" style="margin-bottom:8px">${chips}</div>${sum}`
+  const rb=rebalHtml();
+  return (rb?`<div class="sys-row" style="margin-bottom:8px">${rb}</div>`:'')+`<div class="cat-row" style="margin-bottom:8px">${chips}</div>${sum}`
     + (rows || goldRows ? rows + (goldRows ? `<h2 style="margin-top:12px">黃金（只記錄、不抓價）</h2>${goldRows}` : '')
       : '<div class="empty-hint">沒有持股</div>');
 }
@@ -2894,14 +2954,22 @@ function stockTradesHtml(){
 }
 
 function stockSettingsHtml(){
-  if(!isAdmin()) return '<div class="empty-hint">自選清單由管理者維護</div>';
+  const rules=(stockData.rules||[]);
+  const ruleRows=rules.map(r=>`<div class="stk-row">
+      <div class="who">${esc(r.symbol)} ${esc(stockRuleText(r))}<small>冷卻 ${esc(r.cooldown_days)} 天${r.last_fired_at?'・上次推播 '+esc(fmtTime(new Date(r.last_fired_at).getTime())):''}</small></div>
+      <div class="num"><div class="adm-grid" style="grid-template-columns:repeat(3,auto)">
+        <button class="${truthy(r.enabled)?'on':''}" onclick="toggleStockRule('${esc(r.id)}','enabled')">啟用</button>
+        <button class="${truthy(r.auto_push)?'on':''}" onclick="toggleStockRule('${esc(r.id)}','auto_push')">推播</button>
+        <button class="danger" onclick="deleteStockRule('${esc(r.id)}')">刪</button></div></div>
+    </div>`).join('');
+  let html=`<h2>🔔 我的提醒規則</h2>`+(ruleRows||'<div class="empty-hint">還沒有規則（上面新增）</div>');
+  if(!isAdmin()) return html+'<p class="slot-hint">自選清單由管理者維護。</p>';
   const list=stockData.watch||[];
   const rows=list.map(w=>`<div class="stk-row">
       <div class="who">${esc(w.symbol)} ${esc(w.name||'')}</div>
       <div class="num"><button class="btn-ghost danger" onclick="removeStockWatch('${esc(w.symbol)}')">移除</button></div>
     </div>`).join('');
-  return `<h2>自選清單（${list.length}／15）</h2>`+(rows||'<div class="empty-hint">還沒有自選</div>')
-    +'<p class="slot-hint">提醒規則與 00631L 再平衡下一版開放。</p>';
+  return html+`<h2 style="margin-top:14px">自選清單（${list.length}／15）</h2>`+(rows||'<div class="empty-hint">還沒有自選</div>');
 }
 
 /* ---------- 交易表單 ---------- */
@@ -2997,6 +3065,131 @@ async function removeStockWatch(sym){
   const r=await sendStock('stock_watch', {symbol:sym, is_active:false}, 'symbol');
   if(!r || !r.success){ toast(stockErrorText(r)); return; }
   toast('已移除');
+}
+
+/* ---------- 股票 PR-B：提醒規則、再平衡、首頁卡片（ADR-015 T5／T6／T8） ----------
+   命中與否、再平衡比例都是雲端算好帶回來的（hits、rebalance），這裡不再判斷一次——
+   判斷邏輯只能有一份（T6）。 */
+const STOCK_RULE_LABEL={ price_above:'價格高於', price_below:'價格低於', change_pct:'當日漲跌超過', cost_pct:'相對成本' };
+function stockHits(sym){ return (((stockData||{}).hits)||{})[sym] || []; }
+function stockRuleParams(r){ try{ return typeof r.params==='object' ? (r.params||{}) : JSON.parse(r.params||'{}'); }catch(e){ return {}; } }
+function stockRuleText(r){
+  const p=stockRuleParams(r);
+  if(r.type==='price_above') return '價格 ≥ '+fmtStk(p.price,4);
+  if(r.type==='price_below') return '價格 ≤ '+fmtStk(p.price,4);
+  if(r.type==='change_pct') return '當日漲跌超過 ±'+fmtStk(p.pct,2)+'%';
+  if(r.type==='cost_pct') return (p.owner||'')+' 相對成本 '+signedStk(p.pct,2)+'%';
+  return '（不認得的規則：'+r.type+'）';
+}
+function syncStockRuleForm(){
+  const t=document.getElementById('stkRuleType').value;
+  document.getElementById('stkRuleValLabel').textContent = (t==='price_above'||t==='price_below') ? '價格' : '%';
+  setHidden('stkRuleOwnerWrap', t!=='cost_pct');
+}
+function fillStockSettingsForms(){
+  if(!stockData) return;
+  const members=stockMembers(), mine=stockData.my_member||'';
+  const opts=(sel)=>members.map(o=>`<option value="${esc(o)}"${o===sel?' selected':''}>${esc(o)}</option>`).join('');
+  const ro=document.getElementById('stkRuleOwner');
+  if(ro) ro.innerHTML=opts(mine);
+  syncStockRuleForm();
+  const c=stockData.config;
+  if(!c) return;
+  document.getElementById('stkCfgCash').value = c.cash;
+  document.getElementById('stkCfgTarget').value = c.target_pct;
+  document.getElementById('stkCfgThr').value = c.threshold_rel_pct;
+  document.getElementById('stkCfgOwner').innerHTML = '<option value="">（我自己）</option>'+opts(c.rebalance_owner);
+  document.getElementById('stkCfgHint').textContent =
+    (c.rebalance_symbol||'00631L')+'・現金最後更新 '+(c.cash_updated_at?shortDate(c.cash_updated_at):'—')
+    +(c.cash===''||c.cash==null?'｜⚠️ 還沒填現金，首頁的再平衡卡不會出現':'');
+}
+function shortDate(d){ const k=String(d).slice(0,10); return Number(k.slice(5,7))+'/'+Number(k.slice(8,10)); }
+
+async function saveStockConfig(){
+  const c=(stockData||{}).config||{};
+  const want={
+    cash: document.getElementById('stkCfgCash').value,
+    rebalance_owner: document.getElementById('stkCfgOwner').value,
+    target_pct: document.getElementById('stkCfgTarget').value,
+    threshold_rel_pct: document.getElementById('stkCfgThr').value
+  };
+  // 只送有改的；現金就算數字一樣也送（等於「我今天確認過現金」，會更新日期）
+  const keys=Object.keys(want).filter(k=>k==='cash' || String(want[k])!==String(c[k]==null?'':c[k]));
+  for(const key of keys){
+    let r=null;
+    try{ r=await cloudPost({action:'stockConfigSet', key, value:want[key], trigger:'write'}); }catch(e){ r=null; }
+    if(!r || !r.success){ toast(stockErrorText(r)); return; }
+  }
+  await syncFromCloud({trigger:'manual'});
+  fillStockSettingsForms();
+  renderStocksView();
+  toast('已儲存');
+}
+
+async function addStockRule(){
+  const sym=String(document.getElementById('stkRuleSymbol').value||'').trim().toUpperCase();
+  const type=document.getElementById('stkRuleType').value;
+  const val=Number(document.getElementById('stkRuleVal').value);
+  if(!sym){ toast('請填代號'); return; }
+  if(!isFinite(val) || val===0 || ((type!=='cost_pct') && val<0)){ toast('數值不對'); return; }
+  const params = (type==='price_above'||type==='price_below') ? {price:val}
+    : type==='change_pct' ? {pct:val} : {pct:val, owner:document.getElementById('stkRuleOwner').value};
+  const record={ id:String(Date.now()), symbol:sym, type, params, enabled:true,
+    auto_push: !!document.getElementById('stkRulePush').value,
+    cooldown_days: document.getElementById('stkRuleCooldown').value || 1 };
+  const r=await sendStock('stock_rules', record, 'id');
+  if(!r || !r.success){ toast(stockErrorText(r)); return; }
+  document.getElementById('stkRuleSymbol').value=''; document.getElementById('stkRuleVal').value='';
+  toast('已新增規則');
+}
+async function toggleStockRule(id, field){
+  const r0=((stockData||{}).rules||[]).find(x=>String(x.id)===String(id));
+  if(!r0) return;
+  const rec=Object.assign({}, r0, {params:stockRuleParams(r0)});
+  rec[field]=!truthy(r0[field]);
+  const r=await sendStock('stock_rules', rec, 'id');
+  if(!r || !r.success) toast(stockErrorText(r));
+}
+async function deleteStockRule(id){
+  if(!confirm('刪除這條規則？')) return;
+  const r=await sendStock('stock_rules', {id, del:'TRUE'}, 'id');
+  if(!r || !r.success){ toast(stockErrorText(r)); return; }
+  toast('已刪除');
+}
+async function pushStockToMe(sym){
+  let r=null;
+  try{ r=await cloudPost({action:'stockPushMe', symbol:sym, trigger:'manual'}); }catch(e){ r=null; }
+  toast(r && r.success ? '已推到你的 LINE' : (r && r.error==='no_hit' ? '現在沒有命中的規則' : '⚠️ 推播失敗'));
+}
+
+/* 再平衡卡（T5）：雲端只給管理者 rebalance；status 不是 ok（沒持股、沒現金、沒報價）就不出現 */
+function rebalHtml(){
+  const rb=(stockData||{}).rebalance;
+  if(!rb || rb.status!=='ok') return '';
+  const act = rb.alert
+    ? `<div class="rebal-act" style="color:var(--accent)">建議${rb.suggest_amount<0?'賣出':'買入'} NT$ ${fmtStk(Math.abs(rb.suggest_amount),0)}（約 ${fmtStk(Math.abs(rb.suggest_shares),0)} 股）</div>`
+    : '<div class="rebal-act">在區間內，不用動</div>';
+  return `<div class="dash-sub">${esc(rb.symbol)}・${esc(rb.owner)}</div>
+    <div class="rebal-big"${rb.alert?' style="color:var(--accent)"':''}>${rb.alert?'⚠️ ':''}${fmtStk(rb.ratio_pct,2)}%</div>
+    <div class="dash-sub">區間 ${fmtStk(rb.low_pct,2)}%～${fmtStk(rb.high_pct,2)}%（目標 ${fmtStk(rb.target_pct,2)}%）</div>
+    ${act}
+    <div class="dash-sub">現金 ${fmtStk(rb.cash,0)}・最後更新 ${rb.cash_updated_at?shortDate(rb.cash_updated_at):'—'}${rb.cash_stale?' ⚠️ 超過 30 天':''}</div>`;
+}
+/* 首頁兩張卡（T8）：掛 featureAllowed，關掉 feat_stock 就真的 display:none；切區不打雲端 */
+function renderDashStocks(){
+  const allowed=featureAllowed('stocks');
+  const rb=allowed ? rebalHtml() : '';
+  setHidden('dashRebalCard', !rb);
+  const r=document.getElementById('dashRebal'); if(r) r.innerHTML=rb;
+  const watch=allowed ? ((stockData||{}).watch||[]) : [];
+  setHidden('dashStockCard', !allowed || !watch.length);
+  const el=document.getElementById('dashStocks');
+  if(!el) return;
+  el.innerHTML = `<div class="stk-mini">${watch.map(w=>{
+    const q=(stockData.quotes||{})[w.symbol];
+    return `<button class="${stockHits(w.symbol).length?'hit':''}" onclick="goView('stocks')">
+      <b>${esc(w.symbol)}</b>${q?fmtStk(q.price,4):'—'}<br><small class="${q?stkTone(q.change):''}">${q&&q.changePct!==''?signedStk(q.changePct,2)+'%':''}</small></button>`;
+  }).join('')}</div>`;
 }
 
 /* ---------- 導覽 ---------- */
@@ -3857,7 +4050,7 @@ function renderDashboard(){
   renderZoneCard();
   toggleDashCard('dashTasksCard','tasks');
   if(!firstLoadDone && deviceToken){ renderSkeletons(); return; }
-  renderDashExpense(); renderDashPlans(); renderDashReview(); renderDashNotes();
+  renderDashExpense(); renderDashPlans(); renderDashStocks(); renderDashReview(); renderDashNotes();
   renderDashTasks(); renderBoard(); renderDue();
 }
 /* 主題卡（D-5）：依區只露一半，各卡照舊依 feat_* 收起。只動 hidden，內容由 renderDashboard 畫 */
@@ -3867,6 +4060,7 @@ function renderZoneCard(){
   setHidden('zoneProductivity', z!=='productivity');
   toggleDashCard('dashExpenseCard','expenses');
   setHidden('dashPlanCard', !viewAllowed('plans'));
+  if(!featureAllowed('stocks')){ setHidden('dashRebalCard', true); setHidden('dashStockCard', true); }   // 內容由 renderDashStocks 畫
   setHidden('dashReviewCard', !featureAllowed('review') && !featureAllowed('mood'));
   setHidden('dashMoodBtns', !featureAllowed('mood'));
   setHidden('dashReview', !featureAllowed('review'));

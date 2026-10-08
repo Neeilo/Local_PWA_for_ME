@@ -23,7 +23,7 @@
 | `Code.gs` | PWA ↔ Sheets 同步（`doGet` 讀取、`handlePwaSync_` 寫入） |
 | `line-router.gs` | LINE 快速輸入 → Sheets 路由，並持有統一入口 `doPost` |
 | `sheet-guide.gs` | `_guide` 導覽分頁：分頁登記表＋每天自動重新產生（`refreshGuide()`） |
-| `stock.gs` | 股票（ADR-015）：報價層 `quote_()`（富果 → MIS → GOOGLEFINANCE；非交易時段讀 `stock_daily`）、持股（移動平均）、交易／自選的寫入把關、LINE「買/」「賣/」「股/」的處理、建表 `installStock_()`（併入「初始化」）。資料源探針 `probeStockSources()` 也在這裡，編輯器手動執行 |
+| `stock.gs` | 股票（ADR-015）：報價層 `quote_()`（富果 → MIS → GOOGLEFINANCE；非交易時段讀 `stock_daily`）、持股（移動平均）、交易／自選的寫入把關、LINE「買/」「賣/」「股/」的處理、建表 `installStock_()`（併入「初始化」）。再平衡試算 `computeRebalance_()`、提醒規則 `evaluateRule_()`（儀表板亮燈與推播共用）、排程 `checkStockRules`（每 5 分鐘，盤中）與 `fetchStockDaily`（每天約 14:30）。資料源探針 `probeStockSources()` 也在這裡，編輯器手動執行 |
 | `build-info.gs` | **不在 repo**：CI 部署時產生的發行號（`BUILD_INFO`），LINE 回「沒有這個前綴」時附在最後一行。`npm run pull` 會把它帶回來，已列入 `.gitignore` |
 
 ⚠️ **兩個密鑰一律讀指令碼屬性，不可寫回原始碼**（見下）。線上版原本把

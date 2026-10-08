@@ -260,6 +260,8 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
       atHour: (h) => { spec.hour = h; return builder; },
       everyDays: (d) => { spec.days = d; return builder; },
       everyHours: (h) => { spec.everyHours = h; return builder; },
+      everyMinutes: (m) => { spec.everyMinutes = m; return builder; },
+      nearMinute: (m) => { spec.minute = m; return builder; },
       create: () => { triggers.push(spec); return spec; }
     };
     return builder;

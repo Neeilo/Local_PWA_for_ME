@@ -274,3 +274,150 @@ describe('設定：自選清單與家人', () => {
     assert.deepEqual(e.call('familyNames'), ['姐姐', '爸爸', '媽媽']);
   });
 });
+
+/* ========================================================================== */
+/* PR-B：提醒命中、再平衡卡、規則與設定、首頁卡片                                 */
+/* ========================================================================== */
+
+const REBAL_OK = { status: 'ok', symbol: '00631L', owner: '爸爸', shares: 1000, price: 360, value: 360000, cash: 200000,
+  ratio_pct: 64.29, low_pct: 37.5, high_pct: 62.5, target_pct: 50, threshold_rel_pct: 25, alert: true,
+  suggest_amount: -80000, suggest_shares: -222, cash_updated_at: '2026-10-08', cash_stale: false };
+const withPrB = (extra = {}) => Object.assign({}, STOCK, {
+  hits: { '00631L': [{ id: 'r1', type: 'price_above', reason: '現價 41.28 ≥ 41' }] },
+  rules: [{ id: 'r1', symbol: '00631L', type: 'price_above', params: '{"price":41}', enabled: 'TRUE', auto_push: '', cooldown_days: 1, last_fired_at: '' }],
+  rebalance: REBAL_OK,
+  config: { rebalance_symbol: '00631L', rebalance_owner: '', cash: 200000, cash_updated_at: '2026-10-08', target_pct: 50, threshold_rel_pct: 25 }
+}, extra);
+
+describe('PR-B：自選命中與「推給我」', () => {
+  test('命中的列亮色並列原因，附「推給我」；沒命中的不亮', () => {
+    const { e, el } = env({ stock: withPrB() });
+    e.call('renderStocksView');
+    const html = el('stockBody').innerHTML;
+    assert.match(html, /stk-row hit">\s*<div class="who">00631L/);
+    assert.match(html, /🔔 現價 41\.28 ≥ 41/);
+    assert.match(html, /pushStockToMe\('00631L'\)/);
+    assert.doesNotMatch(html, /pushStockToMe\('2330'\)/);
+  });
+
+  test('推給我：送 stockPushMe（trigger=manual），沒命中講清楚', async () => {
+    const { e } = env({ stock: withPrB(), fetchImpl: ({ body }) => (body.action === 'stockPushMe' ? respond({ error: 'no_hit' }) : null) });
+    await e.callRaw('pushStockToMe', '00631L');
+    const sent = e.calls.find((c) => c.body && c.body.action === 'stockPushMe').body;
+    assert.equal(sent.symbol, '00631L');
+    assert.equal(sent.trigger, 'manual');
+    assert.equal(e.toasts.pop(), '現在沒有命中的規則');
+  });
+});
+
+describe('PR-B：再平衡卡與首頁卡片（T5／T8）', () => {
+  test('亮燈：比例、區間、建議賣出金額與股數、現金更新日', () => {
+    const { e } = env({ stock: withPrB() });
+    const html = e.call('rebalHtml');
+    assert.match(html, /64\.29%/);
+    assert.match(html, /區間 37\.5%～62\.5%（目標 50%）/);
+    assert.match(html, /建議賣出 NT\$ 80,000（約 222 股）/);
+    assert.match(html, /最後更新 10\/8/);
+    assert.doesNotMatch(html, /超過 30 天/);
+  });
+
+  test('在區間內不給建議；現金過期加 ⚠️', () => {
+    const { e } = env({ stock: withPrB({ rebalance: Object.assign({}, REBAL_OK, { alert: false, ratio_pct: 53.27, cash_stale: true }) }) });
+    const html = e.call('rebalHtml');
+    assert.match(html, /在區間內，不用動/);
+    assert.match(html, /⚠️ 超過 30 天/);
+  });
+
+  test('沒持股／沒現金（status 不是 ok）或非管理者（沒有 rebalance）→ 卡片不出現', () => {
+    for (const rebalance of [{ status: 'no_cash' }, { status: 'no_holding' }, undefined]) {
+      const { e, el } = env({ stock: withPrB({ rebalance }) });
+      assert.equal(e.call('rebalHtml'), '');
+      e.call('renderDashStocks');
+      assert.equal(el('dashRebalCard').hidden, true);
+    }
+  });
+
+  test('首頁自選小卡：命中的亮色；點了進股票頁', () => {
+    const { e, el } = env({ stock: withPrB() });
+    e.call('renderDashStocks');
+    assert.equal(el('dashStockCard').hidden, false);
+    assert.equal(el('dashRebalCard').hidden, false);
+    const html = el('dashStocks').innerHTML;
+    assert.match(html, /<button class="hit" onclick="goView\('stocks'\)">\s*<b>00631L<\/b>/);
+    assert.match(html, /<button class="" onclick="goView\('stocks'\)">\s*<b>2330<\/b>/);
+  });
+
+  test('關掉 feat_stock：兩張卡都收起（renderZoneCard 也收，不等下一次輪詢）', () => {
+    const { e, el } = env({ stock: withPrB() });
+    e.call('renderDashStocks');
+    e.raw('roster[0].feat_stock = ""');
+    e.call('renderZoneCard');
+    assert.equal(el('dashRebalCard').hidden, true);
+    assert.equal(el('dashStockCard').hidden, true);
+    e.call('renderDashStocks');
+    assert.equal(el('dashRebalCard').hidden, true);
+    assert.equal(el('dashStockCard').hidden, true);
+  });
+});
+
+describe('PR-B：設定分頁（規則、再平衡設定）', () => {
+  test('規則表單人人有；再平衡設定只有管理者（而且雲端有給 config 才出現）', () => {
+    const mom = env({ me: MOM, stock: withPrB({ config: undefined, rebalance: undefined }) });
+    mom.e.call('pickStockTab', 'settings');
+    assert.equal(mom.el('stockRuleCard').hidden, false);
+    assert.equal(mom.el('stockCfgCard').hidden, true);
+    assert.match(mom.el('stockBody').innerHTML, /我的提醒規則/);
+    const admin = env({ stock: withPrB() });
+    admin.e.call('pickStockTab', 'settings');
+    assert.equal(admin.el('stockCfgCard').hidden, false);
+    assert.equal(admin.el('stkCfgCash').value, 200000);
+    assert.match(admin.el('stkCfgHint').textContent, /現金最後更新 10\/8/);
+  });
+
+  test('新增 cost_pct 規則：params 帶持有者、送 stock_rules、trigger=write', async () => {
+    const { e } = env({ stock: withPrB() });
+    e.call('pickStockTab', 'settings');
+    e.raw(`document.getElementById('stkRuleSymbol').value='00631l'; document.getElementById('stkRuleType').value='cost_pct'; document.getElementById('stkRuleVal').value='-15';
+      document.getElementById('stkRuleOwner').value='媽媽'; document.getElementById('stkRulePush').value='1'; document.getElementById('stkRuleCooldown').value='2'`);
+    await e.callRaw('addStockRule');
+    const sent = e.calls.find((c) => c.body && c.body.action === 'upsert').body;
+    assert.equal(sent.sheet, 'stock_rules');
+    assert.equal(sent.trigger, 'write');
+    assert.equal(sent.record.symbol, '00631L');
+    assert.deepEqual(sent.record.params, { pct: -15, owner: '媽媽' });
+    assert.equal(sent.record.auto_push, true);
+    assert.equal(sent.record.cooldown_days, '2');
+  });
+
+  test('價格類規則不收負數', async () => {
+    const { e } = env({ stock: withPrB() });
+    e.raw(`document.getElementById('stkRuleSymbol').value='2330'; document.getElementById('stkRuleType').value='price_below'; document.getElementById('stkRuleVal').value='-1'`);
+    await e.callRaw('addStockRule');
+    assert.equal(e.calls.filter((c) => c.body && c.body.action === 'upsert').length, 0);
+    assert.equal(e.toasts.pop(), '數值不對');
+  });
+
+  test('切換規則的推播：整筆送回、params 是物件、旗標反過來', async () => {
+    const { e } = env({ stock: withPrB() });
+    await e.callRaw('toggleStockRule', 'r1', 'auto_push');
+    const rec = e.calls.find((c) => c.body && c.body.action === 'upsert').body.record;
+    assert.equal(rec.auto_push, true);
+    assert.deepEqual(rec.params, { price: 41 });
+  });
+
+  test('啟用中的規則按一下 → 停用', async () => {
+    const { e } = env({ stock: withPrB() });
+    await e.callRaw('toggleStockRule', 'r1', 'enabled');
+    const rec = e.calls.find((c) => c.body && c.body.action === 'upsert').body.record;
+    assert.equal(rec.enabled, false);
+  });
+
+  test('儲存再平衡設定：只送有改的鍵，現金一定送（等於確認過今天的現金）', async () => {
+    const { e } = env({ stock: withPrB() });
+    e.call('pickStockTab', 'settings');
+    e.raw(`document.getElementById('stkCfgTarget').value='60'`);
+    await e.callRaw('saveStockConfig');
+    const sent = e.calls.filter((c) => c.body && c.body.action === 'stockConfigSet').map((c) => [c.body.key, c.body.value, c.body.trigger]);
+    assert.deepEqual(sent, [['cash', 200000, 'write'], ['target_pct', '60', 'write']]);
+  });
+});
