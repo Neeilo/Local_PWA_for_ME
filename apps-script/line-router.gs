@@ -646,6 +646,25 @@ function initSteps_() {
       installUnauthTrigger();           // ADR-014 D-15：每小時把未驗證請求寫成一列
       installStockTriggers_();          // ADR-015 T6／T7
       return { level: 'ok', text: '已安裝（先刪同名的再建，不會累積）；_guide 已更新' };
+    } },
+    // 2026-10-08：原本要進編輯器跑的兩件事也併進來。都可重複執行，排在最後，失敗不擋前面的安裝
+    { label: '日誌重複列清理', run: function () {
+      var r = dedupeReviewsRun_(false);       // 不另外拿鎖：handleInitCommand_ 已經拿著 ScriptLock
+      if (r.error === 'sheet_not_found') return { level: 'ok', text: '沒有 reviews 分頁，略過' };
+      if (r.error) return { level: 'warn', text: '沒有清理（' + r.error + '）' };
+      var lines = [r.deleted ? '刪除重複 ' + r.deleted + ' 列，先備份到「' + r.backup + '」（確認沒問題後可手動刪掉這張分頁）' : '沒有重複'];
+      if (r.ambiguous_dates.length) lines.push('⚠️ 看不出是誰的、原樣留著：' + r.ambiguous_dates.join('、'));
+      return { level: r.ambiguous_dates.length ? 'warn' : 'ok', text: lines.join('\n　') };
+    } },
+    { label: '封存寄信', run: function () {
+      var quota;
+      try { quota = MailApp.getRemainingDailyQuota(); } catch (err) {
+        return { level: 'warn', text: '寄信權限還沒授權：這一步 Google 規定要在編輯器執行一次 authorizeArchiveMail' };
+      }
+      var to = adminEmails_();
+      return to.emails.length
+        ? { level: 'ok', text: '已授權，今天還能寄 ' + quota + ' 封；封存信寄給 ' + to.emails.join('、') }
+        : { level: 'ok', text: '已授權；還沒有管理者填 email，要用封存前先到 App 設定頁填' };
     } }
   ];
 }

@@ -2136,6 +2136,8 @@ function archiveByMail_(caller) {
 
 /**
  * 寄信權限授權——部署後在 Apps Script 編輯器選這支按「執行」一次。
+ * 「初始化」會回報授權與收件人狀態（initSteps_ 的寄信那一步），但**第一次同意權限**是 Google
+ * 的規定，只能由部署者本人在編輯器按；LINE 進來的請求沒有同意畫面可以按。
  *
  * 封存改用 MailApp 之後，專案多了「代表你寄信」的權限範圍。web app 以部署者身份執行，
  * 這個權限要由部署者本人在編輯器裡同意一次；沒同意之前，寄信會失敗（可能連帶其他請求）。
@@ -3546,7 +3548,7 @@ function pushSend_(caller, body) {
 
 /* ========================================================================== */
 /**
- * reviews 重複列清理（2026-10-08 小票 #6）——在編輯器裡選這支按「執行」。
+ * reviews 重複列清理（2026-10-08 小票 #6）——併在「初始化」裡跑（initSteps_），也可在編輯器單獨執行。
  *
  * 來源：keyValue_ 修好之前，review_date 讀回來是 Date、前端送字串，鍵對不上就一直 append，
  * 留下「同一天好幾列、其中幾列沒有 line_id」的殘骸。之後的 upsert 只會清掉**鍵相同**
@@ -3560,7 +3562,7 @@ function pushSend_(caller, body) {
  *  - 「併」的意思是：留下來的那列某格是空的，而被刪的那列有值，就把值補過去——不丟字
  *  - 動手前先把整張表複製到 _reviews_backup_日期時間 分頁
  *
- * dedupeReviewsPreview() 只算不動，先跑它看要刪幾列。
+ * dedupeReviewsPreview() 只算不動（編輯器用）。可重複執行：沒有重複時一列都不動、也不建備份分頁。
  * 找沒人在寫日誌的時候跑：PWA／LINE 的寫入不拿這把鎖，執行那幾秒剛好改到重複的那天，會被合併結果蓋掉。
  * 確認清理結果沒問題之後，備份分頁可以手動刪掉。
  */
@@ -3584,98 +3586,103 @@ function dedupeReviews_(dryRun) {
     return { error: 'lock' };
   }
   try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName('reviews');
-    if (!sheet) { console.log('❌ 找不到 reviews 分頁'); return { error: 'sheet_not_found' }; }
-    var values = sheet.getDataRange().getValues();
-    var headers = values[0] || [];
-    var col = {};
-    headers.forEach(function (h, i) { col[String(h).trim()] = i; });
-    if (col.review_date == null || col.line_id == null) {
-      console.log('❌ reviews 缺 review_date 或 line_id 欄');
-      return { error: 'missing_columns' };
-    }
-
-    var filled = function (row) {
-      var n = 0;
-      headers.forEach(function (h, i) { if (!REVIEWS_DEDUPE_META[String(h).trim()] && keyValue_(row[i]) !== '') n++; });
-      return n;
-    };
-
-    // 依日期分組（只收沒標刪除的列）。r 是 values 的索引，列號 = r + 1
-    var byDate = {};
-    for (var r = 1; r < values.length; r++) {
-      var row = values[r];
-      if (col.del != null && truthy_(row[col.del])) continue;
-      var date = keyValue_(row[col.review_date]);
-      if (!date) continue;
-      (byDate[date] = byDate[date] || []).push(r);
-    }
-
-    var keep = {};      // 留下來那列的索引 → 合併後的整列
-    var drop = [];      // 要刪的索引
-    var ambiguous = []; // 不知道是誰的、原樣留著的日期
-    Object.keys(byDate).forEach(function (date) {
-      var rows = byDate[date];
-      var people = {};
-      var orphans = [];
-      rows.forEach(function (i) {
-        var who = keyValue_(values[i][col.line_id]);
-        if (who) (people[who] = people[who] || []).push(i); else orphans.push(i);
-      });
-      var ids = Object.keys(people);
-      // 沒 line_id 的列：當天恰好一個人才知道是誰的
-      if (orphans.length) {
-        if (ids.length === 1) people[ids[0]] = people[ids[0]].concat(orphans);
-        else if (orphans.length > 1 || ids.length > 1) ambiguous.push(date);
-      }
-      ids.forEach(function (who) {
-        var group = people[who];
-        if (group.length < 2) return;
-        // 留有 line_id 且內容最多的；同分留上面那列（較早寫的位置）
-        var best = group.filter(function (i) { return keyValue_(values[i][col.line_id]); })
-          .sort(function (a, b) { return filled(values[b]) - filled(values[a]) || a - b; })[0];
-        var merged = values[best].slice();
-        group.forEach(function (i) {
-          if (i === best) return;
-          headers.forEach(function (h, c) {
-            if (REVIEWS_DEDUPE_META[String(h).trim()]) return;
-            if (keyValue_(merged[c]) === '' && keyValue_(values[i][c]) !== '') merged[c] = values[i][c];
-          });
-          drop.push(i);
-        });
-        keep[best] = merged;
-      });
-    });
-
-    var result = { dry_run: dryRun, rows: values.length - 1, deleted: drop.length, merged_into: Object.keys(keep).length, ambiguous_dates: ambiguous };
-    console.log((dryRun ? '🔍 預覽：' : '') + 'reviews 共 ' + result.rows + ' 列，要刪 ' + drop.length +
-      ' 列重複，併進 ' + result.merged_into + ' 列' +
-      (ambiguous.length ? '；看不出是誰的、原樣留著：' + ambiguous.join(', ') : ''));
-    if (dryRun || !drop.length) return result;
-
-    // 先備份整張表，備份失敗就整個不動
-    // 名稱帶到秒；同名分頁已存在就停（重跑時不能把上一份備份蓋成半新半舊）
-    var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd_HHmmss');
-    var backupName = REVIEWS_BACKUP_PREFIX + stamp;
-    if (ss.getSheetByName(backupName)) {
-      console.log('❌ 備份分頁「' + backupName + '」已存在，這次不動。隔幾秒再跑');
-      return { error: 'backup_exists', backup: backupName };
-    }
-    var backup = ss.insertSheet(backupName);
-    backup.getRange(1, 1, values.length, headers.length).setValues(values);
-    result.backup = backupName;
-
-    Object.keys(keep).forEach(function (i) {
-      sheet.getRange(Number(i) + 1, 1, 1, headers.length).setValues([keep[i]]);
-    });
-    drop.sort(function (a, b) { return b - a; }).forEach(function (i) { sheet.deleteRow(i + 1); });
-
-    logTransaction_('admin', '成功', 'dedupeReviews', '刪除重複 ' + drop.length + ' 列',
-      '備份分頁 ' + backupName + (ambiguous.length ? '；原樣留著：' + ambiguous.join(', ') : ''), '', '');
-    console.log('✅ 已備份到「' + backupName + '」，刪除 ' + drop.length + ' 列');
-    return result;
+    return dedupeReviewsRun_(dryRun);
   } finally {
     lock.releaseLock();
   }
+}
+
+/** 本體，不拿鎖：呼叫端負責（編輯器入口拿自己的鎖；「初始化」已經拿著同一把 ScriptLock） */
+function dedupeReviewsRun_(dryRun) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('reviews');
+  if (!sheet) { console.log('❌ 找不到 reviews 分頁'); return { error: 'sheet_not_found' }; }
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0] || [];
+  var col = {};
+  headers.forEach(function (h, i) { col[String(h).trim()] = i; });
+  if (col.review_date == null || col.line_id == null) {
+    console.log('❌ reviews 缺 review_date 或 line_id 欄');
+    return { error: 'missing_columns' };
+  }
+
+  var filled = function (row) {
+    var n = 0;
+    headers.forEach(function (h, i) { if (!REVIEWS_DEDUPE_META[String(h).trim()] && keyValue_(row[i]) !== '') n++; });
+    return n;
+  };
+
+  // 依日期分組（只收沒標刪除的列）。r 是 values 的索引，列號 = r + 1
+  var byDate = {};
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r];
+    if (col.del != null && truthy_(row[col.del])) continue;
+    var date = keyValue_(row[col.review_date]);
+    if (!date) continue;
+    (byDate[date] = byDate[date] || []).push(r);
+  }
+
+  var keep = {};      // 留下來那列的索引 → 合併後的整列
+  var drop = [];      // 要刪的索引
+  var ambiguous = []; // 不知道是誰的、原樣留著的日期
+  Object.keys(byDate).forEach(function (date) {
+    var rows = byDate[date];
+    var people = {};
+    var orphans = [];
+    rows.forEach(function (i) {
+      var who = keyValue_(values[i][col.line_id]);
+      if (who) (people[who] = people[who] || []).push(i); else orphans.push(i);
+    });
+    var ids = Object.keys(people);
+    // 沒 line_id 的列：當天恰好一個人才知道是誰的
+    if (orphans.length) {
+      if (ids.length === 1) people[ids[0]] = people[ids[0]].concat(orphans);
+      else if (orphans.length > 1 || ids.length > 1) ambiguous.push(date);
+    }
+    ids.forEach(function (who) {
+      var group = people[who];
+      if (group.length < 2) return;
+      // 留有 line_id 且內容最多的；同分留上面那列（較早寫的位置）
+      var best = group.filter(function (i) { return keyValue_(values[i][col.line_id]); })
+        .sort(function (a, b) { return filled(values[b]) - filled(values[a]) || a - b; })[0];
+      var merged = values[best].slice();
+      group.forEach(function (i) {
+        if (i === best) return;
+        headers.forEach(function (h, c) {
+          if (REVIEWS_DEDUPE_META[String(h).trim()]) return;
+          if (keyValue_(merged[c]) === '' && keyValue_(values[i][c]) !== '') merged[c] = values[i][c];
+        });
+        drop.push(i);
+      });
+      keep[best] = merged;
+    });
+  });
+
+  var result = { dry_run: dryRun, rows: values.length - 1, deleted: drop.length, merged_into: Object.keys(keep).length, ambiguous_dates: ambiguous };
+  console.log((dryRun ? '🔍 預覽：' : '') + 'reviews 共 ' + result.rows + ' 列，要刪 ' + drop.length +
+    ' 列重複，併進 ' + result.merged_into + ' 列' +
+    (ambiguous.length ? '；看不出是誰的、原樣留著：' + ambiguous.join(', ') : ''));
+  if (dryRun || !drop.length) return result;
+
+  // 先備份整張表，備份失敗就整個不動
+  // 名稱帶到秒；同名分頁已存在就停（重跑時不能把上一份備份蓋成半新半舊）
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd_HHmmss');
+  var backupName = REVIEWS_BACKUP_PREFIX + stamp;
+  if (ss.getSheetByName(backupName)) {
+    console.log('❌ 備份分頁「' + backupName + '」已存在，這次不動。隔幾秒再跑');
+    return { error: 'backup_exists', backup: backupName };
+  }
+  var backup = ss.insertSheet(backupName);
+  backup.getRange(1, 1, values.length, headers.length).setValues(values);
+  result.backup = backupName;
+
+  Object.keys(keep).forEach(function (i) {
+    sheet.getRange(Number(i) + 1, 1, 1, headers.length).setValues([keep[i]]);
+  });
+  drop.sort(function (a, b) { return b - a; }).forEach(function (i) { sheet.deleteRow(i + 1); });
+
+  logTransaction_('admin', '成功', 'dedupeReviews', '刪除重複 ' + drop.length + ' 列',
+    '備份分頁 ' + backupName + (ambiguous.length ? '；原樣留著：' + ambiguous.join(', ') : ''), '', '');
+  console.log('✅ 已備份到「' + backupName + '」，刪除 ' + drop.length + ' 列');
+  return result;
 }
