@@ -647,6 +647,34 @@ function keepSymbolsText_(sheet) {
   if (col) sheet.getRange(1, col, sheet.getMaxRows(), 1).setNumberFormat('@');
 }
 
+/**
+ * 股票表寫一列（新增或依鍵覆蓋）：**先把那一格的代號設成純文字，再用 setValues 寫**。
+ *
+ * 不能用 appendRow：它不管欄位格式，純文字欄照樣把 0056 轉成 56（2026-10-08 第一次修正後
+ * 實機仍重現，對照 SO 56588933）。也不能在代號前面加 '：已經是純文字的欄，' 會照字面留下來。
+ * 唯一可靠的是「格式先、值後」，而且格式要設在實際要寫的那一格上。
+ * keyField === false：只新增、不比對（LINE 記交易：兩筆同一毫秒的 id 不能互相蓋掉，比照原本的 appendRow）。
+ */
+function writeStockRow_(sheet, headers, record, keyField) {
+  var row = headers.map(function (h) { return record[h] == null ? '' : record[h]; });
+  var target = 0;
+  if (keyField !== false) {
+    var keys = keyFieldsOf_(keyField);
+    var cols = keys.map(function (k) { return headers.indexOf(k) + 1; });
+    var recKey = recordKey_(record, keys);
+    if (recKey && cols.every(function (c) { return c > 0; })) target = findRowsByKey_(sheet, cols, recKey)[0] || 0;
+  }
+  var updated = !!target;
+  if (!target) {
+    target = sheet.getLastRow() + 1;
+    if (target > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), target - sheet.getMaxRows());
+  }
+  var symCol = headers.indexOf('symbol') + 1;
+  if (symCol) sheet.getRange(target, symCol, 1, 1).setNumberFormat('@');
+  sheet.getRange(target, 1, 1, headers.length).setValues([row]);
+  return { success: true, row: target, updated: updated, cleaned: 0 };
+}
+
 /** 已經被轉成數字的舊代號：只回報、不猜（56 原本是 0056 還是 00056，程式不知道） */
 function numericSymbolRows_(sheet) {
   var headers = sheetHeaders_(sheet);
@@ -973,8 +1001,8 @@ function stockTradeReply_(side, prefix, rest, text, user, userId, ctx) {
       '賣不了：' + owner.owner + '目前持有 ' + symbol + ' ' + fmtStock_(held ? held.qty : 0, 2) + ' ' + stockUnit_(symbol) + '。');
   }
 
-  keepSymbolsText_(SpreadsheetApp.getActiveSpreadsheet().getSheetByName(STOCK_TRADES_SHEET));
-  var row = appendToSheet_(STOCK_TRADES_SHEET, record);
+  var tradeSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(STOCK_TRADES_SHEET);
+  var row = writeStockRow_(tradeSheet, sheetHeaders_(tradeSheet), record, false).row;
   var name = isGold_(symbol) ? '黃金' : ((quote_([symbol], ctx).quotes[symbol] || {}).name || '');
   var after = holdingOf_(book.holdings, owner.owner, symbol);
   var lines = [
@@ -1095,10 +1123,13 @@ function stockConfigSet_(caller, key, value) {
   patch[key] = v;
   if (key === 'cash') patch.cash_updated_at = taipeiDateKey_(new Date());
   var headers = sheetHeaders_(read.sheet);
+  var valueCol = headers.indexOf('value') + 1;
   Object.keys(patch).forEach(function (k) {
-    // value 欄數字文字混放（現金是數字），不能整欄設純文字：代號前面加 ' 強制存成文字，讀回來不會有那個 '
-    var value = k === 'rebalance_symbol' ? "'" + patch[k] : patch[k];
-    upsertRow_(read.sheet, headers, { key: k, value: value }, STOCK_CONFIG_SHEET, 'key');
+    var r = upsertRow_(read.sheet, headers, { key: k, value: patch[k] }, STOCK_CONFIG_SHEET, 'key');
+    // value 欄數字文字混放（現金是數字），不能整欄設純文字：只把代號那一格設成純文字再寫一次（見 writeStockRow_）
+    if (k === 'rebalance_symbol' && valueCol) {
+      read.sheet.getRange(r.row, valueCol, 1, 1).setNumberFormat('@').setValues([[patch[k]]]);
+    }
   });
   settingsLog_(caller, 'stockConfigSet ' + key, '→ ' + (v === '' ? '（空白）' : v));
   return { success: true, key: key, value: v, cash_updated_at: patch.cash_updated_at || '' };
@@ -1409,8 +1440,13 @@ function fetchStockDaily() {
     rows.push(headers.map(function (h) { return rec[h] === undefined ? '' : rec[h]; }));
   });
   if (rows.length) {
-    keepSymbolsText_(read.sheet);
-    read.sheet.getRange(read.sheet.getLastRow() + 1, 1, rows.length, headers.length).setValues(rows);
+    // 格式先、值後，而且設在實際要寫的那幾格（見 writeStockRow_）
+    var start = read.sheet.getLastRow() + 1;
+    var overflow = start + rows.length - 1 - read.sheet.getMaxRows();
+    if (overflow > 0) read.sheet.insertRowsAfter(read.sheet.getMaxRows(), overflow);
+    var symCol = headers.indexOf('symbol') + 1;
+    if (symCol) read.sheet.getRange(start, symCol, rows.length, 1).setNumberFormat('@');
+    read.sheet.getRange(start, 1, rows.length, headers.length).setValues(rows);
   }
   var missing = symbols.filter(function (s) { return !found[s]; });
   if (!rows.length || missing.length || errors.length) {

@@ -615,8 +615,8 @@ function routePwaSync_(body, perf) {
       }
       record = guarded.record;
       keyField = body.sheet === STOCK_WATCH_SHEET ? 'symbol' : 'id';
-      keepSymbolsText_(sheet);           // 0050 不能被 Sheet 轉成 50（見 stock.gs）
-      var stockOut = upsertRow_(sheet, headers, record, body.sheet, keyField);
+      // 0050 不能被 Sheet 轉成 50：不走 upsertRow_（它新增時用 appendRow，不管欄位格式），見 stock.gs writeStockRow_
+      var stockOut = writeStockRow_(sheet, headers, record, keyField);
       stockOut.record = plainRecord_(record, headers);
       if (guarded.overridden) stockOut.owner_overridden = true;
       return jsonOut(stockOut);

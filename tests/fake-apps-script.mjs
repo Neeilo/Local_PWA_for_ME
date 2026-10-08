@@ -102,16 +102,25 @@ export class FakeSheet {
     this.textCols = new Set();
   }
 
-  /** 寫進一格時 Sheet 會做的轉換：開頭的 ' 代表強制文字（不會留在值裡）；純文字欄不轉；其餘數字字串變數字 */
-  coerce(v, col) {
+  /**
+   * 寫進一格時真的 Sheet 會做的轉換（2026-10-08 實機踩到，對照 SO 56588933）：
+   *  - 純文字欄（setNumberFormat('@')）＋ setValues：原樣存文字；開頭的 ' 會**照字面留下來**
+   *  - 一般欄：開頭的 ' 代表強制文字（不會留在值裡）；全是數字的字串變成數字
+   *  - appendRow **不管欄位格式**：純文字欄照樣被轉成數字（viaAppend）
+   */
+  coerce(v, col, viaAppend = false) {
     if (!this.autoNumber || typeof v !== 'string') return v;
+    if (this.textCols.has(col) && !viaAppend) return v;
     if (v.startsWith("'")) return v.slice(1);
-    if (this.textCols.has(col)) return v;
     return /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v;
   }
 
   getMaxRows() {
-    return Math.max(this.values.length, 1000);
+    return Math.max(this.values.length, this.maxRows || 1000);
+  }
+
+  insertRowsAfter(_after, n) {
+    this.maxRows = this.getMaxRows() + n;
   }
 
   getName() {
@@ -146,7 +155,7 @@ export class FakeSheet {
 
   appendRow(row) {
     this.values.length = this.getLastRow();
-    this.values.push(Array.from(row, (v, i) => this.coerce(v, i + 1)));
+    this.values.push(Array.from(row, (v, i) => this.coerce(v, i + 1, true)));
     return this;
   }
 
