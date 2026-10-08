@@ -78,18 +78,40 @@ class FakeRange {
       line.forEach((v, c) => {
         const at = this.col - 1 + c;
         while (dest.length < at) dest.push(EMPTY);
-        dest[at] = v;
+        dest[at] = this.sheet.coerce(v, at + 1);
       });
     });
+    return this;
+  }
+
+  /** 只認 '@'（純文字）：那幾欄寫進去的字串不再被轉成數字 */
+  setNumberFormat(fmt) {
+    if (fmt === '@') for (let c = 0; c < this.numCols; c++) this.sheet.textCols.add(this.col + c);
     return this;
   }
 }
 
 export class FakeSheet {
-  constructor(name, values = []) {
+  constructor(name, values = [], { autoNumber = false } = {}) {
     this.name = name;
     this.values = values.map((r) => r.slice());
     this.deletedRows = [];
+    // autoNumber：模擬真的 Sheet 把「全是數字的字串」自動轉成數字（'0050' 會變成 50）。
+    // 預設關著，既有測試的行為不變；要驗「開頭的 0 會不會被吃掉」的測試才打開
+    this.autoNumber = autoNumber;
+    this.textCols = new Set();
+  }
+
+  /** 寫進一格時 Sheet 會做的轉換：開頭的 ' 代表強制文字（不會留在值裡）；純文字欄不轉；其餘數字字串變數字 */
+  coerce(v, col) {
+    if (!this.autoNumber || typeof v !== 'string') return v;
+    if (v.startsWith("'")) return v.slice(1);
+    if (this.textCols.has(col)) return v;
+    return /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v;
+  }
+
+  getMaxRows() {
+    return Math.max(this.values.length, 1000);
   }
 
   getName() {
@@ -124,7 +146,7 @@ export class FakeSheet {
 
   appendRow(row) {
     this.values.length = this.getLastRow();
-    this.values.push(Array.from(row));
+    this.values.push(Array.from(row, (v, i) => this.coerce(v, i + 1)));
     return this;
   }
 
@@ -196,8 +218,9 @@ export class FakeCache {
 }
 
 class FakeSpreadsheet {
-  constructor(sheets) {
+  constructor(sheets, autoNumber = false) {
     this.sheets = sheets;
+    this.autoNumber = autoNumber;
   }
 
   getSheetByName(name) {
@@ -210,7 +233,7 @@ class FakeSpreadsheet {
   }
 
   insertSheet(name) {
-    this.sheets[name] = new FakeSheet(name);
+    this.sheets[name] = new FakeSheet(name, [], { autoNumber: this.autoNumber });
     return this.sheets[name];
   }
 }
@@ -221,7 +244,7 @@ class FakeSpreadsheet {
  * 回傳的 call() 直接呼叫原始碼裡的函式，read() 讀得到頂層的 const
  * （vm 的頂層 const 不會變成全域屬性，但同一個 context 裡的後續運算看得見）。
  */
-export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [], cache = false, overrides = {}, mailImpl = null, tokens = {}, realLogs = false } = {}) {
+export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [], cache = false, overrides = {}, mailImpl = null, tokens = {}, realLogs = false, autoNumber = false } = {}) {
   const logs = [];              // console.log 的內容
   const transactions = [];      // logTransaction_ 收到的參數
   const pushes = [];            // linePush_ 收到的 (userId, text)
@@ -239,7 +262,9 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
       ...tokenIds.map((t, i) => ['dev-' + i, createHash('sha256').update(t, 'utf8').digest('hex'), tokens[t], '測試裝置', now, now, '', ''])
     ]);
   }
-  const ss = new FakeSpreadsheet(sheets);
+  // autoNumber：所有分頁都照真的 Sheet 把數字字串轉成數字（含之後 insertSheet 建的）
+  if (autoNumber) Object.values(sheets).forEach((sh) => { sh.autoNumber = true; });
+  const ss = new FakeSpreadsheet(sheets, autoNumber);
 
   // 快取預設關著（getScriptCache 丟例外），既有測試的行為一個字都不變。
   // 要測配對的才打開：配對碼只存在快取裡，沒有快取就沒有配對。

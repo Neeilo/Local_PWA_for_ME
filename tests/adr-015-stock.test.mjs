@@ -30,6 +30,8 @@ const SATURDAY = new Date(Date.UTC(2026, 9, 10, 2, 0, 0));
 
 const MARKET = {
   2330: { name: '台積電', last: 2560, prev: 2585 },
+  '0056': { name: '元大高股息', last: 36.5, prev: 36.2 },
+  '00878': { name: '國泰永續高股息', last: 21.9, prev: 21.8 },
   '0050': { name: '元大台灣50', last: 115.05, prev: 116.05 },
   '00631L': { name: '元大台灣50正2', last: 41.28, prev: 40 },
   6488: { name: '環球晶', last: 1130, prev: 1215, otc: true }
@@ -106,11 +108,12 @@ function network({ fail = {}, fugleStatus = 200, misZ = null } = {}) {
   return { calls, UrlFetchApp };
 }
 
-function env({ net = network(), properties = { FUGLE_API_KEY: KEY }, sheets = {}, overrides = {}, pushImpl = null } = {}) {
+function env({ net = network(), properties = { FUGLE_API_KEY: KEY }, sheets = {}, overrides = {}, pushImpl = null, autoNumber = false } = {}) {
   const replies = [];
   const e = loadCodeGs({
     cache: true,
     pushImpl,
+    autoNumber,
     extraFiles: ['line-router.gs', 'sheet-guide.gs'],
     properties,
     tokens: { [TOK.NEIL]: NEIL, [TOK.MOM]: MOM, [TOK.KID]: KID, [TOK.AUNT]: AUNT },
@@ -996,5 +999,77 @@ describe('初始化：股票的兩個排程', () => {
     assert.equal(daily[0].hour, 14);
     assert.equal(daily[0].minute, 30);
     assert.match(e.replies.pop(), /checkStockRules（每 5 分鐘，只在盤中動作）\n⏰ fetchStockDaily（每天約 14:30）/);
+  });
+});
+
+/* ========================================================================== */
+/* 2026-10-08 實機回報：自選三筆只有第一筆有報價                                  */
+/* 根因：真的 Sheet 會把「全是數字」的代號轉成數字，0050 存成 50、00878 存成 878， */
+/* 讀回來不符合代號格式就不報價。00631L 帶英文字，不受影響。                       */
+/* 這組測試用 autoNumber 模擬真的 Sheet 的轉換。                                  */
+/* ========================================================================== */
+describe('代號開頭的 0 不能被 Sheet 吃掉', () => {
+  const W_HEADERS = ['symbol', 'name', 'sort', 'is_active', 'added_by', 'created_at'];
+
+  test('PWA 加自選 0056、00878：存回來還是文字，readMany 拿得到報價', () => {
+    const e = env({ autoNumber: true });
+    for (const symbol of ['00631L', '0056', '00878']) {
+      const out = post(e, { action: 'upsert', token: TOK.NEIL, sheet: 'stock_watch', key_field: 'symbol', record: { symbol, is_active: true }, trigger: 'write' });
+      assert.equal(out.success, true, symbol + ' ' + JSON.stringify(out));
+    }
+    assert.deepEqual(e.sheets.stock_watch.toRecords().map((r) => r.symbol), ['00631L', '0056', '00878']);
+    const s = post(e, { action: 'readMany', token: TOK.NEIL, sheets: ['tasks'], stock: true, trigger: 'poll' }).stock;
+    assert.deepEqual(s.watch.map((w) => w.symbol), ['00631L', '0056', '00878']);
+    assert.deepEqual(Object.keys(s.quotes).sort(), ['0056', '00631L', '00878']);
+  });
+
+  test('同一檔再加一次（重新啟用）不會多出一列', () => {
+    const e = env({ autoNumber: true });
+    const add = (is_active) => post(e, { action: 'upsert', token: TOK.NEIL, sheet: 'stock_watch', key_field: 'symbol', record: { symbol: '0056', is_active }, trigger: 'write' });
+    add(true); add(false); add(true);
+    assert.equal(e.sheets.stock_watch.toRecords().length, 1);
+  });
+
+  test('LINE 買/0056 與 PWA 記交易：代號存成文字，持股對得起來', () => {
+    const e = env({ autoNumber: true });
+    line(e, NEIL, '買/0056/1000/36.5');
+    post(e, { action: 'upsert', token: TOK.NEIL, sheet: 'stock_trades', trigger: 'write',
+      record: { id: 'p1', trade_date: '2026-10-08', symbol: '00878', side: 'buy', qty: 100, price: 21.9 } });
+    assert.deepEqual(trades(e).map((t) => t.symbol), ['0056', '00878']);
+    const s = post(e, { action: 'readMany', token: TOK.NEIL, sheets: ['tasks'], stock: true, trigger: 'poll' }).stock;
+    assert.deepEqual(s.holdings.map((h) => h.symbol), ['0056', '00878']);
+    assert.match(line(e, NEIL, '賣/0056/1000/37'), /✅ 賣出 0056/);
+  });
+
+  test('提醒規則、再平衡標的也一樣', () => {
+    const e = env({ autoNumber: true, sheets: {
+      _stock_config: CONFIG(),
+      stock_rules: rulesSheet([]),
+      stock_daily: new FakeSheet('stock_daily', [['date', 'symbol', 'close', 'prev_close', 'source']]) } });
+    post(e, { action: 'upsert', token: TOK.NEIL, sheet: 'stock_rules', trigger: 'write',
+      record: { id: 'r1', symbol: '0056', type: 'price_above', params: { price: 1 }, enabled: true } });
+    assert.equal(e.sheets.stock_rules.toRecords()[0].symbol, '0056');
+    post(e, { action: 'stockConfigSet', token: TOK.NEIL, key: 'rebalance_symbol', value: '0056', trigger: 'write' });
+    assert.equal(Object.fromEntries(e.sheets._stock_config.toRecords().map((r) => [r.key, r.value])).rebalance_symbol, '0056');
+  });
+
+  test('盤後收盤價：0056 寫成文字', () => {
+    const daily = new FakeSheet('stock_daily', [['date', 'symbol', 'close', 'prev_close', 'source']]);
+    const watch = new FakeSheet('stock_watch', [W_HEADERS]);
+    const twse = [{ Date: '1151008', Code: '0056', ClosingPrice: '36.50', Change: '0.3000' }];
+    const UrlFetchApp = { fetch: () => ({ getResponseCode: () => 200, getContentText: () => JSON.stringify(twse) }), fetchAll: () => [] };
+    const e = env({ autoNumber: true, sheets: { stock_daily: daily, stock_watch: watch }, net: { calls: { all: [] }, UrlFetchApp } });
+    e.call('installStock_');
+    watch.values.push(['0056', '', 10, 'TRUE', NEIL, '']);
+    e.call('fetchStockDaily');
+    assert.equal(e.sheets.stock_daily.toRecords()[0].symbol, '0056');
+  });
+
+  test('「初始化」：已經被轉成數字的舊代號要講出來（不猜它原本有幾個 0）', () => {
+    const watch = new FakeSheet('stock_watch', [W_HEADERS, ['00631L', '', 10, 'TRUE', NEIL, ''], [56, '', 20, 'TRUE', NEIL, ''], [878, '', 30, 'TRUE', NEIL, '']]);
+    const e = env({ autoNumber: true, sheets: { stock_watch: watch } });
+    const out = e.call('installStock_');
+    assert.equal(out.level, 'warn');
+    assert.match(out.text, /stock_watch 有 2 列代號被 Sheet 轉成數字（56、878）/);
   });
 });

@@ -615,6 +615,7 @@ function routePwaSync_(body, perf) {
       }
       record = guarded.record;
       keyField = body.sheet === STOCK_WATCH_SHEET ? 'symbol' : 'id';
+      keepSymbolsText_(sheet);           // 0050 不能被 Sheet 轉成 50（見 stock.gs）
       var stockOut = upsertRow_(sheet, headers, record, body.sheet, keyField);
       stockOut.record = plainRecord_(record, headers);
       if (guarded.overridden) stockOut.owner_overridden = true;

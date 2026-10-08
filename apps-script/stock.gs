@@ -589,11 +589,19 @@ function installStock_() {
       sheet = sheet || ss.insertSheet(spec.name);
       var rows = [spec.headers].concat(spec.seed || []);
       sheet.getRange(1, 1, rows.length, spec.headers.length).setValues(rows);
+      keepSymbolsText_(sheet);
       lines.push('建立 ' + spec.name);
       return;
     }
     var r = ensureColumnsOnSheet_(sheet, spec.headers);
     if (r.added.length) lines.push(spec.name + ' 補上：' + r.added.join('、'));
+    keepSymbolsText_(sheet);
+    var broken = numericSymbolRows_(sheet);
+    if (broken.length) {
+      warn = true;
+      lines.push('⚠️ ' + spec.name + ' 有 ' + broken.length + ' 列代號被 Sheet 轉成數字（' + broken.join('、') +
+        '）——開頭的 0 不見了，請在 Sheet 上改回原本的代號（例如 0056），或刪掉重新加');
+    }
   });
 
   var users = ss.getSheetByName(LINE_USERS_SHEET);
@@ -625,6 +633,28 @@ function installStock_() {
     }
   }
   return { level: warn ? 'warn' : 'ok', text: lines.length ? lines.join('\n　') : '股票分頁與欄位已齊備' };
+}
+
+/**
+ * 代號欄設成純文字（2026-10-08 實機回報：自選三筆只有第一筆有報價）。
+ * Sheet 會把「全是數字」的字串轉成數字：0050 存成 50、00878 存成 878，讀回來不符合代號格式就不報價，
+ * 交易與持股也對不起來。00631L 帶英文字不受影響，所以只有它有報價。
+ * 「初始化」整欄設一次；每個寫入點寫之前再設一次（有人在 Sheet 上改了格式也救得回來）。
+ */
+function keepSymbolsText_(sheet) {
+  if (!sheet) return;
+  var col = sheetHeaders_(sheet).indexOf('symbol') + 1;
+  if (col) sheet.getRange(1, col, sheet.getMaxRows(), 1).setNumberFormat('@');
+}
+
+/** 已經被轉成數字的舊代號：只回報、不猜（56 原本是 0056 還是 00056，程式不知道） */
+function numericSymbolRows_(sheet) {
+  var headers = sheetHeaders_(sheet);
+  var col = headers.indexOf('symbol');
+  if (col === -1 || sheet.getLastRow() < 2) return [];
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length).getValues()
+    .map(function (row) { return row[col]; })
+    .filter(function (v) { return typeof v === 'number'; });
 }
 
 /** 家人名單（_expense_config：kind=target、parent=家人、啟用中），依 sort 排。快取 5 分鐘 */
@@ -943,6 +973,7 @@ function stockTradeReply_(side, prefix, rest, text, user, userId, ctx) {
       '賣不了：' + owner.owner + '目前持有 ' + symbol + ' ' + fmtStock_(held ? held.qty : 0, 2) + ' ' + stockUnit_(symbol) + '。');
   }
 
+  keepSymbolsText_(SpreadsheetApp.getActiveSpreadsheet().getSheetByName(STOCK_TRADES_SHEET));
   var row = appendToSheet_(STOCK_TRADES_SHEET, record);
   var name = isGold_(symbol) ? '黃金' : ((quote_([symbol], ctx).quotes[symbol] || {}).name || '');
   var after = holdingOf_(book.holdings, owner.owner, symbol);
@@ -1065,7 +1096,9 @@ function stockConfigSet_(caller, key, value) {
   if (key === 'cash') patch.cash_updated_at = taipeiDateKey_(new Date());
   var headers = sheetHeaders_(read.sheet);
   Object.keys(patch).forEach(function (k) {
-    upsertRow_(read.sheet, headers, { key: k, value: patch[k] }, STOCK_CONFIG_SHEET, 'key');
+    // value 欄數字文字混放（現金是數字），不能整欄設純文字：代號前面加 ' 強制存成文字，讀回來不會有那個 '
+    var value = k === 'rebalance_symbol' ? "'" + patch[k] : patch[k];
+    upsertRow_(read.sheet, headers, { key: k, value: value }, STOCK_CONFIG_SHEET, 'key');
   });
   settingsLog_(caller, 'stockConfigSet ' + key, '→ ' + (v === '' ? '（空白）' : v));
   return { success: true, key: key, value: v, cash_updated_at: patch.cash_updated_at || '' };
@@ -1376,6 +1409,7 @@ function fetchStockDaily() {
     rows.push(headers.map(function (h) { return rec[h] === undefined ? '' : rec[h]; }));
   });
   if (rows.length) {
+    keepSymbolsText_(read.sheet);
     read.sheet.getRange(read.sheet.getLastRow() + 1, 1, rows.length, headers.length).setValues(rows);
   }
   var missing = symbols.filter(function (s) { return !found[s]; });
