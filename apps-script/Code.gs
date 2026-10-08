@@ -32,6 +32,15 @@ var INSTALLMENTS_SHEET = 'installments';
 /** LINE 群組（ADR-013 D-13～D-15）。欄位與規則見 line-router.gs「群組」那一段 */
 var LINE_GROUPS_SHEET = 'line_groups';
 
+/** 股票（ADR-015）。欄位與規則見 stock.gs；名稱放這裡是因為下面幾張清單在載入當下就要用到 */
+var STOCK_TRADES_SHEET = 'stock_trades';
+var STOCK_WATCH_SHEET = 'stock_watch';
+var STOCK_RULES_SHEET = 'stock_rules';
+var STOCK_DAILY_SHEET = 'stock_daily';
+var STOCK_CONFIG_SHEET = '_stock_config';
+/** GOOGLEFINANCE 備援的公式暫存頁（第三順位報價，見 stock.gs） */
+var STOCK_GF_SHEET = '_stock_gf';
+
 /**
  * 不歸前端 state 管的分頁：archivePurge 動不得。
  *
@@ -42,7 +51,7 @@ var LINE_GROUPS_SHEET = 'line_groups';
  * 原名 NO_REPLACE_ALL；replaceAll 於 ADR-009 退場後改名，規則不變。
  */
 var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs', PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET,
-                           LINE_GROUPS_SHEET];
+                           LINE_GROUPS_SHEET, STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET];
 
 /**
  * PWA 連一筆都不准寫的分頁（任何 action 都一樣，包括 upsert）。
@@ -57,7 +66,7 @@ var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs', PERFORMANCE_SHEET, EXPENSE_
  */
 var GUIDE_SHEET = '_guide';
 var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET,
-                    LINE_GROUPS_SHEET];
+                    LINE_GROUPS_SHEET, STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET];
 
 /**
  * PWA 連讀都不准讀的分頁（ADR-010 D-8）。
@@ -71,15 +80,19 @@ var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_
  * 原始列只由雲端自己寫。
  *
  * line_groups（ADR-013 D-13）：這一輪沒有前端管理介面，Neil 直接在 Sheet 上打勾。
+ *
+ * 股票（ADR-015）：_stock_config 有現金與再平衡設定，只走管理者專用 action（PR-B）；
+ * stock_daily／_stock_gf 是報價層自己用的，前端拿的是 readMany 附帶的整理好的報價。
  */
-var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET, LINE_GROUPS_SHEET];
+var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET, LINE_GROUPS_SHEET,
+                   STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET];
 
 /**
  * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
  * 用在「建表」與「註冊」；權限判斷走下面的 canUse_（ADR-012 D-3）。
  */
 var LINE_USERS_FEATURES = ['feat_expense', 'feat_tasks', 'feat_review',
-                           'feat_notes', 'feat_mood'];
+                           'feat_notes', 'feat_mood', 'feat_stock'];
 /* feat_log 於 ADR-014 退場（Neil 2026-10-07）：logs 是全家所有人的 LINE 輸入（含金額），
    改成只有管理員讀得到（見 canUseSheet_）。Sheet 上既有的 feat_log 欄不刪，只是不再被讀。 */
 
@@ -89,13 +102,14 @@ var LINE_USERS_FEATURES = ['feat_expense', 'feat_tasks', 'feat_review',
  */
 var FEATURE_BY_SHEET = {
   tasks: 'feat_tasks', expenses: 'feat_expense', reviews: 'feat_review',
-  notes: 'feat_notes', moods: 'feat_mood'
+  notes: 'feat_notes', moods: 'feat_mood',
+  stock_trades: 'feat_stock', stock_watch: 'feat_stock', stock_rules: 'feat_stock'
 };
 
 /** LINE 回覆與「查/」的提示詞要講人話。名稱與前端導覽列一致 */
 var FEATURE_LABEL = {
   feat_tasks: '任務', feat_expense: '記帳', feat_review: '日誌',
-  feat_notes: '雜記', feat_mood: '心情'
+  feat_notes: '雜記', feat_mood: '心情', feat_stock: '股票'
 };
 
 /**
@@ -125,9 +139,9 @@ function lineUserById_(rawId) {
   return (roster.ok && roster.users[id]) || null;
 }
 
-/** 建表用的完整表頭（ADR-008 D-1 的欄序） */
+/** 建表用的完整表頭（ADR-008 D-1 的欄序）。member＝這個人是 _expense_config 家人名單裡的哪一位（ADR-015 D-8） */
 var LINE_USERS_HEADERS = ['line_id', 'display_name', 'is_active', 'is_admin']
-  .concat(LINE_USERS_FEATURES).concat(['created_at', 'updated_at', 'email']);
+  .concat(LINE_USERS_FEATURES).concat(['created_at', 'updated_at', 'email', 'member']);
 
 /**
  * 確保 line_users 有表可寫。只有「註冊」這條路徑會呼叫。
@@ -530,14 +544,15 @@ function routePwaSync_(body, perf) {
   if (!caller.ok) { perf.unauth = caller.error; return jsonOut({ error: caller.error, reason: caller.error }); }
   perf.who = { line_id: caller.line_id, device_id: caller.device ? caller.device.device_id : '' };
 
-  if (body.action === 'boot') return jsonOut(bootResponse_(caller, perf));
+  if (body.action === 'boot') return jsonOut(withStock_(bootResponse_(caller, perf), caller, body));
   if (body.action === 'readMany') {
     perf.sheets = Array.isArray(body.sheets) ? body.sheets.filter(function (x) { return typeof x === 'string'; }).join(',') : '';
     var openedMany = Date.now();
     var ssMany = SpreadsheetApp.getActiveSpreadsheet();
     perf.open_ms = Date.now() - openedMany;
     var many = readManyFrom_(ssMany, caller.user, body.sheets, perf);
-    return jsonOut(withExpenseConfig_(many, caller.user, ssMany, Array.isArray(body.sheets) ? body.sheets : []));
+    return jsonOut(withStock_(withExpenseConfig_(many, caller.user, ssMany, Array.isArray(body.sheets) ? body.sheets : []),
+      caller, body));
   }
   if (body.action === 'read') return jsonOut(readSheetResponse_(body.sheet, '', '', perf, caller.user));
   if (body.action === 'readTombstones') {
@@ -564,6 +579,17 @@ function routePwaSync_(body, perf) {
     return jsonOut({ error: 'sheet_not_writable', sheet: body.sheet });
   }
   if (!canUseSheet_(caller.user, body.sheet)) return jsonOut(featureForbidden_(caller, body.action, body.sheet));
+  // 股票表只開 upsert（有專屬把關）與封存；提醒規則（stock_rules）的寫入跟 PR-B 一起開
+  if ((body.sheet === STOCK_TRADES_SHEET || body.sheet === STOCK_WATCH_SHEET) &&
+      ['upsert', 'archivePurge'].indexOf(body.action) === -1) return jsonOut({ error: 'unknown_action' });
+  if (body.sheet === STOCK_RULES_SHEET) return jsonOut({ error: 'sheet_not_writable', sheet: body.sheet });
+  // 名單只有管理者能改（2026-10-08 補）：line_users 不對應任何 feat，原本任何啟用中的成員都能 upsert，
+  // 包括把自己設成管理者、或改自己的 member 去記別人名下的股票（ADR-015 D-8 的持有者強制就形同虛設）。
+  // 前端只有管理者的「成員與權限」會寫這張表；email 走自己的 setMyEmail
+  if (body.sheet === LINE_USERS_SHEET && body.action === 'upsert' && !truthy_((caller.user || {}).is_admin)) {
+    logTransaction_('同步', '失敗', 'PWA upsert → ' + LINE_USERS_SHEET, '不是管理者，拒絕改名單', 'code=forbidden', '', caller.line_id);
+    return jsonOut({ error: 'forbidden', sheet: body.sheet });
+  }
 
   var opened = Date.now();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -575,8 +601,24 @@ function routePwaSync_(body, perf) {
     const headers = sheetHeaders_(sheet);
     // key_field 可以是字串或陣列：line_users 用 'line_id'，reviews 用
     // ['review_date','line_id']（那張表沒有 id 欄，ADR-009 §一.5）
-    const record = body.sheet === TASKS_SHEET ? keepOriginChat_(sheet, headers, body.record || {}) : (body.record || {});
-    const out = upsertRow_(sheet, headers, record, body.sheet, body.key_field);
+    var record = body.sheet === TASKS_SHEET ? keepOriginChat_(sheet, headers, body.record || {}) : (body.record || {});
+    var keyField = body.key_field;
+    // 股票（ADR-015 D-8／D-9）：持有者、誰能改、賣超、自選上限都由後端決定
+    if (body.sheet === STOCK_TRADES_SHEET || body.sheet === STOCK_WATCH_SHEET) {
+      var guarded = body.sheet === STOCK_TRADES_SHEET ? guardStockTrade_(caller, record) : guardStockWatch_(caller, record);
+      if (guarded.error) {
+        logTransaction_(STOCK_LOG_SOURCE, '失敗', 'PWA upsert → ' + body.sheet, '被擋下：' + guarded.error,
+          JSON.stringify(guarded), '', caller.line_id);
+        return jsonOut(guarded);
+      }
+      record = guarded.record;
+      keyField = body.sheet === STOCK_WATCH_SHEET ? 'symbol' : 'id';
+      var stockOut = upsertRow_(sheet, headers, record, body.sheet, keyField);
+      stockOut.record = plainRecord_(record, headers);
+      if (guarded.overridden) stockOut.owner_overridden = true;
+      return jsonOut(stockOut);
+    }
+    const out = upsertRow_(sheet, headers, record, body.sheet, keyField);
     if (body.sheet === LINE_USERS_SHEET) invalidateLineUsersCache_();
     return jsonOut(out);
   }

@@ -360,6 +360,20 @@
   .plan-actions button{flex:1;}
   .btn-ghost{background:var(--field); border:1.5px solid var(--line); border-radius:10px; padding:9px; font-weight:600; color:var(--ink);}
   .btn-ghost.danger{color:var(--danger); border-color:var(--danger);}
+  /* 股票（ADR-015）：台股慣例紅漲綠跌 */
+  .stk-up{color:var(--danger);}
+  .stk-down{color:var(--m4);}
+  .stk-row{display:grid; grid-template-columns:1fr auto; gap:2px 10px; padding:10px 2px; border-bottom:1px solid var(--line);}
+  .stk-row:last-child{border-bottom:none;}
+  .stk-row .who{font-weight:600; font-size:14px;}
+  .stk-row .who small{display:block; font-weight:400; font-size:12px; color:var(--muted);}
+  .stk-row .num{text-align:right; font-variant-numeric:tabular-nums; font-weight:600;}
+  .stk-row .num small{display:block; font-weight:400; font-size:12px;}
+  .stk-row.tap{cursor:pointer;}
+  .stk-sum{font-size:13px; color:var(--muted); margin:2px 0 8px;}
+  .stk-form .row{display:flex; gap:8px;}
+  .stk-form .row > *{flex:1; min-width:0;}
+  .stk-form select{width:100%;}
   .sys-row{padding:9px 2px; border-bottom:1px solid var(--line);}
   .sys-row:last-child{border-bottom:none;}
   .sys-row .who{font-weight:600; font-size:14px;}
@@ -817,6 +831,52 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
     <p class="slot-hint">要新增分期：到「記帳」點一筆支出，按「轉成分期」。</p>
   </section>
 
+  <!-- 股票（ADR-015 T4）。表單放固定容器，輪詢只重畫 stockBody，打到一半的字不會被吃掉 -->
+  <section class="view" id="view-stocks">
+    <div class="seg" id="stockSeg">
+      <button data-val="watch" class="sel" onclick="pickStockTab('watch')">自選</button>
+      <button data-val="hold" onclick="pickStockTab('hold')">持股</button>
+      <button data-val="trades" onclick="pickStockTab('trades')">交易</button>
+      <button data-val="settings" onclick="pickStockTab('settings')">設定</button>
+    </div>
+    <div class="card stk-form" id="stockFormCard" hidden>
+      <h2 id="stkFormTitle">記一筆交易</h2>
+      <div class="seg" id="stkSideSeg">
+        <button data-val="buy" class="sel" onclick="pickStockSide('buy')">買進</button>
+        <button data-val="sell" onclick="pickStockSide('sell')">賣出</button>
+      </div>
+      <div class="row">
+        <div><div class="field-label">代號（黃金打 GOLD）</div><input type="text" id="stkSymbol" autocapitalize="characters" placeholder="00631L"></div>
+        <div><div class="field-label">日期</div><input type="date" id="stkDate"></div>
+      </div>
+      <div class="row">
+        <div><div class="field-label" id="stkQtyLabel">股數</div><input type="number" id="stkQty" inputmode="decimal" min="0" step="any"></div>
+        <div><div class="field-label">價格</div><input type="number" id="stkPrice" inputmode="decimal" min="0" step="any"></div>
+      </div>
+      <div class="row">
+        <div><div class="field-label">手續費（可留空）</div><input type="number" id="stkFee" inputmode="decimal" min="0" step="any"></div>
+        <div><div class="field-label">持有者</div><select id="stkOwner"></select></div>
+      </div>
+      <div class="field-label">備註（可留空）</div>
+      <input type="text" id="stkNote">
+      <div class="plan-actions">
+        <button class="btn" id="stkSave" onclick="saveStockTrade()">儲存</button>
+        <button class="btn-ghost" onclick="closeStockForm()">取消</button>
+      </div>
+      <div class="plan-actions" id="stkDelWrap" hidden>
+        <button class="btn-ghost danger" onclick="deleteStockTrade()">刪除這筆</button>
+      </div>
+    </div>
+    <div class="card" id="stockWatchAdd" hidden>
+      <h2>加入自選</h2>
+      <div class="stk-form"><div class="row">
+        <input type="text" id="stkWatchInput" autocapitalize="characters" placeholder="代號，例如 2330">
+        <button class="btn" style="flex:none; width:auto" onclick="addStockWatch()">加入</button>
+      </div></div>
+    </div>
+    <div class="card" id="stockBody"></div>
+  </section>
+
   <!-- 記帳 -->
   <section class="view" id="view-expenses">
     <div class="card">
@@ -1090,14 +1150,15 @@ const FEATURE_ITEMS = [
   { view:'notes',    icon:'📎', label:'雜記' },
   { view:'tasks',    icon:'☑️', label:'任務' },
   { view:'review',   icon:'🌙', label:'日誌' },
-  { view:'mood',     icon:'💚', label:'心情' }
+  { view:'mood',     icon:'💚', label:'心情' },
+  { view:'stocks',   icon:'📈', label:'股票' }
 ];
 
 /* ---------- 兩區（ADR-014 D-1～D-8） ----------
    💰 財務、✅ 生產力。切區＝導覽圖示、主色、首頁主題卡一起換；任務與白板是兩區共用的地基。
    每支手機記住上次的區（localStorage，介面偏好，不上雲端）；第一次預設財務。
    導覽五格固定：任務永遠在右側第一格，切區不移位。null＝這一區沒有東西放，留空佔位。
-   股票格第 3 輪才開，現在一律隱藏（viewAllowed 回 false）。 */
+   股票格（ADR-015）依 feat_stock 開。 */
 const ZONE_KEY='personal-os-zone';
 const ZONE_HINT_KEY='personal-os-zone-hint';
 const ZONES={
@@ -1135,7 +1196,7 @@ const LINE_USERS_SHEET = 'line_users';
 /* 分頁 ↔ 功能欄。首頁刻意不在表上：它是進 App 的第一頁，關掉沒意義（D-1）。 */
 const FEATURE_BY_VIEW = {
   expenses:'feat_expense', notes:'feat_notes', tasks:'feat_tasks',
-  review:'feat_review', mood:'feat_mood'
+  review:'feat_review', mood:'feat_mood', stocks:'feat_stock'
 };
 // 標籤直接沿用 FEATURE_ITEMS，避免同一個名字在兩個地方各寫一次、改了一邊忘了另一邊
 const FEATURE_KEYS = FEATURE_ITEMS.map(function(it){ return FEATURE_BY_VIEW[it.view]; });
@@ -1324,7 +1385,7 @@ function startSession(trigger){
 async function runBoot(trigger){
   let j=null;
   // 「再試一次」、續期完成這兩處沒有傳 trigger：都是人按出來的，記成 manual（ADR-014 D-12：每個請求都要記）
-  try{ j=await cloudPost({action:'boot', trigger:trigger||'manual'}); }catch(e){ j=null; }
+  try{ j=await cloudPost({action:'boot', trigger:trigger||'manual', stock:wantStock()}); }catch(e){ j=null; }
   const s=j && j.session;
   if(!s || s.status!=='ok' || !s.line_id || !Array.isArray(j.line_users) || !j.data || typeof j.data!=='object'){
     rosterStatus='unavailable';
@@ -1338,6 +1399,7 @@ async function runBoot(trigger){
   if(gateMode) closeAuthGate();
   roster=j.line_users.filter(u=>rosterId(u));
   rosterStatus = activeUsers().length ? 'ok' : 'empty';
+  applyStockData(j.stock);
   const ok=applyCloudData(j.data, j.denied, j);
   applyIdentity();
   if(ok) flushOutbox();
@@ -1819,6 +1881,11 @@ function renderAdminCard(){
         </div>
         <div class="adm-sec">可用功能（關掉＝讀不到也寫不進，LINE 也一樣）</div>
         <div class="adm-grid">${feats}</div>
+        <div class="adm-sec">家人（股票的持有者：這個人記的交易算在誰名下）</div>
+        <div class="adm-grid">${familyNames().concat(['']).map(function(n){
+          const cur=String(u.member||'').trim();
+          return `<button class="${cur===n?'on':''}" onclick="setAdminMember(${i},'${esc(n)}')">${n?esc(n):'未設定'}</button>`;
+        }).join('')}</div>
         <div class="adm-sec">已配對的裝置</div>
         ${adminDevicesHtml(i, id)}
       </div>`;
@@ -1870,6 +1937,28 @@ async function toggleAdminFlag(i, key){
     renderAdminCard(); applyZone(); renderScopeBars();
     toast('⚠️ 寫回雲端失敗，已復原');
   }
+}
+/* 家人名單：股票資料帶回來的那份（雲端讀 _expense_config 的「家人」群組）；
+   還沒有股票資料時，從記帳分類設定裡對象群組是「家人」的大類拼出來 */
+function familyNames(){
+  if(stockData && Array.isArray(stockData.members) && stockData.members.length) return stockData.members;
+  const out=[];
+  ((expenseConfig||{}).categories||[]).filter(c=>c.target_group==='家人')
+    .forEach(c=>(c.targets||[]).forEach(t=>{ if(!out.includes(t)) out.push(t); }));
+  return out;
+}
+async function setAdminMember(i, name){
+  const u=roster[i];
+  if(!u) return;
+  const before=u.member, beforeStamp=u.updated_at;
+  if(String(before||'').trim()===name) return;
+  u.member=name; u.updated_at=new Date().toISOString();
+  renderAdminCard();
+  const ok=await cloudUpsert(LINE_USERS_SHEET, u, 'line_id');
+  if(ok){ toast('已更新'); return; }
+  u.member=before; u.updated_at=beforeStamp;
+  renderAdminCard();
+  toast('⚠️ 寫回雲端失敗，已復原');
 }
 function cloudUpsert(sheet, record, keyField){
   if(!myLineId) return Promise.resolve(false);
@@ -2285,8 +2374,9 @@ function applyPendingOverlay(){
 async function pullFromCloud(meta){
   let j=null;
   // 沒帶 meta 的是動作之後的重新整理（打勾週期任務、分期、續期…），記成 manual（ADR-014 D-12）
-  try{ j=await cloudPost(Object.assign({action:'readMany', sheets:DATA_SHEETS, trigger:'manual'}, meta)); }catch(e){ j=null; }
+  try{ j=await cloudPost(Object.assign({action:'readMany', sheets:DATA_SHEETS, trigger:'manual', stock:wantStock()}, meta)); }catch(e){ j=null; }
   if(!j || j.error || !j.data || typeof j.data!=='object') return pullFailed();
+  applyStockData(j.stock);
   return applyCloudData(j.data, j.denied, j);
 }
 
@@ -2664,11 +2754,255 @@ function renderArchiveCard(){
   if(el) el.hidden=!isAdmin();
 }
 
+/* ---------- 股票（ADR-015 T4） ----------
+   資料跟著 15 秒輪詢的 readMany 帶回（stock:true，只在有 feat_stock 且在財務區時），不另開請求。
+   持股、均價、賣超都由雲端算（computeHoldings_，只有一份實作）；這裡只負責畫。
+   寫入直接送雲端、不進待送佇列：離線時顯示連線錯誤、不假裝存好了（CLAUDE.md Rule 9 的現行決策）。 */
+let stockData=null;          // 雲端回的 stock：{ ready, watch, trades, holdings, quotes, members, my_member, ... }
+let stockFailed=false;       // 這次有要、但雲端說股票那塊讀失敗
+let stockTab='watch';
+let stockOwnerFilter='';     // '' = 全家
+let stockEditId=null;        // 編輯中的交易 id；null＝新增
+let stockSide='buy';
+const STOCK_GOLD='GOLD';
+const STOCK_ERR={
+  no_member:'請管理者先設定你是家人名單裡的哪一位（成員與權限 ▸ 家人）',
+  owner_required:'請先在「成員與權限」設定你是家人名單裡的哪一位',
+  owner_not_member:'持有者不在家人名單裡',
+  invalid_symbol:'查不到這個代號',
+  not_your_trade:'只能改自己記的那幾筆',
+  watch_full:'自選最多 15 檔，先移除一檔',
+  trade_not_found:'這筆已經不在雲端了',
+  forbidden:'沒有權限',
+  sheet_not_found:'股票功能還沒初始化，請管理者在 LINE 傳「初始化」'
+};
+const STOCK_FIELD={side:'買賣別', qty:'數量', price:'價格', fee:'手續費', trade_date:'日期', id:'編號'};
+
+function wantStock(){ return zone==='finance' && featureAllowed('stocks'); }
+function applyStockData(st){
+  if(st===undefined) return;                       // 這次沒要（不在財務區）：留著上一份
+  if(!st || st.error){ stockFailed=true; return; }
+  stockFailed=false;
+  stockData=st;
+}
+function isGoldSym(sym){ return String(sym||'').toUpperCase()===STOCK_GOLD; }
+function fmtStk(n, dec){
+  const x=Number(n);
+  if(!isFinite(x)) return '—';
+  const p=Math.pow(10, dec==null?2:dec);
+  const t=String(Math.round(Math.abs(x)*p)/p).split('.');
+  return (x<0?'-':'')+t[0].replace(/\B(?=(\d{3})+(?!\d))/g,',')+(t[1]?'.'+t[1]:'');
+}
+function signedStk(n, dec){ return (Number(n)>0?'+':'')+fmtStk(n, dec); }
+function stkTone(n){ return Number(n)>0 ? 'stk-up' : Number(n)<0 ? 'stk-down' : ''; }
+function stkUnit(sym){ return isGoldSym(sym) ? '公克' : '股'; }
+function stockName(sym){
+  const q=((stockData||{}).quotes||{})[sym];
+  const w=((stockData||{}).watch||[]).find(x=>x.symbol===sym);
+  return isGoldSym(sym) ? '黃金' : ((q&&q.name) || (w&&w.name) || '');
+}
+/* 來源與時間：富果 · 10:28:15／證交所 · 備援／Google · 延遲約 20 分／收盤 · 10/8 */
+function quoteStampText(q){
+  if(!q) return '暫時拿不到報價';
+  if(q.source==='mis') return '證交所 · 備援';
+  if(q.source==='google') return 'Google · 延遲約 20 分';
+  if(q.source==='close'){
+    const d=String(q.date||q.time||'');
+    return '收盤'+(d?' · '+Number(d.slice(5,7))+'/'+Number(d.slice(8,10)):'');
+  }
+  const t=q.time ? new Date(q.time) : null;
+  const pad=n=>(n<10?'0':'')+n;
+  return '富果'+(t&&!isNaN(t)?' · '+pad(t.getHours())+':'+pad(t.getMinutes())+':'+pad(t.getSeconds()):'');
+}
+function stockMembers(){ return ((stockData||{}).members)||[]; }
+function canEditTrade(t){ return isAdmin() || String(t.line_id||'').trim()===myLineId; }
+
+function pickStockTab(t){
+  stockTab=t;
+  document.querySelectorAll('#stockSeg button').forEach(b=>b.classList.toggle('sel', b.dataset.val===t));
+  if(t!=='trades') closeStockForm(true);
+  renderStocksView();
+}
+function renderStocksView(){
+  const body=document.getElementById('stockBody');
+  if(!body) return;
+  const add=document.getElementById('stockWatchAdd');
+  if(add) add.hidden = !(stockTab==='settings' && isAdmin() && stockData && stockData.ready);
+  if(!stockData){
+    body.innerHTML=`<div class="empty-hint">${stockFailed ? '⚠️ 股票資料讀不到，稍後會再試' : (cloudOnline===false ? '⚠️ 連不上雲端' : '讀取中…')}</div>`;
+    return;
+  }
+  if(!stockData.ready){ body.innerHTML=`<div class="empty-hint">${STOCK_ERR.sheet_not_found}</div>`; return; }
+  const warn = stockFailed ? '<div class="sys-warn">⚠️ 這次股票資料讀取失敗，畫面是上一次的</div>' : '';
+  const html = stockTab==='hold' ? stockHoldHtml() : stockTab==='trades' ? stockTradesHtml()
+    : stockTab==='settings' ? stockSettingsHtml() : stockWatchHtml();
+  body.innerHTML = warn + html;
+}
+
+function stockWatchHtml(){
+  const list=stockData.watch||[];
+  if(!list.length) return `<div class="empty-hint">自選清單是空的${isAdmin()?'，到「設定」加入':'（由管理者維護）'}</div>`;
+  return list.map(w=>{
+    const q=(stockData.quotes||{})[w.symbol];
+    return `<div class="stk-row">
+      <div class="who">${esc(w.symbol)} ${esc(stockName(w.symbol)||w.name||'')}<small>${esc(quoteStampText(q))}</small></div>
+      <div class="num">${q?fmtStk(q.price,4):'—'}<small class="${q?stkTone(q.change):''}">${q&&q.changePct!==''?signedStk(q.changePct,2)+'%':''}</small></div>
+    </div>`;
+  }).join('');
+}
+
+function stockHoldHtml(){
+  const all=stockData.holdings||[];
+  const owners=[...new Set(all.map(h=>h.owner))];
+  const chips=['']
+    .concat(owners).map(o=>`<button class="cat-btn${stockOwnerFilter===o?' sel':''}" onclick="pickStockOwner('${esc(o)}')">${o?esc(o):'全家'}</button>`).join('');
+  const shown=all.filter(h=>!stockOwnerFilter || h.owner===stockOwnerFilter);
+  const stocks=shown.filter(h=>!isGoldSym(h.symbol)), gold=shown.filter(h=>isGoldSym(h.symbol));
+  let value=0, cost=0, priced=true;
+  const rows=stocks.map(h=>{
+    const q=(stockData.quotes||{})[h.symbol];
+    const mv=q ? q.price*h.qty : null;
+    if(mv===null) priced=false; else { value+=mv; cost+=h.cost; }
+    const pnl=mv===null ? null : mv-h.cost;
+    return `<div class="stk-row">
+      <div class="who">${esc(h.symbol)} ${esc(stockName(h.symbol))}<small>${esc(h.owner)}・${fmtStk(h.qty,0)} 股・均價 ${fmtStk(h.avg_cost,2)}</small></div>
+      <div class="num">${mv===null?'—':fmtStk(mv,0)}<small class="${pnl===null?'':stkTone(pnl)}">${pnl===null?'沒有報價':signedStk(pnl,0)+'（'+signedStk(h.cost?pnl/h.cost*100:0,2)+'%）'}</small></div>
+    </div>`;
+  }).join('');
+  const goldRows=gold.map(h=>`<div class="stk-row">
+      <div class="who">🥇 黃金<small>${esc(h.owner)}・均價 ${fmtStk(h.avg_cost,2)}／公克</small></div>
+      <div class="num">${fmtStk(h.qty,2)} 公克<small>投入成本 ${fmtStk(h.cost,0)}</small></div>
+    </div>`).join('');
+  const sum = stocks.length ? `<div class="stk-sum">市值 ${fmtStk(value,0)}・未實現損益 <span class="${stkTone(value-cost)}">${signedStk(value-cost,0)}</span>${priced?'':'（有幾檔沒有報價，沒算進去）'}</div>` : '';
+  return `<div class="cat-row" style="margin-bottom:8px">${chips}</div>${sum}`
+    + (rows || goldRows ? rows + (goldRows ? `<h2 style="margin-top:12px">黃金（只記錄、不抓價）</h2>${goldRows}` : '')
+      : '<div class="empty-hint">沒有持股</div>');
+}
+function pickStockOwner(o){ stockOwnerFilter=o; renderStocksView(); }
+
+function stockTradesHtml(){
+  const list=(stockData.trades||[]).slice().sort((a,b)=>String(b.trade_date).localeCompare(String(a.trade_date)) || String(b.created_at).localeCompare(String(a.created_at)));
+  const btn=`<button class="btn" style="margin-bottom:8px" onclick="openStockForm(null)">＋ 記一筆</button>`;
+  if(!list.length) return btn+'<div class="empty-hint">還沒有交易</div>';
+  return btn+list.map(t=>{
+    const sell=t.side==='sell';
+    return `<div class="stk-row${canEditTrade(t)?' tap':''}" ${canEditTrade(t)?`onclick="openStockForm('${esc(t.id)}')"`:''}>
+      <div class="who">${sell?'賣出':'買進'} ${esc(t.symbol)} ${esc(stockName(t.symbol))}<small>${esc(localDateKey(t.trade_date))}・${esc(t.owner)}・${esc(nameOfLineId(t.line_id))} 記${t.note?'・'+esc(t.note):''}</small></div>
+      <div class="num">${fmtStk(t.qty,2)} ${stkUnit(t.symbol)}<small>× ${fmtStk(t.price,4)}${Number(t.fee)?'＋'+fmtStk(t.fee,0):''}</small></div>
+    </div>`;
+  }).join('');
+}
+
+function stockSettingsHtml(){
+  if(!isAdmin()) return '<div class="empty-hint">自選清單由管理者維護</div>';
+  const list=stockData.watch||[];
+  const rows=list.map(w=>`<div class="stk-row">
+      <div class="who">${esc(w.symbol)} ${esc(w.name||'')}</div>
+      <div class="num"><button class="btn-ghost danger" onclick="removeStockWatch('${esc(w.symbol)}')">移除</button></div>
+    </div>`).join('');
+  return `<h2>自選清單（${list.length}／15）</h2>`+(rows||'<div class="empty-hint">還沒有自選</div>')
+    +'<p class="slot-hint">提醒規則與 00631L 再平衡下一版開放。</p>';
+}
+
+/* ---------- 交易表單 ---------- */
+function pickStockSide(v){
+  stockSide=v;
+  document.querySelectorAll('#stkSideSeg button').forEach(b=>b.classList.toggle('sel', b.dataset.val===v));
+}
+function stockOwnerOptions(selected){
+  const el=document.getElementById('stkOwner');
+  const mine=(stockData||{}).my_member||'';
+  // 非管理者只能是自己（後端也會強制）；管理者可選任何家人
+  const opts = isAdmin() ? stockMembers() : (mine ? [mine] : []);
+  el.innerHTML = opts.length ? opts.map(o=>`<option value="${esc(o)}"${o===selected?' selected':''}>${esc(o)}</option>`).join('')
+    : '<option value="">（還沒設定家人）</option>';
+  el.disabled = !isAdmin();
+}
+function openStockForm(id){
+  const t = id ? ((stockData||{}).trades||[]).find(x=>String(x.id)===String(id)) : null;
+  if(id && !t) return;
+  stockEditId = t ? String(t.id) : null;
+  document.getElementById('stkFormTitle').textContent = t ? '修改交易' : '記一筆交易';
+  pickStockSide(t ? t.side : 'buy');
+  document.getElementById('stkSymbol').value = t ? t.symbol : '';
+  document.getElementById('stkDate').value = t ? localDateKey(t.trade_date) : todayKey();
+  document.getElementById('stkQty').value = t ? t.qty : '';
+  document.getElementById('stkPrice').value = t ? t.price : '';
+  document.getElementById('stkFee').value = t && Number(t.fee) ? t.fee : '';
+  document.getElementById('stkNote').value = t ? (t.note||'') : '';
+  stockOwnerOptions(t ? t.owner : ((stockData||{}).my_member || stockMembers()[0] || ''));
+  document.getElementById('stkDelWrap').hidden = !t;
+  document.getElementById('stockFormCard').hidden = false;
+  window.scrollTo(0,0);
+}
+function closeStockForm(silent){
+  const card=document.getElementById('stockFormCard');
+  if(card) card.hidden=true;
+  stockEditId=null;
+}
+function stockErrorText(r){
+  if(!r) return '⚠️ 連不上雲端，沒有存';
+  if(r.error==='oversold') return '賣不了：'+(r.owner||'')+' 目前持有 '+(r.symbol||'')+' '+fmtStk(r.held,2)+' '+stkUnit(r.symbol);
+  if(r.error==='invalid_trade') return (STOCK_FIELD[r.field]||r.field)+'格式不對';
+  return STOCK_ERR[r.error] || ('⚠️ 沒有存（'+r.error+'）');
+}
+async function sendStock(sheet, record, keyField){
+  let r=null;
+  try{ r=await cloudPost({action:'upsert', sheet, record, key_field:keyField, trigger:'write'}); }catch(e){ r=null; }
+  if(r && r.success){ await syncFromCloud({trigger:'manual'}); renderStocksView(); }
+  return r;
+}
+async function saveStockTrade(){
+  const sym=String(document.getElementById('stkSymbol').value||'').trim().toUpperCase();
+  const qty=Number(document.getElementById('stkQty').value), price=Number(document.getElementById('stkPrice').value);
+  if(!sym){ toast('請填代號'); return; }
+  if(!(qty>0) || !(price>0)){ toast('數量與價格要是正數'); return; }
+  const record={
+    id: stockEditId || String(Date.now()),
+    trade_date: document.getElementById('stkDate').value || todayKey(),
+    symbol: sym, side: stockSide, qty, price,
+    fee: document.getElementById('stkFee').value || '',
+    owner: document.getElementById('stkOwner').value || '',
+    note: document.getElementById('stkNote').value.trim()
+  };
+  const btn=document.getElementById('stkSave'); btn.disabled=true;
+  const r=await sendStock('stock_trades', record, 'id');
+  btn.disabled=false;
+  if(!r || !r.success){ toast(stockErrorText(r)); return; }
+  closeStockForm();
+  toast(r.owner_overridden ? '已記下（持有者只能是你自己）' : '已記下');
+  renderStocksView();
+}
+async function deleteStockTrade(){
+  if(!stockEditId || !confirm('刪除這筆交易？')) return;
+  const r=await sendStock('stock_trades', {id:stockEditId, del:'TRUE'}, 'id');
+  if(!r || !r.success){ toast(stockErrorText(r)); return; }
+  closeStockForm();
+  toast('已刪除');
+  renderStocksView();
+}
+
+/* ---------- 自選清單（管理者） ---------- */
+async function addStockWatch(){
+  const el=document.getElementById('stkWatchInput');
+  const sym=String(el.value||'').trim().toUpperCase();
+  if(!sym) return;
+  const r=await sendStock('stock_watch', {symbol:sym, is_active:true}, 'symbol');
+  if(!r || !r.success){ toast(stockErrorText(r)); return; }
+  el.value='';
+  toast('已加入 '+sym);
+}
+async function removeStockWatch(sym){
+  if(!confirm('把 '+sym+' 移出自選？')) return;
+  const r=await sendStock('stock_watch', {symbol:sym, is_active:false}, 'symbol');
+  if(!r || !r.success){ toast(stockErrorText(r)); return; }
+  toast('已移除');
+}
+
 /* ---------- 導覽 ---------- */
-const TITLES={home:'首頁',expenses:'記帳',plans:'分期',tasks:'任務',review:'日誌',notes:'雜記'};
-/* 分頁能不能進。日誌頁也放心情：兩個功能有一個開就進得去（D-7）。股票第 3 輪才開 */
+const TITLES={home:'首頁',expenses:'記帳',plans:'分期',tasks:'任務',review:'日誌',notes:'雜記',stocks:'股票'};
+/* 分頁能不能進。日誌頁也放心情：兩個功能有一個開就進得去（D-7）。股票看 feat_stock（ADR-015） */
 function viewAllowed(name){
-  if(name==='stocks') return false;
   if(name==='plans') return featureAllowed('expenses');     // 分期就是記帳的一部分（各期是 expenses 的列）
   if(name==='review') return featureAllowed('review') || featureAllowed('mood');
   return featureAllowed(name);
@@ -2688,6 +3022,7 @@ function switchView(name){
   if(name==='expenses') renderExpenseView();
   if(name==='plans') renderPlansView();
   if(name==='review'){ loadTodayReview(); renderReviewView(); }
+  if(name==='stocks') renderStocksView();
   window.scrollTo(0,0);
   renderNav();
 }
@@ -4113,7 +4448,7 @@ function renderAll(){
   renderTasks(); renderReviews(); loadTodayReview();
   renderMoodBtns(); renderMoods(); renderPulse();
   renderNotes(); renderNoteTagRow();
-  renderExpenseView(); renderCatRow(); renderDashboard(); renderPlansView(); renderReviewView();
+  renderExpenseView(); renderCatRow(); renderDashboard(); renderPlansView(); renderReviewView(); renderStocksView();
   if(sysTab==='plans') renderSysCard();   // 只有分期分頁跟著資料重畫；其他分頁有輸入框，輪詢重畫會吃掉打到一半的字
   renderMeCard();          // 認領數會隨資料增減，跟著列表一起刷新
 }

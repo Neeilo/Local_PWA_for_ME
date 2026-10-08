@@ -282,7 +282,7 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
       error: (...args) => logs.push(args.join(' '))
     },
     // 開了幾次試算表（ADR-012：boot 要「只開一次」，這裡數得出來）
-    SpreadsheetApp: { getActiveSpreadsheet: () => { counters.opens++; return ss; } },
+    SpreadsheetApp: { getActiveSpreadsheet: () => { counters.opens++; return ss; }, flush: () => {} },
     PropertiesService: {
       getScriptProperties: () => ({ getProperty: (k) => (k in properties ? properties[k] : null) })
     },
@@ -335,8 +335,10 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
   });
 
   runInContext(readFileSync(join(ROOT, 'apps-script', 'Code.gs'), 'utf8'), context, { filename: 'Code.gs' });
-  // 同一個 Apps Script 專案的其他檔案：線上是共用全域，這裡就載進同一個 context
-  extraFiles.forEach((name) => {
+  // 同一個 Apps Script 專案的其他檔案：線上是共用全域，這裡就載進同一個 context。
+  // stock.gs 一律載入：Code.gs 的 boot／readMany／upsert 會呼叫它（ADR-015），線上它永遠在
+  const files = ['stock.gs'].concat(extraFiles.filter((name) => name !== 'stock.gs'));
+  files.forEach((name) => {
     runInContext(readFileSync(join(ROOT, 'apps-script', name), 'utf8'), context, { filename: name });
   });
   // line-router.gs 被載進來時會用真的 logTransaction_／linePush_ 蓋掉上面的記錄器。

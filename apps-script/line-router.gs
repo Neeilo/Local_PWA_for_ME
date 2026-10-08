@@ -178,6 +178,11 @@ var ROUTE_TABLE = {
 var REGISTER_PREFIX = 'line_id';
 var REGISTER_USAGE = 'Line_ID/你的userId（先傳 whoami 取得）';
 
+/** 股票前綴（ADR-015 T3）。處理在 stock.gs 的 handleStockCommand_；群組一律不收（groupCommandOf_） */
+var STOCK_PREFIXES = { '買': 'buy', '賣': 'sell', '股': 'quote' };
+var STOCK_TRADE_USAGE = '買/代號/數量/價格[/持有者]（黃金：買/GOLD/公克/每公克價格）';
+var STOCK_QUOTE_USAGE = '股/代號';
+
 var PRIORITIES = ['H', 'M', 'L'];
 var DEFAULT_PRIORITY = 'M';
 
@@ -519,6 +524,11 @@ function routeLineMessage_(rawText, userId, chatId) {
   if (text === CATEGORY_COMMAND) return handleCategoryCommand_(text, userId);
   if (text === INIT_COMMAND) return handleInitCommand_(text, userId);
 
+  // 股票（ADR-015 T3）：不走查表那條路——持有者、賣超、代號有效都要另外判斷
+  if (slash !== -1 && Object.prototype.hasOwnProperty.call(STOCK_PREFIXES, prefix)) {
+    return handleStockCommand_(prefix, text.slice(slash + 1), text, userId);
+  }
+
   var route = ROUTE_TABLE[prefix];
 
   if (!route) {
@@ -629,6 +639,7 @@ function initSteps_() {
       var warn = !adr013.config_ok || !!cols.reason || (adr013.warnings || []).length > 0;
       return { level: warn ? 'warn' : 'ok', text: lines.join('\n　') };
     } },
+    { label: '股票（ADR-015）', run: installStock_ },
     { label: '排程（到期提醒＋_guide＋未驗證彙總）', run: function () {
       installAdr009Triggers();
       installGuideTrigger();            // 裝好會順便更新一次 _guide
@@ -1545,6 +1556,8 @@ function supportedPrefixesMessage_() {
   lines.push('・' + QUERY_USAGE);
   lines.push('・記帳/金額（不打分類會跳出分類按鈕）');
   lines.push('・' + CATEGORY_COMMAND + '（看記帳可用的大類、細項、對象）');
+  lines.push('・' + STOCK_TRADE_USAGE + '；賣/ 同格式（限一對一聊天）');
+  lines.push('・' + STOCK_QUOTE_USAGE + '（現價與你的持股，限一對一聊天）');
   lines.push('・' + INIT_COMMAND + '（管理者：部署後的安裝步驟，可重複執行）');
   lines.push('・' + REGISTER_USAGE);
   lines.push('・' + PAIR_COMMAND + '（拿 App 的配對碼，限一對一聊天）');
@@ -2100,6 +2113,8 @@ function groupCommandOf_(text) {
   var slash = t.indexOf('/');
   if (slash === -1) return null;
   var prefix = t.slice(0, slash).trim();
+  // 股票指令只接受私訊（ADR-015 D-8：持股資訊私密，群組不開 cmd_stock）
+  if (Object.prototype.hasOwnProperty.call(STOCK_PREFIXES, prefix)) return '';
   return Object.prototype.hasOwnProperty.call(GROUP_CMD_BY_PREFIX, prefix) ? GROUP_CMD_BY_PREFIX[prefix] : null;
 }
 
