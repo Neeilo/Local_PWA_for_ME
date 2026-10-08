@@ -468,3 +468,74 @@ describe('T3 ✏️ 自己輸入＝5 分鐘等待', () => {
   });
 });
 
+
+/* ========================================================================== */
+describe('2026-10-08：原本要進編輯器的也併進「初始化」', () => {
+
+  const RH = ['review_date', 'good', 'stuck', 'most_important', 'line_id', 'del'];
+
+  test('reviews 有重複 → 初始化順手清掉並先備份；再跑一次什麼都不動', () => {
+    const e = env({ extraSheets: { reviews: new FakeSheet('reviews', [RH,
+      ['2026-09-20', '', '卡住', '', '', ''],
+      ['2026-09-20', '跑步', '', '', ME, '']]) } });
+    say(e, ME, '初始化', 'user');
+    assert.match(e.lastText(), /✅ 日誌重複列清理\n　刪除重複 1 列，先備份到「_reviews_backup_/);
+    const rows = e.sheets.reviews.toRecords();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].stuck, '卡住', '被刪那列的內容要併進留下的那列');
+    const backups = () => Object.keys(e.sheets).filter((n) => n.startsWith('_reviews_backup_'));
+    assert.equal(backups().length, 1);
+
+    say(e, ME, '初始化', 'user');
+    assert.match(e.lastText(), /✅ 日誌重複列清理\n　沒有重複/);
+    assert.equal(backups().length, 1, '沒東西要刪就不再建備份分頁');
+  });
+
+  test('沒有 reviews 分頁 → 略過，不算警告', () => {
+    const e = env();
+    say(e, ME, '初始化', 'user');
+    assert.match(e.lastText(), /✅ 日誌重複列清理\n　沒有 reviews 分頁，略過/);
+  });
+
+  test('看不出是誰的重複 → 原樣留著，標 ⚠️', () => {
+    const e = env({ extraSheets: { reviews: new FakeSheet('reviews', [RH,
+      ['2026-09-20', '我的', '', '', ME, ''],
+      ['2026-09-20', '媽媽的', '', '', MOM, ''],
+      ['2026-09-20', '誰的？', '', '', '', '']]) } });
+    say(e, ME, '初始化', 'user');
+    assert.match(e.lastText(), /⚠️ 日誌重複列清理/);
+    assert.match(e.lastText(), /原樣留著：2026-09-20/);
+    assert.equal(e.sheets.reviews.toRecords().length, 3);
+  });
+
+  test('寄信：已授權時列出額度與收件人', () => {
+    const users = new FakeSheet('line_users', [
+      ['line_id', 'display_name', 'is_active', 'is_admin', 'email'].concat(FEATS),
+      [ME, 'Neil', 'TRUE', 'TRUE', 'neil@example.com'].concat(FEATS.map(() => 'TRUE'))]);
+    const e = env({ users });
+    say(e, ME, '初始化', 'user');
+    assert.match(e.lastText(), /✅ 封存寄信\n　已授權，今天還能寄 100 封；封存信寄給 neil@example\.com/);
+  });
+
+  test('寄信權限還沒授權 → 提醒要在編輯器跑 authorizeArchiveMail，但前面的安裝照樣完成', () => {
+    const e = env({ overrides: { MailApp: { getRemainingDailyQuota: () => { throw new Error('Authorization is required'); } } } });
+    say(e, ME, '初始化', 'user');
+    assert.match(e.lastText(), /⚠️ 封存寄信\n　寄信權限還沒授權.*authorizeArchiveMail/);
+    assert.doesNotMatch(e.lastText(), /初始化沒有完成/);
+    assert.ok(e.triggers.some((t) => t.handler === 'fetchStockDaily'), '排程照樣裝好');
+  });
+
+  test('在初始化裡不會因為搶不到自己拿著的鎖而停住（清理不另外拿鎖）', () => {
+    let tries = 0;
+    const e = env({
+      extraSheets: { reviews: new FakeSheet('reviews', [RH,
+        ['2026-09-21', '', '', '', '', ''], ['2026-09-21', '有', '', '', ME, '']]) },
+      overrides: { LockService: { getScriptLock: () => ({
+        tryLock: () => { tries++; return tries === 1; },     // 只有第一次（初始化本身）拿得到
+        releaseLock: () => {}
+      }) } }
+    });
+    say(e, ME, '初始化', 'user');
+    assert.match(e.lastText(), /刪除重複 1 列/);
+  });
+});
