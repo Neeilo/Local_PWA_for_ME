@@ -784,14 +784,15 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
           <div id="dashPlans"></div>
           <button class="dash-link" onclick="goView('plans')">全部分期 →</button>
         </div>
-        <!-- 股票（ADR-015 T8）：再平衡只給管理者＋有持股＋有現金；自選小卡給有 feat_stock 的人 -->
-        <div class="card" id="dashRebalCard" hidden>
-          <h2 id="dashRebalTitle">⚖️ 再平衡</h2>
-          <div id="dashRebal"></div>
-        </div>
+        <!-- 股票（ADR-015 T8）：自選小卡給有 feat_stock 的人；再平衡只給管理者＋有持股＋有現金。
+             自選在上、再平衡在下（Neil 2026-10-08） -->
         <div class="card" id="dashStockCard" hidden>
           <h2>📈 自選股</h2>
           <div id="dashStocks"></div>
+        </div>
+        <div class="card" id="dashRebalCard" hidden>
+          <h2 id="dashRebalTitle">⚖️ 再平衡</h2>
+          <div id="dashRebal"></div>
         </div>
       </div>
       <!-- ✅ 生產力 -->
