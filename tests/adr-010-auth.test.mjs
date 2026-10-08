@@ -435,7 +435,7 @@ describe('身份只從 token 來', () => {
     assert.equal(e.ss.getSheetByName('tasks').toRecords().some((r) => r.id === '10'), false);
   });
 
-  test('read 墓碑照樣擋在後端；readTombstones 只回墓碑並附上鍵（陣列或逗號字串都收）', () => {
+  test('read 墓碑照樣擋在後端；舊的 readTombstones 門已拆（2026-10-08）', () => {
     const e = env();
     e.ss.getSheetByName('tasks').appendRow(['2', '已刪', '', '', 'M', ME, 'TRUE', '']);
     const out = pair(e);
@@ -443,8 +443,8 @@ describe('身份只從 token 來', () => {
     assert.deepEqual(viaPost.data.map((r) => r.id), ['1']);
 
     const tombs = post(e, { action: 'readTombstones', token: out.token, sheet: 'tasks', key_field: ['id'] });
-    assert.deepEqual(tombs, post(e, { action: 'readTombstones', token: out.token, sheet: 'tasks', key_field: 'id' }));
-    assert.deepEqual(tombs.keys, ['2']);
+    assert.equal(tombs.error, 'unknown_action');
+    assert.equal('data' in tombs, false, '墓碑不再有任何一扇對前端開的門');
   });
 
   test('沒帶 token 的 read → no_token；帶亂填的 → unknown_token（都寫 logs）', () => {
@@ -455,13 +455,13 @@ describe('身份只從 token 來', () => {
     assert.equal(e.transactions.filter((t) => t[0] === '同步' && t[1] === '失敗').length, 2);
   });
 
-  test('line_devices：read、readTombstones、upsert、archivePurge 一律擋下', () => {
+  test('line_devices：read、upsert（以及已拆的 readTombstones／archivePurge）一律擋下', () => {
     const e = env();
     const out = pair(e);
     const before = JSON.stringify(e.ss.getSheetByName('line_devices').values);
 
     assert.equal(post(e, { action: 'read', token: out.token, sheet: 'line_devices' }).error, 'sheet_not_readable');
-    assert.equal(post(e, { action: 'readTombstones', token: out.token, sheet: 'line_devices' }).error, 'sheet_not_readable');
+    assert.ok(post(e, { action: 'readTombstones', token: out.token, sheet: 'line_devices' }).error);
     assert.equal(post(e, { action: 'upsert', token: out.token, sheet: 'line_devices', key_field: 'device_id',
       record: { device_id: out.device_id, revoked_at: '' } }).error, 'sheet_not_writable');
     assert.equal(post(e, { action: 'archivePurge', token: out.token, sheet: 'line_devices', keys: [out.device_id] }).error,

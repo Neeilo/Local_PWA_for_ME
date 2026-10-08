@@ -262,7 +262,7 @@ describe('兩段式封存（ADR-009 §一.4）', () => {
     ]);
   }
 
-  test('第一段：只撈墓碑列，帶回鍵與列號', () => {
+  test('只撈墓碑列，帶回鍵與列號（archiveByMail_ 用；舊的 purgeTombstoneRows_ 已於 2026-10-08 拆除）', () => {
     const sheet = archiveSheet();
     const env = envFor(sheet);
 
@@ -271,80 +271,6 @@ describe('兩段式封存（ADR-009 §一.4）', () => {
     assert.deepEqual(found.map(f => f.key), ['2', '4']);
     assert.deepEqual(found.map(f => f.row), [3, 5]);
     assert.equal(found[0].record.text, '刪掉的 A');
-  });
-
-  test('第二段：清單是空的就一列都不刪', () => {
-    const sheet = archiveSheet();
-    const env = envFor(sheet);
-
-    const out = env.call('purgeTombstoneRows_', sheet, ARCHIVE_HEADERS, 'notes', 'id', []);
-
-    assert.equal(out.deleted, 0);
-    assert.equal(sheet.getLastRow(), 5, '「沒有東西要刪」與「整張表刪光」不該只差一個空陣列');
-    assert.equal(env.transactions.length, 0);
-  });
-
-  test('第二段：只刪清單裡的，沒匯出過的墓碑留著', () => {
-    const sheet = archiveSheet();
-    const env = envFor(sheet);
-
-    const out = env.call('purgeTombstoneRows_', sheet, ARCHIVE_HEADERS, 'notes', 'id', ['2']);
-
-    assert.equal(out.deleted, 1);
-    assert.deepEqual(sheet.toRecords().map(r => r.id), ['1', '3', '4']);
-    assert.equal(out.skipped, 0);
-  });
-
-  test('第二段：清單裡的列中途被取消 del，就放過它', () => {
-    const sheet = archiveSheet();
-    const env = envFor(sheet);
-
-    // 匯出之後、確認之前，有人把第 4 筆救回來了
-    sheet.values[4][2] = '';
-
-    const out = env.call('purgeTombstoneRows_', sheet, ARCHIVE_HEADERS, 'notes', 'id', ['2', '4']);
-
-    assert.equal(out.deleted, 1, '此刻不是墓碑的列一律不動');
-    assert.equal(out.skipped, 1);
-    assert.deepEqual(sheet.toRecords().map(r => r.id), ['1', '3', '4']);
-  });
-
-  test('第二段：一次刪多列時列號不會位移刪錯人', () => {
-    const sheet = archiveSheet();
-    const env = envFor(sheet);
-
-    const out = env.call('purgeTombstoneRows_', sheet, ARCHIVE_HEADERS, 'notes', 'id', ['2', '4']);
-
-    assert.equal(out.deleted, 2);
-    assert.deepEqual(out.rows, [3, 5]);
-    assert.deepEqual(sheet.toRecords().map(r => r.text), ['還在用的', '還在用的二號']);
-  });
-
-  test('第二段：刪了就要寫 logs', () => {
-    const sheet = archiveSheet();
-    const env = envFor(sheet);
-
-    env.call('purgeTombstoneRows_', sheet, ARCHIVE_HEADERS, 'notes', 'id', ['2', '4']);
-
-    assert.equal(env.transactions.length, 1);
-    assert.match(env.transactions[0][2], /archive notes/);
-    assert.match(env.transactions[0][3], /刪除墓碑 2 列/);
-  });
-
-  test('第二段：reviews 用複合鍵也刪得準', () => {
-    const headers = ['review_date', 'good', 'line_id', 'del'];
-    const sheet = new FakeSheet('reviews', [
-      headers.slice(),
-      ['2026-09-16', 'Neil 的', 'Uneil', 'TRUE'],
-      ['2026-09-16', '家人的', 'Ufamily', 'TRUE']
-    ]);
-    const env = envFor(sheet);
-
-    const out = env.call('purgeTombstoneRows_', sheet, headers, 'reviews',
-      ['review_date', 'line_id'], ['2026-09-16|Uneil']);
-
-    assert.equal(out.deleted, 1);
-    assert.deepEqual(sheet.toRecords().map(r => r.line_id), ['Ufamily'], '同一天的另一個人不能被連坐');
   });
 });
 

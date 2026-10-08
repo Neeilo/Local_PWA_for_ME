@@ -4,8 +4,9 @@
  * 這是整個 ADR 裡唯一一個會**永久刪除資料**的流程，所以測的重點全在「什麼時候
  * 不該刪」：讀不到雲端時不刪、使用者沒確認時不刪、鍵算不出來時不刪。
  *
- * 2026-10-01 起封存改成後端一次做完並寄信（tests/archive-mail.test.mjs）。下面後端的
- * ?only=tombstones／archivePurge 測試保留：AUTH_MODE=dual 期間舊版前端仍可能走那兩扇門。
+ * 2026-10-01 起封存改成後端一次做完並寄信（tests/archive-mail.test.mjs）。舊的兩扇門
+ * （readTombstones／archivePurge）於 2026-10-08 拆除；鍵的算法仍由 tombstoneRows_ 負責，
+ * archiveByMail_ 寄信前整理、刪除前再確認都靠它，所以那幾條測試改成直接測它。
  *
  * 跑法：npm test
  */
@@ -18,10 +19,10 @@ import { loadCodeGs, FakeSheet } from './fake-apps-script.mjs';
 const ME = 'Uneil';
 
 /* ========================================================================== */
-// doGet 已於 ADR-010 關門；墓碑讀取現在只走帶 token 的 POST readTombstones，回應本體是同一支 readSheetResponse_
-describe('後端：讀墓碑時附上算好的鍵', () => {
+// 鍵由 tombstoneRows_ 算（archiveByMail_ 用它整理與刪除前再確認）
+describe('後端：墓碑的鍵怎麼算', () => {
 
-  test('鍵由後端算，前端不必自己拼', () => {
+  test('只撈墓碑，鍵是 id', () => {
     const headers = ['id', 'text', 'line_id', 'del'];
     const sheet = new FakeSheet('notes', [
       headers,
@@ -30,10 +31,10 @@ describe('後端：讀墓碑時附上算好的鍵', () => {
     ]);
     const env = loadCodeGs({ sheets: { notes: sheet } });
 
-    const out = env.call('readSheetResponse_', 'notes', 'tombstones', 'id');
+    const found = env.call('tombstoneRows_', sheet, headers, 'id');
 
-    assert.deepEqual(out.data.map(r => r.id), ['2']);
-    assert.deepEqual(out.keys, ['2']);
+    assert.deepEqual(found.map(f => f.record.id), ['2']);
+    assert.deepEqual(found.map(f => f.key), ['2']);
   });
 
   test('複合鍵的 reviews 也算得出來', () => {
@@ -45,7 +46,7 @@ describe('後端：讀墓碑時附上算好的鍵', () => {
     ]);
     const env = loadCodeGs({ sheets: { reviews: sheet } });
 
-    const out = env.call('readSheetResponse_', 'reviews', 'tombstones', 'review_date,line_id');
+    const out = { keys: env.call('tombstoneRows_', sheet, headers, ['review_date', 'line_id']).map(f => f.key) };
 
     assert.deepEqual(out.keys, ['2026-09-16|' + ME, '2026-09-16|Ufamily']);
   });
@@ -58,7 +59,7 @@ describe('後端：讀墓碑時附上算好的鍵', () => {
     ]);
     const env = loadCodeGs({ sheets: { reviews: sheet } });
 
-    const out = env.call('readSheetResponse_', 'reviews', 'tombstones', 'review_date,line_id');
+    const out = { keys: env.call('tombstoneRows_', sheet, headers, ['review_date', 'line_id']).map(f => f.key) };
 
     assert.deepEqual(out.keys, ['2026-09-16|' + ME],
       '前端自己 slice ISO 字串會在 UTC+8 拿到 09-15，鍵對不上就會安靜地刪不掉');
@@ -69,7 +70,7 @@ describe('後端：讀墓碑時附上算好的鍵', () => {
     const sheet = new FakeSheet('reviews', [headers, ['2026-09-16', 'x', '', 'TRUE']]);
     const env = loadCodeGs({ sheets: { reviews: sheet } });
 
-    const out = env.call('readSheetResponse_', 'reviews', 'tombstones', 'review_date,line_id');
+    const out = { keys: env.call('tombstoneRows_', sheet, headers, ['review_date', 'line_id']).map(f => f.key) };
 
     assert.deepEqual(out.keys, ['']);
   });

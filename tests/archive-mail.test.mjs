@@ -219,3 +219,59 @@ describe('setMyEmail：只改自己那一格', () => {
     assert.equal(post({ action: 'archiveMail', secret: 'x', line_id: ME }).error, 'no_token', '新動作不收舊密鑰');
   });
 });
+
+/* ========================================================================== */
+describe('R-3（2026-10-08 覆核）：分期計畫的「原本那筆」不被封存', () => {
+  const EXP_H = ['id', 'expense_date', 'amount', 'line_id', 'del', 'plan_id', 'plan_seq'];
+  const INS_H = ['plan_id', 'source_expense_id', 'total', 'down_payment', 'periods', 'first_date', 'category',
+    'subcategory', 'targets', 'note', 'card', 'line_id', 'status', 'created_at', 'ended_at'];
+  const plan = (id, src, status) => [id, src, 30000, 0, 3, '2026-11-01', '娛樂', '', '', '', '', ME, status, '', ''];
+
+  function planEnv(plans) {
+    return loadCodeGs({
+      sheets: {
+        line_users: roster(),
+        expenses: new FakeSheet('expenses', [EXP_H,
+          ['100', '2026-10-07', 30000, ME, 'TRUE', 'P1', ''],     // P1（active）的原本那筆
+          ['101', '2026-11-01', 10000, ME, 'TRUE', 'P1', '1／3'], // P1 的某一期被刪
+          ['200', '2026-10-01', 9000, ME, 'TRUE', 'P2', ''],      // P2（deleted）的原本那筆
+          ['300', '2026-10-02', 50, ME, 'TRUE', '', '']]),        // 一般墓碑
+        installments: new FakeSheet('installments', [INS_H].concat(plans))
+      }
+    });
+  }
+
+  test('active／ended 計畫的原本那筆留著；各期、已刪除計畫的、一般墓碑照常封存', () => {
+    const e = planEnv([plan('P1', '100', 'active'), plan('P2', '200', 'deleted')]);
+    const out = archive(e);
+    assert.equal(out.success, true);
+    assert.equal(out.kept_for_plans, 1);
+    assert.equal(out.deleted, 3);
+    assert.deepEqual(ids(e, 'expenses'), ['100'], '只剩 P1 的原本那筆');
+    const payload = JSON.parse(e.mails[0].attachments[0].data);
+    assert.ok(!payload.sheets[0].rows.some((r) => String(r.id) === '100'), '留下的那筆不寫進備份信，避免以為它已經被刪');
+    assert.ok(e.transactions.some((t) => /分期計畫的原本那筆保留 1 列/.test(t.join('|'))));
+  });
+
+  test('只剩被計畫引用的墓碑時：不寄信、一列都不動', () => {
+    const e = planEnv([plan('P1', '100', 'ended')]);
+    e.ss.getSheetByName('expenses');
+    const sheet = e.ss.getSheetByName('expenses');
+    // 只留 100（被 P1 引用）這一筆墓碑
+    while (sheet.toRecords().length > 1) sheet.deleteRow(3);
+    const out = archive(e);
+    assert.equal(out.total, 0);
+    assert.equal(out.kept_for_plans, 1);
+    assert.equal(e.mails.length, 0);
+    assert.deepEqual(ids(e, 'expenses'), ['100']);
+  });
+
+  test('接著 planDelete 仍然救得回原本那筆（整條流程）', () => {
+    const e = planEnv([plan('P1', '100', 'active')]);
+    archive(e);
+    const out = e.call('planDelete_', ADMIN, 'P1');
+    assert.equal(out.success, true);
+    assert.equal(out.restored, 1);
+  });
+});
+

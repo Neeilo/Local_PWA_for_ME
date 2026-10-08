@@ -45,10 +45,9 @@ function post(env, body, token = TOKEN) {
   return env.call('handlePwaSync_', e);
 }
 
-/** 讀取：原本走 doGet，ADR-010 關門後改走 POST read／readTombstones，回應形狀不變 */
+/** 讀取：原本走 doGet，ADR-010 關門後改走 POST read，回應形狀不變 */
 function get(env, params) {
-  const action = params.only === 'tombstones' ? 'readTombstones' : 'read';
-  return JSON.parse(post(env, { action, sheet: params.sheet, key_field: params.key_field }).body);
+  return JSON.parse(post(env, { action: 'read', sheet: params.sheet }).body);
 }
 
 /* ========================================================================== */
@@ -66,16 +65,16 @@ describe('讀取 — 墓碑擋在唯一的出口', () => {
     assert.deepEqual(out.data.map(r => r.id), ['1', '3']);
   });
 
-  test('?only=tombstones 反過來只回墓碑（封存第一段要匯出的那批）', () => {
+  test('舊的 readTombstones 門已拆（2026-10-08）：拿不到墓碑', () => {
     const sheet = tasksSheet([
       ['1', '還在的', '', '', 'M', ME, '', ''],
       ['2', '已刪除的', '', '', 'M', ME, 'TRUE', '']
     ]);
     const env = envWith({ tasks: sheet });
 
-    const out = get(env, { sheet: 'tasks', only: 'tombstones' });
-    assert.deepEqual(out.data.map(r => r.id), ['2']);
-    assert.equal(out.data[0].text, '已刪除的');
+    const out = JSON.parse(post(env, { action: 'readTombstones', sheet: 'tasks', key_field: 'id' }).body);
+    assert.equal(out.error, 'unknown_action');
+    assert.equal('data' in out, false);
   });
 
   test('沒有 del 欄的舊分頁照常全回，不會整張變空', () => {
@@ -184,7 +183,7 @@ describe('doPost — upsert', () => {
 });
 
 /* ========================================================================== */
-describe('doPost — 封存第二段 archivePurge', () => {
+describe('舊的封存第二段 archivePurge 已拆除（2026-10-08；封存改走 archiveMail）', () => {
 
   function seeded() {
     const sheet = tasksSheet([
@@ -195,56 +194,24 @@ describe('doPost — 封存第二段 archivePurge', () => {
     return { sheet, env: envWith({ tasks: sheet }) };
   }
 
-  test('只刪匯出清單裡、且此刻仍是墓碑的列', () => {
+  test('送上來一律拒絕，一列都不刪', () => {
     const { sheet, env } = seeded();
-
-    const out = JSON.parse(post(env, { sheet: 'tasks', action: 'archivePurge', keys: ['2'] }).body);
-
-    assert.equal(out.success, true);
-    assert.equal(out.deleted, 1);
-    assert.deepEqual(sheet.toRecords().map(r => r.id), ['1', '3'], '沒匯出過的墓碑要留著');
-  });
-
-  test('清單是空的就什麼都不刪——這是「不先斬後奏」的那道鎖', () => {
-    const { sheet, env } = seeded();
-
-    const out = JSON.parse(post(env, { sheet: 'tasks', action: 'archivePurge', keys: [] }).body);
-
-    assert.equal(out.deleted, 0);
-    assert.equal(sheet.getLastRow(), 4);
-  });
-
-  test('keys 根本沒送也一樣什麼都不刪', () => {
-    const { sheet, env } = seeded();
-    const out = JSON.parse(post(env, { sheet: 'tasks', action: 'archivePurge' }).body);
-    assert.equal(out.deleted, 0);
-    assert.equal(sheet.getLastRow(), 4);
-  });
-
-  test('清單裡的列中途被救回來（取消 del）就放過它', () => {
-    const { sheet, env } = seeded();
-    sheet.values[2][6] = '';        // 第 2 筆的 del 被取消
-
     const out = JSON.parse(post(env, { sheet: 'tasks', action: 'archivePurge', keys: ['2', '3'] }).body);
-
-    assert.equal(out.deleted, 1);
-    assert.equal(out.skipped, 1);
-    assert.deepEqual(sheet.toRecords().map(r => r.id), ['1', '2']);
+    assert.equal(out.error, 'unknown_action');
+    assert.equal(sheet.getLastRow(), 4);
   });
 
-  test('line_users 與 logs 不歸前端管，拒絕 purge', () => {
+  test('line_users 也一樣拒絕', () => {
     const { env } = seeded();
     const out = JSON.parse(post(env, { sheet: 'line_users', action: 'archivePurge', keys: ['x'] }).body);
-    assert.equal(out.error, 'sheet_not_purgeable');
+    assert.ok(out.error, '不能有任何成功的回應');
+    assert.notEqual(out.success, true);
   });
 
-  test('走的是同一套閘門：不在白名單的人刪不了東西', () => {
+  test('不在白名單的人照樣先被閘門擋下', () => {
     const { sheet, env } = seeded();
-    const out = JSON.parse(post(env, {
-      sheet: 'tasks', action: 'archivePurge', keys: ['2', '3']
-    }, STRANGER_TOKEN).body);
-
+    const out = JSON.parse(post(env, { sheet: 'tasks', action: 'archivePurge', keys: ['2', '3'] }, STRANGER_TOKEN).body);
     assert.equal(out.error, 'inactive');
-    assert.equal(sheet.getLastRow(), 4, '一列都不該被刪');
+    assert.equal(sheet.getLastRow(), 4);
   });
 });

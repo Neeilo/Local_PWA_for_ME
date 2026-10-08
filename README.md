@@ -446,12 +446,12 @@ Apps Script 與 Pages 分成兩個 job：認證與 scriptId 完全不會進到 P
   - 📌 ADR 沒寫到的：群組裡傳「配對」會讓全群看到碼 → 只收一對一；`writeGate_` 的「白名單讀不到」是系統錯誤不是停用，原樣往上傳，前端不會因為一次 Sheet 故障把人登出；`doGet` 在 dual 期間也不能讀 `line_devices`
   - ✅ 裁決（2026-09-30，Neil）：收到 `inactive` 時**保留 token**（依 ADR D-7），顯示「等管理者重新啟用」，重新啟用後自動恢復。交棒票原寫「清掉 token」，以此裁決為準
   - ✅ 第 3 段（2026-10-01，Neil 決定不留過渡期）：直接移除 dual 路徑、`AUTH_MODE` 與 `CLOUD_SECRET`，`doGet` 一律回 `gone`。家人打開 App 會看到配對畫面
-  - ⏳ 另開票、須 Neil 明確同意：`交接.md` 從 git 歷史移除（改寫歷史不可逆）
+  - ✅ 結案不做（2026-10-08）：`交接.md` 從 git 歷史移除——改寫歷史不可逆，檔案本身已移出 repo，保留歷史
 - **封存改寄信＋DATA-05 日期修正**（2026-10-01，Neil 裁決；**待補 ADR**）：🔧 程式完成，待部署驗證
   - ✅ 日期少一天：Sheet 的日期格子讀回來是 UTC ISO 字串，前端切前 10 字少一天，月初的帳掉到上個月。新增 `localDateKey()`，記帳日期、任務到期日、日誌鍵都改用它
   - ✅ 封存：後端一次做完「① 整理 JSON → ② 寄給所有啟用中且有 email 的管理者 → ③ 寄出成功才刪」，任一步失敗就停並回報階段與原因；③ 刪到一半失敗會把已刪的列補回去。只有管理者看得到、按得到。取代 ADR-009 §一.4 的「下載＋人工確認」
   - ✅ `line_users.email`：首頁對還沒填的人顯示設定卡；後端 `setMyEmail` 只改自己那一格（不走整列 upsert，避免舊名單蓋回權限）
-  - 📌 舊的 `readTombstones`／`archivePurge` 後端動作仍在（要 token 才能呼叫），前端已不使用，列為之後的清理候選
+  - ✅ 舊的 `readTombstones`／`archivePurge` 後端動作與 `purgeTombstoneRows_` 已於 2026-10-08 拆除（送上來回 `unknown_action`）；封存只剩後端一次做完的 `archiveMail`
   - ⚠️ 部署後要在 Apps Script 編輯器執行一次 `authorizeArchiveMail()` 授權寄信（見 `apps-script/README.md`）
 - **ADR-012 PR-A｜效能紀錄**（依 [ADR-012]，2026-10-01）：✅ 已上線（PR #36），開始累積「改版前」基準
   - ✅ `performance` 分頁：雲端在回應前量 `server_ms` 與分段（驗證／開表／讀表）；手機量的 `client_ms` 暫存記憶體、夾在下一個請求的 `perf` 裡送上來，另寫一列。不存 token、不存資料內容；沒通過驗證的請求一列都不寫

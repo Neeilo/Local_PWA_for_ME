@@ -1147,8 +1147,14 @@ var STOCK_RULE_UNKNOWN_TTL = 21600;   // CacheService 上限 6 小時：同一�
 var STOCK_RULES_FUNCTION = 'checkStockRules';
 var STOCK_RULES_MINUTES = 5;
 var STOCK_DAILY_FUNCTION = 'fetchStockDaily';
+/*
+ * 盤後收盤價的時間窗（2026-10-08 覆核 R-1）：原本每天 14:30 跑一次，實測那時證交所
+ * STOCK_DAY_ALL 還是前一天的資料（資料日期 10/07），當天收盤要到隔天才寫進來。
+ * 改成交易日 14～19 點每小時跑，拿到「資料日期＝今天」的就停；19 點那次還拿不到才寫 logs
+ * （假日或證交所延遲），避免每小時一列雜訊。
+ */
 var STOCK_DAILY_HOUR = 14;
-var STOCK_DAILY_MINUTE = 30;
+var STOCK_DAILY_LAST_HOUR = 19;
 var STOCK_PUSH_SOURCE = '股票提醒';
 
 function ruleNum_(v) {
@@ -1403,8 +1409,21 @@ function stockTrackedSymbols_() {
   return out;
 }
 
-function fetchStockDaily() {
+/** 觸發器傳的是事件物件，不是日期（見 todayKeyFrom_ 那次教訓）；只有測試會傳 Date 進來 */
+function stockDailyNow_(arg) {
+  return arg instanceof Date ? arg : new Date();
+}
+
+function fetchStockDaily(arg) {
   var started = Date.now();
+  var now = stockDailyNow_(arg);
+  var p = taipeiParts_(now);
+  var hour = Math.floor(p.minutes / 60);
+  if (p.day < 1 || p.day > 5 || hour < STOCK_DAILY_HOUR || hour > STOCK_DAILY_LAST_HOUR) {
+    return { written: 0, reason: 'outside_window' };
+  }
+  var today = taipeiDateKey_(now);
+  var lastTry = hour >= STOCK_DAILY_LAST_HOUR;
   var read = stockSheetRecords_(STOCK_DAILY_SHEET);
   if (read.error) {
     logCleanup_('盤後收盤價', '找不到 ' + STOCK_DAILY_SHEET + '，沒有寫', '請管理者傳「初始化」');
@@ -1415,6 +1434,12 @@ function fetchStockDaily() {
   if (!symbols.length) {
     recordSchedulePerf_('stockDaily', 0, Date.now() - started);
     return { written: 0, reason: 'no_symbols' };
+  }
+  var have = {};
+  read.rows.forEach(function (r) { have[keyValue_(r.date) + '|' + normalizeSymbol_(r.symbol)] = true; });
+  // 今天的都有了就不再打證交所（每小時一次的排程，拿到之後的幾次都在這裡結束）
+  if (symbols.every(function (s) { return have[today + '|' + s]; })) {
+    return { written: 0, reason: 'done' };
   }
   var found = {}, errors = [];
   try {
@@ -1429,8 +1454,6 @@ function fetchStockDaily() {
     } catch (err) { errors.push(String(err && err.message || err)); }
   }
 
-  var have = {};
-  read.rows.forEach(function (r) { have[keyValue_(r.date) + '|' + normalizeSymbol_(r.symbol)] = true; });
   var headers = sheetHeaders_(read.sheet);
   var rows = [];
   Object.keys(found).forEach(function (s) {
@@ -1449,14 +1472,16 @@ function fetchStockDaily() {
     read.sheet.getRange(start, 1, rows.length, headers.length).setValues(rows);
   }
   var missing = symbols.filter(function (s) { return !found[s]; });
-  if (!rows.length || missing.length || errors.length) {
+  // 還沒拿到今天收盤的代號（含資料日期仍是前一天的）。19 點前不算錯，下個小時再試
+  var notToday = symbols.filter(function (s) { return !(found[s] && found[s].date === today) && !have[today + '|' + s]; });
+  if (errors.length || (lastTry && notToday.length)) {
     var dates = Object.keys(found).map(function (s) { return found[s].date; }).filter(function (d, i, a) { return a.indexOf(d) === i; });
     logCleanup_('盤後收盤價',
-      rows.length ? '寫入 ' + rows.length + ' 檔，但有缺' : '沒有新的收盤價（假日或資料還沒更新）',
+      rows.length ? '寫入 ' + rows.length + ' 檔，但有缺' : '沒有今天的收盤價（假日，或到 ' + STOCK_DAILY_LAST_HOUR + ' 點證交所仍未更新）',
       (dates.length ? '資料日期 ' + dates.join('、') + '｜' : '') + (missing.length ? '找不到：' + missing.join('、') + '｜' : '') + errors.join('；'));
   }
   recordSchedulePerf_('stockDaily', rows.length, Date.now() - started);
-  return { written: rows.length, missing: missing, errors: errors };
+  return { written: rows.length, missing: missing, errors: errors, pending: notToday };
 }
 
 /** 兩個排程。先刪同名的再建，重跑不累積（比照 installAdr009Triggers） */
@@ -1466,5 +1491,5 @@ function installStockTriggers_() {
     if (fn === STOCK_RULES_FUNCTION || fn === STOCK_DAILY_FUNCTION) ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger(STOCK_RULES_FUNCTION).timeBased().everyMinutes(STOCK_RULES_MINUTES).create();
-  ScriptApp.newTrigger(STOCK_DAILY_FUNCTION).timeBased().atHour(STOCK_DAILY_HOUR).nearMinute(STOCK_DAILY_MINUTE).everyDays(1).create();
+  ScriptApp.newTrigger(STOCK_DAILY_FUNCTION).timeBased().everyHours(1).create();
 }

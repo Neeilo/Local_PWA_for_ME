@@ -42,23 +42,11 @@ var STOCK_CONFIG_SHEET = '_stock_config';
 var STOCK_GF_SHEET = '_stock_gf';
 
 /**
- * 不歸前端 state 管的分頁：archivePurge 動不得。
- *
- * logs 是 Apps Script 單向寫入的記錄，line_users 是白名單本身——兩者都不屬於
- * 前端那份 state，被批次刪列等於資料消失（line_users 的話還會順便把所有人
- * 鎖在門外，包含改壞它的那個人）。管理頁一律走 upsert 改單列。
- *
- * 原名 NO_REPLACE_ALL；replaceAll 於 ADR-009 退場後改名，規則不變。
- */
-var NOT_FRONTEND_SHEETS = [LINE_USERS_SHEET, 'logs', PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET,
-                           LINE_GROUPS_SHEET, STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET];
-
-/**
  * PWA 連一筆都不准寫的分頁（任何 action 都一樣，包括 upsert）。
  *
  * _guide 是 refreshGuide() 依 repo 登記表產生出來的（sheet-guide.gs），沒有任何
  * 前端功能需要寫它；寫進去的東西下次更新也會被蓋掉，放行只會製造「明明存了卻
- * 不見」的假象。它比 NOT_FRONTEND_SHEETS 更嚴，所以擋在所有 action 之前，不另外列進去。
+ * 不見」的假象，所以擋在所有 action 之前。
  *
  * _expense_config（ADR-013）同理：分類由 Neil 在 Sheet 上改，前端只拿 boot 解析好的結構。
  * installments（ADR-013 D-6）只走 planCreate／planDelete／planEnd：一般 upsert 改得到計畫列，
@@ -74,7 +62,7 @@ var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_
  * line_devices 只存雜湊，拿到也換不回 token；但它同時是「誰有幾台裝置、最後
  * 什麼時候用」的清單，沒有任何前端功能需要整張讀走。管理頁要看裝置走
  * listDevices，那條路會把 token_hash 拿掉。line_devices 同時在 NO_PWA_WRITE 裡
- * （比 NOT_FRONTEND_SHEETS 更嚴，理由同 _guide），任何 action 都寫不進去。
+ * （理由同 _guide），任何 action 都寫不進去。
  *
  * performance（ADR-012 T1）同理：讀寫都只能透過管理員的 perfSummary／perfPurge，
  * 原始列只由雲端自己寫。
@@ -354,7 +342,7 @@ function doGet(e) {
 }
 
 /**
- * 讀一張分頁的回應本體。POST read／readTombstones 共用這一份。
+ * 讀一張分頁的回應本體（POST read）。
  *
  * 墓碑由**後端**濾掉，不指望前端自己 filter（ADR-009 待其他環境知道的事 #4）。
  *
@@ -362,11 +350,10 @@ function doGet(e) {
  * 每條都記得濾一次才會對，漏掉任何一條，已刪除的項目就會從那條路徑跑回畫面上。
  * 擋在唯一的出口，就不需要任何人記得。
  *
- * only='tombstones' 反過來只回墓碑，那是封存第一段要匯出的東西——它們被預設
- * 過濾掉之後，前端再也看不到，所以得留一扇專門的門。
+ * 封存（墓碑寄信後刪除）整個在後端做完（archiveByMail_），所以這裡不再有「只回墓碑」的門。
  */
-function readSheetResponse_(sheetName, only, keyFieldParam, perf, user) {
-  if (NO_PWA_READ.indexOf(sheetName) !== -1) {
+function readSheetResponse_(sheetName, perf, user) {
+  if (NO_PWA_READ.indexOf(sheetName) !== -1 || isBackupSheet_(sheetName)) {
     console.log('🚫 拒絕讀取分頁「' + sheetName + '」：它不對 PWA 開放');
     return { error: 'sheet_not_readable', sheet: sheetName };
   }
@@ -379,25 +366,6 @@ function readSheetResponse_(sheetName, only, keyFieldParam, perf, user) {
   if (read.error) return read;
   const rows = read.rows;
 
-  if (String(only || '').trim() === 'tombstones') {
-    var tombs = rows.filter(isTombstone_);
-    // 鍵由**後端**算好一起回傳，前端原樣送回來就好。
-    //
-    // 為什麼不讓前端自己算：回應走 JSON.stringify，Date 會被轉成 UTC ISO 字串，
-    // 前端 slice 出來的日期在 UTC+8 可能差一天（就是 DATA-05 那個根）。鍵一旦
-    // 對不上，archivePurge 會安靜地一筆都刪不掉——沒有錯誤訊息，只是沒有效果。
-    // 同一套規則只留一份實作，就沒有對不上的可能。
-    //
-    // GET 的 key_field 只能是逗號字串；POST 送上來的可能是陣列，攤平成同一種再拆
-    var rawKeyField = Array.isArray(keyFieldParam) ? keyFieldParam.join(',') : (keyFieldParam || 'id');
-    var keyField = String(rawKeyField).split(',')
-      .map(function (k) { return k.trim(); }).filter(function (k) { return k; });
-    var keys = keyFieldsOf_(keyField.length > 1 ? keyField : (keyField[0] || 'id'));
-    return {
-      data: tombs,
-      keys: tombs.map(function (r) { return recordKey_(r, keys); })
-    };
-  }
   return { data: withoutTombstones_(rows) };
 }
 
@@ -437,7 +405,7 @@ function readManyFrom_(ss, user, sheets, perf) {
   var denied = [];
   (Array.isArray(sheets) ? sheets : []).forEach(function (name) {
     if (typeof name !== 'string' || data.hasOwnProperty(name) || denied.indexOf(name) !== -1) return;
-    if (NO_PWA_READ.indexOf(name) !== -1 || !canUseSheet_(user, name)) { denied.push(name); return; }
+    if (NO_PWA_READ.indexOf(name) !== -1 || isBackupSheet_(name) || !canUseSheet_(user, name)) { denied.push(name); return; }
     var read = sheetRecords_(ss, name, perf);
     data[name] = read.error ? [] : withoutTombstones_(read.rows);
   });
@@ -475,12 +443,32 @@ function bootResponse_(caller, perf) {
     data: many.data,
     denied: many.denied
   };
+  if (many.data.tasks) out.group_names = taskGroupNames_(many.data.tasks);
   if (isAdmin) {
     out.perf_rows = perfRowCount_();
     var alert = unauthAlert_();
     if (alert) out.unauth_alert = alert;
   }
   return withExpenseConfig_(out, caller.user, ss, BOOT_SHEETS);
+}
+
+/**
+ * 任務列的「👥 群組名」（2026-10-08 小票）：只回這次讀到的任務真的用到的群組，
+ * 不把整張 line_groups 給非管理員。名稱空白就叫「群組」。走 5 分鐘快取，不多讀 Sheet。
+ * lineGroupsCached_ 在 line-router.gs；只載 Code.gs 的環境（部分測試）就回空表。
+ */
+function taskGroupNames_(tasks) {
+  var ids = {};
+  (tasks || []).forEach(function (t) { var c = keyValue_(t.origin_chat); if (c) ids[c] = true; });
+  if (!Object.keys(ids).length || typeof lineGroupsCached_ !== 'function') return {};
+  var all = lineGroupsCached_();
+  if (!all || !all.ok) return {};
+  var out = {};
+  (all.rows || []).forEach(function (r) {
+    var id = keyValue_(r.record.group_id);
+    if (ids[id]) out[id] = String(r.record.name == null ? '' : r.record.name).trim() || '群組';
+  });
+  return out;
 }
 
 /**
@@ -554,10 +542,7 @@ function routePwaSync_(body, perf) {
     return jsonOut(withStock_(withExpenseConfig_(many, caller.user, ssMany, Array.isArray(body.sheets) ? body.sheets : []),
       caller, body));
   }
-  if (body.action === 'read') return jsonOut(readSheetResponse_(body.sheet, '', '', perf, caller.user));
-  if (body.action === 'readTombstones') {
-    return jsonOut(readSheetResponse_(body.sheet, 'tombstones', body.key_field, perf, caller.user));
-  }
+  if (body.action === 'read') return jsonOut(readSheetResponse_(body.sheet, perf, caller.user));
   if (body.action === 'listDevices') return jsonOut(listDevices_(caller, body.line_id));
   if (body.action === 'revokeDevice') return jsonOut(revokeDevices_(caller, body.device_id, body.all_of));
   if (body.action === 'archiveMail') return jsonOut(archiveByMail_(caller));
@@ -576,19 +561,21 @@ function routePwaSync_(body, perf) {
   if (body.action === 'stockConfigSet') return jsonOut(stockConfigSet_(caller, body.key, body.value));
   if (body.action === 'stockPushMe') return jsonOut(stockPushMe_(caller, body.symbol));
 
-  if (NO_PWA_WRITE.indexOf(body.sheet) !== -1) {
+  if (NO_PWA_WRITE.indexOf(body.sheet) !== -1 || isBackupSheet_(body.sheet)) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');
     return jsonOut({ error: 'sheet_not_writable', sheet: body.sheet });
   }
   if (!canUseSheet_(caller.user, body.sheet)) return jsonOut(featureForbidden_(caller, body.action, body.sheet));
-  // 股票表只開 upsert（有專屬把關）與封存
+  // 股票表只開 upsert（有專屬把關）；封存走 archiveByMail_，不經這裡
   if ((body.sheet === STOCK_TRADES_SHEET || body.sheet === STOCK_WATCH_SHEET || body.sheet === STOCK_RULES_SHEET) &&
-      ['upsert', 'archivePurge'].indexOf(body.action) === -1) return jsonOut({ error: 'unknown_action' });
+      body.action !== 'upsert') return jsonOut({ error: 'unknown_action' });
   // 名單只有管理者能改（2026-10-08 補）：line_users 不對應任何 feat，原本任何啟用中的成員都能 upsert，
   // 包括把自己設成管理者、或改自己的 member 去記別人名下的股票（ADR-015 D-8 的持有者強制就形同虛設）。
   // 前端只有管理者的「成員與權限」會寫這張表；email 走自己的 setMyEmail
-  if (body.sheet === LINE_USERS_SHEET && body.action === 'upsert' && !truthy_((caller.user || {}).is_admin)) {
-    logTransaction_('同步', '失敗', 'PWA upsert → ' + LINE_USERS_SHEET, '不是管理者，拒絕改名單', 'code=forbidden', '', caller.line_id);
+  // 2026-10-08 覆核再補：原本只擋 upsert，completeRecurring 算不出下一期時會退回 upsertRow_，
+  // 一般成員可以藉它把自己的 is_admin 改成 TRUE。名單不分 action，一律只有管理者能動
+  if (body.sheet === LINE_USERS_SHEET && !truthy_((caller.user || {}).is_admin)) {
+    logTransaction_('同步', '失敗', 'PWA ' + body.action + ' → ' + LINE_USERS_SHEET, '不是管理者，拒絕改名單', 'code=forbidden', '', caller.line_id);
     return jsonOut({ error: 'forbidden', sheet: body.sheet });
   }
 
@@ -671,25 +658,6 @@ function routePwaSync_(body, perf) {
       '完成並接手下一期 ' + next,
       '新列 id=' + child.id + '；週期設定已從原列移交，重複打勾不會再生');
     return jsonOut({ success: true, spawned: true, next_due: next, next_id: child.id, row: added.row });
-  }
-
-  /**
-   * 封存第二段（ADR-009 §一.4）：前端回報「已成功下載」之後，才真的刪。
-   *
-   * 送上來的 keys 是第一段（?only=tombstones）匯出的那一批。後端不信任這份清單
-   * 本身——purgeTombstoneRows_ 會再確認每一列此刻仍然是墓碑才動手。清單空的
-   * 就什麼都不刪。
-   */
-  if (body.action === 'archivePurge') {
-    if (NOT_FRONTEND_SHEETS.indexOf(body.sheet) !== -1) {
-      console.log('🚫 拒絕對分頁「' + body.sheet + '」做 archivePurge：它不歸前端管');
-      return jsonOut({ error: 'sheet_not_purgeable', sheet: body.sheet });
-    }
-    const headers = sheetHeaders_(sheet);
-    const out = purgeTombstoneRows_(sheet, headers, body.sheet, body.key_field, body.keys || []);
-    return jsonOut({
-      success: true, deleted: out.deleted, rows: out.rows, skipped: out.skipped
-    });
   }
 
   /**
@@ -905,10 +873,10 @@ function withoutTombstones_(rows) {
 }
 
 /**
- * 封存第一段：把整張分頁的墓碑列撈出來交給前端匯出（ADR-009 §一.4）。
+ * 把整張分頁的墓碑列撈出來（archiveByMail_ 寄信前整理、刪除前再確認都用這支）。
  *
- * 回傳每列的鍵與列號。鍵就是第二段刪除時要比對的憑據——列號會因為任何一次
- * 插入刪除而位移，不能當憑據，所以兩段之間傳的是鍵不是列號。
+ * 回傳每列的鍵與列號。刪除前用鍵重新比對——列號會因為寄信那幾秒裡的任何一次
+ * 插入刪除而位移，不能當憑據。
  */
 function tombstoneRows_(sheet, headers, keyField) {
   const keys = keyFieldsOf_(keyField);
@@ -924,38 +892,6 @@ function tombstoneRows_(sheet, headers, keyField) {
     out.push({ key: recordKey_(record, keys), row: i + 2, record: record });
   });
   return out;
-}
-
-/**
- * 封存第二段：前端回報「已成功下載」之後，才真的把這些列刪掉（ADR-009 §一.4）。
- *
- * 兩道鎖，缺一不可：
- *   1. 鍵必須在 confirmedKeys 裡——沒被匯出過的列一律不動
- *   2. 該列此刻仍然是墓碑——中途被誰改回來（取消 del）就放過它
- *
- * 清單是空的就什麼都不刪，直接回 0。「沒有東西要刪」與「把整張表刪光」之間
- * 不該只差一個空陣列——這正是 ADR 說的「不先斬後奏」，鎖在程式裡而不是在紀律裡。
- */
-function purgeTombstoneRows_(sheet, headers, sheetName, keyField, confirmedKeys) {
-  const wanted = {};
-  (confirmedKeys || []).forEach(k => { const s = keyValue_(k); if (s) wanted[s] = true; });
-  const wantedCount = Object.keys(wanted).length;
-  if (!wantedCount) return { deleted: 0, rows: [], skipped: 0 };
-
-  const hit = tombstoneRows_(sheet, headers, keyField).filter(c => c.key && wanted[c.key]);
-  // 由下往上刪，否則刪掉一列之後下面的列號會整個位移，刪錯人
-  const rows = hit.map(c => c.row).sort((a, b) => b - a);
-  rows.forEach(r => sheet.deleteRow(r));
-
-  const ordered = rows.slice().sort((a, b) => a - b);
-  if (rows.length) {
-    logCleanup_(
-      'archive ' + sheetName,
-      '確認匯出後刪除墓碑 ' + rows.length + ' 列（清單共 ' + wantedCount + ' 筆）',
-      '刪除的列號：' + ordered.join(', ')
-    );
-  }
-  return { deleted: rows.length, rows: ordered, skipped: wantedCount - rows.length };
 }
 
 /**
@@ -2074,7 +2010,28 @@ function archiveMailBody_(plan, total) {
 }
 
 /**
- * archiveMail → { success, total, deleted, skipped, recipients } 或 archiveFail_ 的形狀
+ * 還沒刪除的分期計畫，其「原本那筆」的 id（2026-10-08 覆核 R-3）。
+ *
+ * 轉分期時原本那筆會被軟刪除，planDelete 要靠它恢復；封存若把它當一般墓碑清掉，
+ * 之後刪除計畫就找不到東西可以恢復（10/08 實機發生過）。所以封存一律放過它，
+ * 等計畫本身被刪除（status=deleted，planDelete 已經恢復或放棄恢復）之後才會被封存。
+ * 各期（帶 plan_seq）不受影響，照常封存。
+ */
+function archivePlanSourceIds_(ss) {
+  var out = {};
+  installmentPlans_(ss).forEach(function (p) {
+    var id = keyValue_(p.source_expense_id);
+    if (id) out[id] = true;
+  });
+  return out;
+}
+
+function isPlanSourceTomb_(record, planSources) {
+  return !!planSources[keyValue_(record.id)] && !keyValue_(record.plan_seq);
+}
+
+/**
+ * archiveMail → { success, total, deleted, skipped, recipients, kept_for_plans } 或 archiveFail_ 的形狀
  *
  * ③ 刪除前會再讀一次：寄信那幾秒裡，某一列若被人取消刪除（del 清掉），它就不再是墓碑，
  * 放過它（計入 skipped）。它的內容仍在信裡，多備份一份不會壞事。
@@ -2088,15 +2045,22 @@ function archiveByMail_(caller) {
     // ① 整理
     var plan = [];
     var total = 0;
+    var keptForPlans = 0;
     var json = '';
     var stamp = keyValue_(new Date());
     try {
       var ss = SpreadsheetApp.getActiveSpreadsheet();
+      var planSources = archivePlanSourceIds_(ss);
       ARCHIVE_TARGETS.forEach(function (t) {
         var sheet = ss.getSheetByName(t.sheet);
         if (!sheet) return;
         var headers = sheetHeaders_(sheet);
         var tombs = tombstoneRows_(sheet, headers, t.key).filter(function (c) { return c.key; });
+        if (t.sheet === 'expenses') {
+          var before = tombs.length;
+          tombs = tombs.filter(function (c) { return !isPlanSourceTomb_(c.record, planSources); });
+          keptForPlans += before - tombs.length;
+        }
         if (!tombs.length) return;
         plan.push({
           target: t, sheet: sheet, headers: headers,
@@ -2105,7 +2069,11 @@ function archiveByMail_(caller) {
         });
         total += tombs.length;
       });
-      if (!total) return { success: true, total: 0, deleted: 0, skipped: 0, recipients: 0 };
+      if (!total) {
+        var none = { success: true, total: 0, deleted: 0, skipped: 0, recipients: 0 };
+        if (keptForPlans) none.kept_for_plans = keptForPlans;
+        return none;
+      }
       json = JSON.stringify({
         exported_at: new Date().toISOString(),
         total: total,
@@ -2156,8 +2124,11 @@ function archiveByMail_(caller) {
     logCleanup_('封存寄信 ' + stamp,
       '已寄出備份並刪除 ' + deleted.length + ' 列（寄給 ' + to.emails.length + ' 位管理者）',
       plan.map(function (p) { return p.target.sheet + ' ' + p.keys.length; }).join('、') +
-        (skipped ? '；寄信期間被取消刪除而放過 ' + skipped + ' 列' : ''));
-    return { success: true, total: total, deleted: deleted.length, skipped: skipped, recipients: to.emails.length };
+        (skipped ? '；寄信期間被取消刪除而放過 ' + skipped + ' 列' : '') +
+        (keptForPlans ? '；分期計畫的原本那筆保留 ' + keptForPlans + ' 列（刪除計畫時要靠它恢復）' : ''));
+    var done = { success: true, total: total, deleted: deleted.length, skipped: skipped, recipients: to.emails.length };
+    if (keptForPlans) done.kept_for_plans = keptForPlans;
+    return done;
   } finally {
     lock.releaseLock();
   }
@@ -3571,4 +3542,140 @@ function pushSend_(caller, body) {
   }
   logTransaction_(PUSH_LOG_SOURCE, '成功', label, '已推送（' + t.text.length + ' 字）', 'group_id=' + g.id, '', caller.line_id);
   return { success: true };
+}
+
+/* ========================================================================== */
+/**
+ * reviews 重複列清理（2026-10-08 小票 #6）——在編輯器裡選這支按「執行」。
+ *
+ * 來源：keyValue_ 修好之前，review_date 讀回來是 Date、前端送字串，鍵對不上就一直 append，
+ * 留下「同一天好幾列、其中幾列沒有 line_id」的殘骸。之後的 upsert 只會清掉**鍵相同**
+ * 的重複，沒有 line_id 的那幾列永遠沒人碰得到，所以要一次性清。
+ *
+ * 規則（寧可少刪，不可多刪）：
+ *  - 只看 del 沒打勾的列；已標刪除的交給封存
+ *  - 同一天、同一個人的多列 → 留內容最多的那列
+ *  - 同一天沒有 line_id 的列 → 只有當天**恰好一個人**有寫時，才併進那個人的列；
+ *    當天沒人有 line_id、或有兩個以上的人，就不知道是誰的，原樣留著（記進結果）
+ *  - 「併」的意思是：留下來的那列某格是空的，而被刪的那列有值，就把值補過去——不丟字
+ *  - 動手前先把整張表複製到 _reviews_backup_日期時間 分頁
+ *
+ * dedupeReviewsPreview() 只算不動，先跑它看要刪幾列。
+ * 找沒人在寫日誌的時候跑：PWA／LINE 的寫入不拿這把鎖，執行那幾秒剛好改到重複的那天，會被合併結果蓋掉。
+ * 確認清理結果沒問題之後，備份分頁可以手動刪掉。
+ */
+var REVIEWS_DEDUPE_META = { review_date: 1, line_id: 1, del: 1, archive: 1, updated_at: 1 };
+/** 備份分頁的前綴。裡面是全家的日誌，PWA 讀寫都擋（不受 feat_review 管，所以要另外擋） */
+var REVIEWS_BACKUP_PREFIX = '_reviews_backup_';
+function isBackupSheet_(name) { return String(name || '').indexOf(REVIEWS_BACKUP_PREFIX) === 0; }
+
+function dedupeReviewsPreview() {
+  return dedupeReviews_(true);
+}
+
+function dedupeReviews() {
+  return dedupeReviews_(false);
+}
+
+function dedupeReviews_(dryRun) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(ARCHIVE_LOCK_MS)) {
+    console.log('❌ 另一個寫入正在進行，請稍後再跑');
+    return { error: 'lock' };
+  }
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('reviews');
+    if (!sheet) { console.log('❌ 找不到 reviews 分頁'); return { error: 'sheet_not_found' }; }
+    var values = sheet.getDataRange().getValues();
+    var headers = values[0] || [];
+    var col = {};
+    headers.forEach(function (h, i) { col[String(h).trim()] = i; });
+    if (col.review_date == null || col.line_id == null) {
+      console.log('❌ reviews 缺 review_date 或 line_id 欄');
+      return { error: 'missing_columns' };
+    }
+
+    var filled = function (row) {
+      var n = 0;
+      headers.forEach(function (h, i) { if (!REVIEWS_DEDUPE_META[String(h).trim()] && keyValue_(row[i]) !== '') n++; });
+      return n;
+    };
+
+    // 依日期分組（只收沒標刪除的列）。r 是 values 的索引，列號 = r + 1
+    var byDate = {};
+    for (var r = 1; r < values.length; r++) {
+      var row = values[r];
+      if (col.del != null && truthy_(row[col.del])) continue;
+      var date = keyValue_(row[col.review_date]);
+      if (!date) continue;
+      (byDate[date] = byDate[date] || []).push(r);
+    }
+
+    var keep = {};      // 留下來那列的索引 → 合併後的整列
+    var drop = [];      // 要刪的索引
+    var ambiguous = []; // 不知道是誰的、原樣留著的日期
+    Object.keys(byDate).forEach(function (date) {
+      var rows = byDate[date];
+      var people = {};
+      var orphans = [];
+      rows.forEach(function (i) {
+        var who = keyValue_(values[i][col.line_id]);
+        if (who) (people[who] = people[who] || []).push(i); else orphans.push(i);
+      });
+      var ids = Object.keys(people);
+      // 沒 line_id 的列：當天恰好一個人才知道是誰的
+      if (orphans.length) {
+        if (ids.length === 1) people[ids[0]] = people[ids[0]].concat(orphans);
+        else if (orphans.length > 1 || ids.length > 1) ambiguous.push(date);
+      }
+      ids.forEach(function (who) {
+        var group = people[who];
+        if (group.length < 2) return;
+        // 留有 line_id 且內容最多的；同分留上面那列（較早寫的位置）
+        var best = group.filter(function (i) { return keyValue_(values[i][col.line_id]); })
+          .sort(function (a, b) { return filled(values[b]) - filled(values[a]) || a - b; })[0];
+        var merged = values[best].slice();
+        group.forEach(function (i) {
+          if (i === best) return;
+          headers.forEach(function (h, c) {
+            if (REVIEWS_DEDUPE_META[String(h).trim()]) return;
+            if (keyValue_(merged[c]) === '' && keyValue_(values[i][c]) !== '') merged[c] = values[i][c];
+          });
+          drop.push(i);
+        });
+        keep[best] = merged;
+      });
+    });
+
+    var result = { dry_run: dryRun, rows: values.length - 1, deleted: drop.length, merged_into: Object.keys(keep).length, ambiguous_dates: ambiguous };
+    console.log((dryRun ? '🔍 預覽：' : '') + 'reviews 共 ' + result.rows + ' 列，要刪 ' + drop.length +
+      ' 列重複，併進 ' + result.merged_into + ' 列' +
+      (ambiguous.length ? '；看不出是誰的、原樣留著：' + ambiguous.join(', ') : ''));
+    if (dryRun || !drop.length) return result;
+
+    // 先備份整張表，備份失敗就整個不動
+    // 名稱帶到秒；同名分頁已存在就停（重跑時不能把上一份備份蓋成半新半舊）
+    var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd_HHmmss');
+    var backupName = REVIEWS_BACKUP_PREFIX + stamp;
+    if (ss.getSheetByName(backupName)) {
+      console.log('❌ 備份分頁「' + backupName + '」已存在，這次不動。隔幾秒再跑');
+      return { error: 'backup_exists', backup: backupName };
+    }
+    var backup = ss.insertSheet(backupName);
+    backup.getRange(1, 1, values.length, headers.length).setValues(values);
+    result.backup = backupName;
+
+    Object.keys(keep).forEach(function (i) {
+      sheet.getRange(Number(i) + 1, 1, 1, headers.length).setValues([keep[i]]);
+    });
+    drop.sort(function (a, b) { return b - a; }).forEach(function (i) { sheet.deleteRow(i + 1); });
+
+    logTransaction_('admin', '成功', 'dedupeReviews', '刪除重複 ' + drop.length + ' 列',
+      '備份分頁 ' + backupName + (ambiguous.length ? '；原樣留著：' + ambiguous.join(', ') : ''), '', '');
+    console.log('✅ 已備份到「' + backupName + '」，刪除 ' + drop.length + ' 列');
+    return result;
+  } finally {
+    lock.releaseLock();
+  }
 }
