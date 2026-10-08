@@ -943,9 +943,16 @@ describe('T7 盤後收盤價（fetchStockDaily）', () => {
       trade('b2', '2026-10-01', 'GOLD', 'buy', 1, 3500, '爸爸', NEIL)])
   });
 
+  // 2026-10-08（週四）台北 15:10＝時間窗內、不是最後一次；19:10＝最後一次
+  const AFTER = new Date(Date.UTC(2026, 9, 8, 7, 10, 0));
+  const LAST = new Date(Date.UTC(2026, 9, 8, 11, 10, 0));
+  const YESTERDAY_TWSE = TWSE.map((r) => Object.assign({}, r, { Date: '1151007' }));
+  const YESTERDAY_TPEX = TPEX.map((r) => Object.assign({}, r, { Date: '1151007' }));
+  const dailyLogs = (e) => e.transactions.filter((t) => t[2] === '盤後收盤價');
+
   test('只寫自選（啟用中）＋有持股的代號；上市讀證交所、上櫃讀櫃買；昨收＝收盤－漲跌；民國年換西元', () => {
     const e = env({ net: dailyNet(), sheets: sheets() });
-    const out = e.call('fetchStockDaily');
+    const out = e.call('fetchStockDaily', AFTER);
     assert.equal(out.written, 3);
     const rows = e.sheets.stock_daily.toRecords();
     assert.deepEqual(rows.map((r) => r.symbol).sort(), ['00631L', '2330', '6488'], '停用的自選（0050）、沒追蹤的（1101）不寫');
@@ -956,16 +963,67 @@ describe('T7 盤後收盤價（fetchStockDaily）', () => {
     assert.equal(tsmc.prev_close, 2585);
     assert.equal(rows.find((r) => r.symbol === '6488').source, 'tpex');
     assert.ok(e.sheets.performance.toRecords().some((r) => r.action === 'stockDaily' && r.trigger === 'schedule'));
+    assert.equal(dailyLogs(e).length, 0, '拿到當天的、全部都有：不寫 logs');
   });
 
-  test('同一天重跑不重複寫；資料沒更新（假日）不寫，但寫一列 logs 說明', () => {
-    const e = env({ net: dailyNet(), sheets: sheets() });
-    e.call('fetchStockDaily');
+  test('R-1：今天的都拿到之後，同一天後面幾個小時直接結束、不再打證交所，也不重複寫', () => {
+    const net = dailyNet();
+    const e = env({ net, sheets: sheets() });
+    e.call('fetchStockDaily', AFTER);
     const n = e.sheets.stock_daily.toRecords().length;
-    const again = e.call('fetchStockDaily');
+    const calls = net.calls.all.length;
+    const again = e.call('fetchStockDaily', LAST);
     assert.equal(again.written, 0);
+    assert.equal(again.reason, 'done');
+    assert.equal(net.calls.all.length, calls, '已經有今天的資料，不該再打外部');
     assert.equal(e.sheets.stock_daily.toRecords().length, n);
-    assert.ok(e.transactions.some((t) => t[2] === '盤後收盤價' && /沒有新的收盤價/.test(t[3]) && /資料日期 2026-10-08/.test(t[4])));
+    assert.equal(dailyLogs(e).length, 0);
+  });
+
+  test('R-1：證交所資料還是前一天 → 補寫前一天、標示 pending，19 點前不寫 logs（下個小時再試）', () => {
+    const e = env({ net: dailyNet({ twse: YESTERDAY_TWSE, tpex: YESTERDAY_TPEX }), sheets: sheets() });
+    const out = e.call('fetchStockDaily', AFTER);
+    assert.equal(out.written, 3, '前一天沒寫過的照樣補上（資料本身的日期）');
+    assert.ok(e.sheets.stock_daily.toRecords().every((r) => r.date === '2026-10-07'));
+    assert.deepEqual(out.pending.slice().sort(), ['00631L', '2330', '6488']);
+    assert.equal(dailyLogs(e).length, 0, '還有機會拿到，不是錯');
+  });
+
+  test('R-1：到 19 點最後一次仍拿不到今天的（假日或延遲）→ 才寫一列 logs，且不重複寫前一天', () => {
+    const e = env({ net: dailyNet({ twse: YESTERDAY_TWSE, tpex: YESTERDAY_TPEX }), sheets: sheets() });
+    e.call('fetchStockDaily', AFTER);
+    const n = e.sheets.stock_daily.toRecords().length;
+    const out = e.call('fetchStockDaily', LAST);
+    assert.equal(out.written, 0);
+    assert.equal(e.sheets.stock_daily.toRecords().length, n);
+    const logs = dailyLogs(e);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0][3], /沒有今天的收盤價/);
+    assert.match(logs[0][4], /資料日期 2026-10-07/);
+  });
+
+  test('R-1：時間窗外（早上、週末）直接結束，不讀表、不打外部、不寫效能紀錄', () => {
+    const net = dailyNet();
+    const e = env({ net, sheets: sheets() });
+    const morning = new Date(Date.UTC(2026, 9, 8, 2, 0, 0));   // 台北 10:00
+    const saturday = new Date(Date.UTC(2026, 9, 10, 7, 0, 0)); // 週六 15:00
+    const night = new Date(Date.UTC(2026, 9, 8, 12, 30, 0));   // 台北 20:30
+    for (const t of [morning, saturday, night]) assert.equal(e.call('fetchStockDaily', t).reason, 'outside_window');
+    assert.equal(net.calls.all.length, 0);
+    assert.equal(e.sheets.stock_daily.toRecords().length, 0);
+    assert.ok(!e.sheets.performance || !e.sheets.performance.toRecords().some((r) => r.action === 'stockDaily'));
+  });
+
+  test('R-1：觸發器傳的是事件物件 → 當成現在，不會把它當日期', () => {
+    const e = env({ net: dailyNet(), sheets: sheets() });
+    const ev = { authMode: 'FULL', triggerUid: '1' };
+    const now = e.call('stockDailyNow_', ev);
+    assert.equal(typeof now.getTime, 'function', '事件物件要換成「現在」');
+    assert.ok(Math.abs(now.getTime() - Date.now()) < 5000);
+    assert.equal(e.call('stockDailyNow_', LAST).getTime(), LAST.getTime(), '測試傳 Date 進來照用');
+    const out = e.call('fetchStockDaily', ev);
+    assert.ok(['outside_window', 'done', 'no_symbols'].includes(out.reason) || Array.isArray(out.pending),
+      '不可以丟例外，也不可以回 undefined：' + JSON.stringify(out));
   });
 
   test('全部都在證交所就不打櫃買；開頭帶 BOM 照樣讀得到', () => {
@@ -973,22 +1031,22 @@ describe('T7 盤後收盤價（fetchStockDaily）', () => {
     s.stock_watch = new FakeSheet('stock_watch', [['symbol', 'name', 'sort', 'is_active', 'added_by', 'created_at'], ['2330', '', 10, 'TRUE', NEIL, '']]);
     const net = dailyNet({ bom: true });
     const e = env({ net, sheets: s });
-    assert.equal(e.call('fetchStockDaily').written, 2);
+    assert.equal(e.call('fetchStockDaily', AFTER).written, 2);
     assert.equal(net.calls.tpex, 0);
   });
 
-  test('證交所掛了：上櫃照樣寫，缺的代號與錯誤寫進 logs', () => {
+  test('證交所掛了：上櫃照樣寫，缺的代號與錯誤寫進 logs（有錯誤不必等到 19 點）', () => {
     const net = dailyNet();
     const fetch = net.UrlFetchApp.fetch;
     net.UrlFetchApp.fetch = (url) => (url.includes('openapi.twse') ? { getResponseCode: () => 503, getContentText: () => '' } : fetch(url));
     const e = env({ net, sheets: sheets() });
-    assert.equal(e.call('fetchStockDaily').written, 1);
+    assert.equal(e.call('fetchStockDaily', AFTER).written, 1);
     assert.ok(e.transactions.some((t) => t[2] === '盤後收盤價' && /找不到：.*2330/.test(t[4]) && /HTTP 503/.test(t[4])));
   });
 });
 
 describe('初始化：股票的兩個排程', () => {
-  test('跑三次：checkStockRules（每 5 分鐘）與 fetchStockDaily（每天約 14:30）各只有一個', () => {
+  test('跑三次：checkStockRules（每 5 分鐘）與 fetchStockDaily（R-1：每小時，時間窗在程式裡判斷）各只有一個', () => {
     const e = env();
     for (let i = 0; i < 3; i++) line(e, NEIL, '初始化');
     const rules = e.triggers.filter((t) => t.handler === 'checkStockRules');
@@ -996,9 +1054,8 @@ describe('初始化：股票的兩個排程', () => {
     assert.equal(rules.length, 1);
     assert.equal(rules[0].everyMinutes, 5);
     assert.equal(daily.length, 1);
-    assert.equal(daily[0].hour, 14);
-    assert.equal(daily[0].minute, 30);
-    assert.match(e.replies.pop(), /checkStockRules（每 5 分鐘，只在盤中動作）\n⏰ fetchStockDaily（每天約 14:30）/);
+    assert.equal(daily[0].everyHours, 1);
+    assert.match(e.replies.pop(), /checkStockRules（每 5 分鐘，只在盤中動作）\n⏰ fetchStockDaily（交易日 14～19 點每小時，拿到當天收盤就停）/);
   });
 });
 

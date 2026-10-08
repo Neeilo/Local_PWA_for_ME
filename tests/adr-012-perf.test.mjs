@@ -237,7 +237,8 @@ describe('PWA 不能直接碰原始列', () => {
     const out = post(e, { token: TOK_ME, action: 'read', sheet: 'performance' });
     assert.equal(out.error, 'sheet_not_readable');
     const t = post(e, { token: TOK_ME, action: 'readTombstones', sheet: 'performance' });
-    assert.equal(t.error, 'sheet_not_readable');
+    assert.ok(t.error, 'readTombstones 已拆（2026-10-08），送上來也拿不到東西');
+    assert.equal('data' in t, false);
   });
 
   for (const action of ['upsert', 'archivePurge', 'completeRecurring']) {

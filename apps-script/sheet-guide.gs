@@ -68,7 +68,7 @@ function guideRegistry_() {
       writers: 'PWA（只能改自己的）；last_fired_at 只有 checkStockRules 排程寫', readers: 'PWA（只看自己的）、checkStockRules（每 5 分鐘，盤中）',
       key: 'id', adr: '015' },
     { sheet: STOCK_DAILY_SHEET, category: '系統', purpose: '每日收盤價（只存自選＋有持股的代號），非交易時段的報價來源',
-      writers: 'fetchStockDaily 排程（每天約 14:30，證交所＋櫃買 OpenAPI）', readers: '只有 GAS（報價層，非交易時段）',
+      writers: 'fetchStockDaily 排程（交易日 14～19 點每小時，拿到當天收盤就停；證交所＋櫃買 OpenAPI）', readers: '只有 GAS（報價層，非交易時段）',
       key: 'date＋symbol', adr: '015' },
     { sheet: STOCK_CONFIG_SHEET, category: '系統', purpose: '00631L 再平衡設定：標的、持有者、現金、目標、門檻',
       writers: '管理者（App 股票 ▸ 設定，stockConfigSet）；初始化寫初版', readers: '只有管理者（readMany 附帶的 rebalance／config）',

@@ -659,6 +659,8 @@
   font-size:12px; background:rgba(255,176,32,.16); color:#b26b00;
   border:1px solid rgba(255,176,32,.35);
 }
+/* 明寫，否則 display:inline-block 會蓋掉 [hidden]，沒有待同步時也剩一顆空膠囊 */
+.sync-badge[hidden]{display:none;}
 /* PART D — literals the source hard-codes → tokens */
 input[type=text],input[type=number],input[type=date],textarea,select,.mood-btn,.type-btn,.prio-opt,.cat-btn,.seg button,.month-bar button{background:var(--field);}
 .btn{color:var(--on-accent);}
@@ -910,7 +912,7 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
         <div><div class="field-label">相對門檻 %</div><input type="number" id="stkCfgThr" inputmode="decimal" min="1" max="99"></div>
       </div>
       <p class="slot-hint" id="stkCfgHint"></p>
-      <button class="btn" onclick="saveStockConfig()">儲存設定</button>
+      <button class="btn" id="stkCfgSave" onclick="saveStockConfig()">儲存設定</button>
     </div>
     <div class="card stk-form" id="stockRuleCard" hidden>
       <h2>🔔 新增提醒規則</h2>
@@ -1077,6 +1079,7 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
     </div>
     <div class="card">
       <h2>雜記清單</h2>
+      <div class="scope-bar" id="scopeNotes" hidden></div>
       <div id="noteList"></div>
     </div>
   </section>
@@ -1375,6 +1378,7 @@ const PERF_PENDING_MAX=20;          // 跟雲端一個請求收的上限一樣
 const PERF_ALERT_ROWS=30000;
 let perfPending=[], perfRows=0, perfSummaryCache=null;
 let unauthAlert=null;               // { ts, bad_token }：未驗證請求某一小時暴增（ADR-014 D-15）
+let groupNames={};                  // 群組 ID → 名稱：只含畫面上任務用到的群組，開機時帶回（任務列「👥 群組名」）
 
 function perfNote(action, trigger, ms){
   perfPending.push({action, trigger, client_ms:Math.round(ms)});
@@ -1455,6 +1459,7 @@ async function runBoot(trigger){
   try{ localStorage.setItem(LINE_ID_KEY, myLineId); }catch(e){}
   perfRows = typeof j.perf_rows==='number' ? j.perf_rows : 0;   // 只有管理員會拿到
   unauthAlert = j.unauth_alert || null;                           // 同上：最近 24 小時有沒有一小時 bad_token 暴增
+  if(j.group_names && typeof j.group_names==='object') groupNames=j.group_names;
   if(gateMode) closeAuthGate();
   roster=j.line_users.filter(u=>rosterId(u));
   rosterStatus = activeUsers().length ? 'ok' : 'empty';
@@ -1817,7 +1822,7 @@ function setScope(mine){
 function renderScopeBars(){
   // 名單上只有一個人時，「只看我的」跟「全部」永遠是同一件事——不擺沒有作用的開關
   const show = !!myLineId && activeUsers().length>1;
-  ['scopeHome','scopeExpenses','scopeTasks','scopeReview'].forEach(function(id){
+  ['scopeHome','scopeExpenses','scopeTasks','scopeReview','scopeNotes'].forEach(function(id){
     const el=document.getElementById(id);
     if(!el) return;
     el.hidden=!show;
@@ -2169,6 +2174,23 @@ function migrate(){
    所以寫入一律先進這個佇列、再送。佇列本身存 localStorage，關掉 App 也還在。
    這不是 ADR 寫的東西，是不加就會**比改版前更糟**的東西：改版前至少 localStorage
    那份還在，下次存檔會重送。 */
+/* 今日指南針只活在這支手機（不上雲端，原始設計）。ADR-012 之後 state 不再存本機，
+   所以要自己存一份；輪詢整張覆蓋 reviews 時從這裡補回來，否則最多 15 秒就被清空。
+   鍵＝reviewKey（日期|line_id）。只留最近 COMPASS_KEEP 筆，免得無限長大。 */
+const COMPASS_KEY='personal-os-compass-v1';
+const COMPASS_KEEP=60;
+function compassStore(){
+  try{ const o=JSON.parse(localStorage.getItem(COMPASS_KEY)||'{}'); return (o&&typeof o==='object')?o:{}; }catch(e){ return {}; }
+}
+function compassOf(k){ return compassStore()[k]||''; }
+function saveCompass(k, text){
+  const o=compassStore();
+  if(text) o[k]=text; else delete o[k];
+  const keys=Object.keys(o).sort();
+  keys.slice(0, Math.max(0, keys.length-COMPASS_KEEP)).forEach(x=>{ delete o[x]; });
+  try{ localStorage.setItem(COMPASS_KEY, JSON.stringify(o)); }catch(e){}
+}
+
 const OUTBOX_KEY='personal-os-outbox-v1';
 const OUTBOX_MAX=1000;          // 滿了丟最舊的。真的塞到這個數，問題不在佇列大小
 let outbox=loadOutbox(), outboxSeq=0, outboxFlushing=false;
@@ -2416,7 +2438,7 @@ function applyPendingOverlay(){
       const k=reviewKey(r.review_date, String(r.line_id||'').trim());
       if(truthy(r.del)){ delete state.reviews[k]; return; }
       const prev=state.reviews[k]||{};
-      state.reviews[k]={compass:prev.compass||'', good:r.good||'', stuck:r.stuck||'',
+      state.reviews[k]={compass:prev.compass||compassOf(k), good:r.good||'', stuck:r.stuck||'',
                         next:r.most_important||'', line_id:String(r.line_id||'').trim(), ts:Date.now()};
     }
   });
@@ -2477,9 +2499,9 @@ function applyCloudData(data, denied, extras){
   c.reviews.forEach(row=>{
     if(!row.review_date) return;
     const owner=String(row.line_id||'').trim();
-    // compass 只活在本機（它不上雲端），所以覆蓋時要留住原本那一份
+    // compass 只活在本機（它不上雲端），所以覆蓋時要從本機那一份補回來
     const k=reviewKey(localDateKey(row.review_date), owner);   // 鍵要是純日期，見 localDateKey
-    state.reviews[k]={compass:'', good:row.good||'', stuck:row.stuck||'',
+    state.reviews[k]={compass:compassOf(k), good:row.good||'', stuck:row.stuck||'',
                       next:row.most_important||'', line_id:owner, ts:Date.now()};
   });
 
@@ -3111,7 +3133,11 @@ function fillStockSettingsForms(){
 }
 function shortDate(d){ const k=String(d).slice(0,10); return Number(k.slice(5,7))+'/'+Number(k.slice(8,10)); }
 
+/* R-2（2026-10-08 覆核）：一次儲存要循序送好幾個請求（每個約 2 秒），畫面沒反應就會被連按，
+   而舊值要等同步完成才更新，於是每按一次就全部重送（實測兩分鐘 31 次）。送出中一律擋下。 */
+let stockConfigSaving=false;
 async function saveStockConfig(){
+  if(stockConfigSaving){ toast('儲存中，請稍候'); return; }
   const c=(stockData||{}).config||{};
   const want={
     cash: document.getElementById('stkCfgCash').value,
@@ -3119,17 +3145,26 @@ async function saveStockConfig(){
     target_pct: document.getElementById('stkCfgTarget').value,
     threshold_rel_pct: document.getElementById('stkCfgThr').value
   };
-  // 只送有改的；現金就算數字一樣也送（等於「我今天確認過現金」，會更新日期）
-  const keys=Object.keys(want).filter(k=>k==='cash' || String(want[k])!==String(c[k]==null?'':c[k]));
-  for(const key of keys){
-    let r=null;
-    try{ r=await cloudPost({action:'stockConfigSet', key, value:want[key], trigger:'write'}); }catch(e){ r=null; }
-    if(!r || !r.success){ toast(stockErrorText(r)); return; }
+  // 只送有改的。現金數字沒變、其他也都沒改時才送現金——等於「我今天確認過現金」，會更新日期
+  const changed=Object.keys(want).filter(k=>String(want[k])!==String(c[k]==null?'':c[k]));
+  const keys=changed.length ? changed : ['cash'];
+  const btn=document.getElementById('stkCfgSave');
+  stockConfigSaving=true;
+  if(btn){ btn.disabled=true; btn.textContent='儲存中…'; }
+  try{
+    for(const key of keys){
+      let r=null;
+      try{ r=await cloudPost({action:'stockConfigSet', key, value:want[key], trigger:'write'}); }catch(e){ r=null; }
+      if(!r || !r.success){ toast(stockErrorText(r)); return; }
+    }
+    await syncFromCloud({trigger:'manual'});
+    fillStockSettingsForms();
+    renderStocksView();
+    toast(changed.length ? '已儲存' : '已確認現金（更新日期）');
+  }finally{
+    stockConfigSaving=false;
+    if(btn){ btn.disabled=false; btn.textContent='儲存設定'; }
   }
-  await syncFromCloud({trigger:'manual'});
-  fillStockSettingsForms();
-  renderStocksView();
-  toast('已儲存');
 }
 
 async function addStockRule(){
@@ -3462,7 +3497,7 @@ function renderTasks(){
       <input type="checkbox" ${t.done?'checked':''} onchange="toggleTask(${t.id})">
       <button class="prio-dot prio-${p}" onclick="cyclePriority(${t.id})"
         aria-label="優先度 ${PRIORITY_LABEL[p]}，點擊切換" title="優先度：${PRIORITY_LABEL[p]}"></button>
-      <div class="txt editable" role="button" tabindex="0" onclick="openTaskEdit(${t.id})" title="點一下改到期日與週期">${esc(t.txt)}${t.due?` <span class="tag">${esc(t.due)}${t.recurUnit?'／每'+esc(String(t.recurN||1))+esc(t.recurUnit):''}</span>`:''}</div>
+      <div class="txt editable" role="button" tabindex="0" onclick="openTaskEdit(${t.id})" title="點一下改到期日與週期">${esc(t.txt)}${t.origin_chat?` <span class="tag" title="在 LINE 群組建立：到期提醒推回這個群組">👥 ${esc(groupNames[t.origin_chat]||'群組')}</span>`:''}${t.due?` <span class="tag">${esc(t.due)}${t.recurUnit?'／每'+esc(String(t.recurN||1))+esc(t.recurUnit):''}</span>`:''}</div>
       <button class="pin ${t.board?'on':''}" onclick="toggleBoard('tasks',${t.id})"
         aria-label="釘到白板" title="釘到共用白板">📌</button>
       <button class="del" onclick="delTask(${t.id})" aria-label="刪除">✕</button>
@@ -3477,12 +3512,13 @@ function renderTasks(){
 /* ---------- 日誌（升級版複盤） ---------- */
 function loadTodayReview(){
   const r=state.reviews[myReviewKey()];
-  document.getElementById('rvCompass').value = r?r.compass||'':'';
+  const compass=(r&&r.compass)||compassOf(myReviewKey());
+  document.getElementById('rvCompass').value = compass;
   document.getElementById('rvGood').value   = r?r.good||'':'';
   document.getElementById('rvStuck').value  = r?r.stuck||'':'';
   document.getElementById('rvNext').value   = r?r.next||'':'';
   document.getElementById('reviewSaved').textContent   = r?'已儲存 ✓':'';
-  document.getElementById('compassSaved').textContent  = (r&&r.compass)?'✓':'';
+  document.getElementById('compassSaved').textContent  = compass?'✓':'';
 }
 function saveReview(){
   const compass= document.getElementById('rvCompass').value.trim();
@@ -3491,6 +3527,7 @@ function saveReview(){
   const next   = document.getElementById('rvNext').value.trim();
   if(!compass&&!good&&!stuck&&!next){toast('先寫點什麼吧 ✍️'); return;}
   const k=myReviewKey();
+  saveCompass(k, compass);
   state.reviews[k]={compass,good,stuck,next,line_id:(state.reviews[k]||{}).line_id||myLineId||'',ts:Date.now()};
   pushReview(k); renderReviews(); loadTodayReview(); toast('今日日誌已儲存');
 }
@@ -3549,8 +3586,9 @@ function delMood(id){
 }
 function renderMoods(){
   const el=document.getElementById('moodList');
-  if(!state.moods.length){el.innerHTML='<div class="empty-hint">還沒有心情紀錄</div>'; return;}
-  el.innerHTML=state.moods.slice(0,50).map(m=>`
+  const list=state.moods.filter(inScope);
+  if(!list.length){el.innerHTML='<div class="empty-hint">還沒有心情紀錄</div>'; return;}
+  el.innerHTML=list.slice(0,50).map(m=>`
     <div class="mood-item">
       <div class="mood-emoji">${MOOD_EMOJI[m.level-1]}</div>
       <div style="flex:1">
@@ -3611,8 +3649,9 @@ function delNote(id){
 }
 function renderNotes(){
   const el=document.getElementById('noteList');
-  if(!state.notes.length){el.innerHTML='<div class="empty-hint">雜項、靈感、備忘都丟這裡</div>'; return;}
-  el.innerHTML=state.notes.map(n=>`
+  const list=state.notes.filter(inScope);
+  if(!list.length){el.innerHTML='<div class="empty-hint">雜項、靈感、備忘都丟這裡</div>'; return;}
+  el.innerHTML=list.map(n=>`
     <div class="note-item">
       <div class="note-txt">${esc(n.txt)}</div>
       <div class="note-meta">

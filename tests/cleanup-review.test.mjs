@@ -5,7 +5,7 @@
  *   1. 配對之後，只送「身份確定前就排好」的那幾筆，不把整份雲端快照重送一遍
  *      （原本測的是 ADR-008 的選身份；ADR-010 把入口換成配對，要守的事沒變）
  *   2. replaceAll 已退場：後端收到要明確拒絕，整張表一個字都不能動
- *   3. logs／line_users 不歸前端管的保護，在 replaceAll 退場後仍然擋得住 archivePurge
+ *   3. logs／line_users 不會被批次刪列（archivePurge 已於 2026-10-08 拆除，送上來一律被拒）
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -89,12 +89,13 @@ describe('replaceAll 已退場（ADR-009 §一.2）', () => {
       '一個請求就清空整張表，是這個系統破壞力最大的一個動作——它不該還能被觸發');
   });
 
-  test('logs 與 line_users 仍然不能被 archivePurge 動到', () => {
+  test('logs 與 line_users 不能被 archivePurge 動到（那扇門已拆）', () => {
     const e = env();
     for (const sheet of ['logs', 'line_users']) {
       const before = JSON.stringify(e.ss.getSheetByName(sheet).values);
       const out = post(e, { sheet, action: 'archivePurge', key_field: 'id', keys: ['1'] });
-      assert.equal(out.error, 'sheet_not_purgeable', sheet + ' 要被擋下');
+      assert.ok(out.error, sheet + ' 要被擋下');
+      assert.notEqual(out.success, true);
       assert.equal(JSON.stringify(e.ss.getSheetByName(sheet).values), before);
     }
   });

@@ -657,7 +657,7 @@ function scheduleHours_() {
   h[GUIDE_REFRESH_FUNCTION] = '每天約 ' + GUIDE_REFRESH_HOUR + ' 點';
   h[UNAUTH_FLUSH_FUNCTION] = '每小時';
   h[STOCK_RULES_FUNCTION] = '每 ' + STOCK_RULES_MINUTES + ' 分鐘，只在盤中動作';
-  h[STOCK_DAILY_FUNCTION] = '每天約 ' + STOCK_DAILY_HOUR + ':' + STOCK_DAILY_MINUTE;
+  h[STOCK_DAILY_FUNCTION] = '交易日 ' + STOCK_DAILY_HOUR + '～' + STOCK_DAILY_LAST_HOUR + ' 點每小時，拿到當天收盤就停';
   return h;
 }
 

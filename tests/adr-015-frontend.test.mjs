@@ -412,12 +412,35 @@ describe('PR-B：設定分頁（規則、再平衡設定）', () => {
     assert.equal(rec.enabled, false);
   });
 
-  test('儲存再平衡設定：只送有改的鍵，現金一定送（等於確認過今天的現金）', async () => {
+  // R-2（2026-10-08 覆核）：原本「現金一定送」＋沒有防連點 → 實機兩分鐘送了 31 次
+  const cfgSent = (e) => e.calls.filter((c) => c.body && c.body.action === 'stockConfigSet').map((c) => [c.body.key, c.body.value, c.body.trigger]);
+
+  test('R-2 儲存再平衡設定：只送有改的鍵；有其他改動時不另送沒變的現金', async () => {
     const { e } = env({ stock: withPrB() });
     e.call('pickStockTab', 'settings');
     e.raw(`document.getElementById('stkCfgTarget').value='60'`);
     await e.callRaw('saveStockConfig');
-    const sent = e.calls.filter((c) => c.body && c.body.action === 'stockConfigSet').map((c) => [c.body.key, c.body.value, c.body.trigger]);
-    assert.deepEqual(sent, [['cash', 200000, 'write'], ['target_pct', '60', 'write']]);
+    assert.deepEqual(cfgSent(e), [['target_pct', '60', 'write']]);
+  });
+
+  test('R-2 什麼都沒改就按儲存：只送現金一次（＝確認今天的現金，會更新日期）', async () => {
+    const { e } = env({ stock: withPrB() });
+    e.call('pickStockTab', 'settings');
+    await e.callRaw('saveStockConfig');
+    assert.deepEqual(cfgSent(e), [['cash', 200000, 'write']]);
+    assert.equal(e.toasts.pop(), '已確認現金（更新日期）');
+  });
+
+  test('R-2 儲存中連按：第二次直接擋下、不送請求；結束後按鈕恢復', async () => {
+    const { e, el } = env({ stock: withPrB() });
+    e.call('pickStockTab', 'settings');
+    e.raw(`document.getElementById('stkCfgTarget').value='60'; document.getElementById('stkCfgThr').value='20'`);
+    const first = e.callRaw('saveStockConfig');
+    await e.callRaw('saveStockConfig');
+    assert.equal(e.toasts.includes('儲存中，請稍候'), true);
+    await first;
+    assert.deepEqual(cfgSent(e).map((x) => x[0]), ['target_pct', 'threshold_rel_pct'], '每個鍵只送一次');
+    assert.equal(el('stkCfgSave').disabled, false);
+    assert.equal(el('stkCfgSave').textContent, '儲存設定');
   });
 });
