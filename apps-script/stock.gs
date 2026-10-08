@@ -424,8 +424,26 @@ function fetchGoogle_(symbols) {
   return quotes;
 }
 
-/** 盤後：stock_daily 每檔最新的一天。PR-B 的 fetchStockDaily 才會寫；還沒有資料的回空 */
-function dailyCloses_(symbols) {
+/**
+ * 最近一個應該有收盤價的交易日（台北）：平日 13:30 以後是今天，其餘往前找最近的平日。
+ * 不知道國定假日——假日那天算出來的日子會比實際資料新，結果就是退回打外部，不會拿錯價。
+ */
+function lastTradingDayKey_(now) {
+  var p = taipeiParts_(now);
+  var t = p.t;
+  var closed = p.day >= 1 && p.day <= 5 && p.minutes >= 13 * 60 + 30;
+  var d = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate()));
+  if (!closed) d = new Date(d.getTime() - 86400000);
+  while (d.getUTCDay() === 0 || d.getUTCDay() === 6) d = new Date(d.getTime() - 86400000);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * 盤後：stock_daily 每檔最新的一天，而且要不早於最近一個交易日（PR-B）——
+ * 盤後排程拿到的若還是前一天的資料，晚上就不該拿那個當「現價」，退回打外部。
+ */
+function dailyCloses_(symbols, now) {
+  var fresh = lastTradingDayKey_(now || new Date());
   var out = {};
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(STOCK_DAILY_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return out;
@@ -440,6 +458,7 @@ function dailyCloses_(symbols) {
     var q = makeQuote_(row[col('close')], row[col('prev_close')], date, 'close', '');
     if (q) { q.date = date; out[sym] = q; }
   });
+  Object.keys(out).forEach(function (sym) { if (out[sym].date < fresh) delete out[sym]; });
   return out;
 }
 
@@ -503,7 +522,7 @@ function quote_(symbols, ctx) {
     need = need.filter(function (s) { return !got[s]; });
   };
 
-  if (!isTwTradingTime_(now)) tryLayer('close', dailyCloses_);
+  if (!isTwTradingTime_(now)) tryLayer('close', function (list) { return dailyCloses_(list, now); });
   tryLayer('fugle', function (list) {
     var r = fetchFugle_(list);
     if (r.limited) noteFugleLimited_(cache, list.length);
@@ -763,15 +782,22 @@ function stockPayload_(caller, trigger) {
     .sort(function (a, b) { return configSort_(a.sort) - configSort_(b.sort); });
   var book = computeHoldings_(tradeRows);
   var holdings = book.ok ? book.holdings : [];
+  var isAdmin = truthy_((caller.user || {}).is_admin);
+  // 提醒規則是個人的：只回自己的（PR-B）
+  var rules = withoutTombstones_(stockSheetRecords_(STOCK_RULES_SHEET).rows || [])
+    .filter(function (r) { return String(r.line_id).trim() === caller.line_id; });
+  var cfg = isAdmin ? stockConfig_() : null;
   var symbols = watchRows.map(function (r) { return normalizeSymbol_(r.symbol); })
-    .concat(holdings.map(function (h) { return h.symbol; }));
+    .concat(holdings.map(function (h) { return h.symbol; }))
+    .concat(rules.map(function (r) { return normalizeSymbol_(r.symbol); }))
+    .concat(cfg ? [normalizeSymbol_(cfg.rebalance_symbol || '00631L')] : []);
   var q = { quotes: {}, missing: [] };
   try {
     q = quote_(symbols, { trigger: trigger, line_id: caller.line_id, device_id: caller.device ? caller.device.device_id : '' });
   } catch (err) {
     console.log('報價失敗（其他資料照常回）：' + err);
   }
-  return {
+  var out = {
     ready: !trades.error && !watch.error,
     trading: isTwTradingTime_(new Date()),
     trades: tradeRows.map(function (r) { return plainRecord_(r, STOCK_TRADES_HEADERS); }),
@@ -781,8 +807,19 @@ function stockPayload_(caller, trigger) {
     quotes: q.quotes,
     missing: q.missing,
     members: stockMembers_(),
-    my_member: memberOf_(caller.user)
+    my_member: memberOf_(caller.user),
+    rules: rules.map(function (r) { return plainRecord_(r, STOCK_RULES_HEADERS); }),
+    hits: ruleHits_(rules, q.quotes, holdings)
   };
+  // 再平衡與現金只給管理者（D-10）：非管理者的回應裡連這兩個鍵都沒有
+  if (cfg) {
+    out.config = { rebalance_symbol: cfg.rebalance_symbol || '', rebalance_owner: cfg.rebalance_owner || '',
+                   cash: cfg.cash === undefined ? '' : cfg.cash, cash_updated_at: cfg.cash_updated_at || '',
+                   target_pct: cfg.target_pct === undefined ? '' : cfg.target_pct,
+                   threshold_rel_pct: cfg.threshold_rel_pct === undefined ? '' : cfg.threshold_rel_pct };
+    out.rebalance = computeRebalance_(cfg, holdings, q.quotes, memberOf_(caller.user), taipeiDateKey_(new Date()));
+  }
+  return out;
 }
 
 function withStock_(out, caller, body) {
@@ -940,4 +977,424 @@ function stockQuoteReply_(rest, text, user, userId, ctx) {
   if (held) lines.push(holdingLine_(held, q.price));
   logTransaction_(STOCK_LOG_SOURCE, '成功', text, '查詢 ' + symbol + ' ' + q.price + '（' + q.source + '）', '', '', userId);
   return lines.join('\n');
+}
+
+/* ========================================================================== */
+/* T5：00631L 再平衡（ADR-015 D-10）。只有管理者看得到、改得到                  */
+/* ========================================================================== */
+
+var STOCK_CONFIG_KEYS = ['rebalance_symbol', 'rebalance_owner', 'cash', 'target_pct', 'threshold_rel_pct'];
+var STOCK_CASH_STALE_DAYS = 30;
+
+/** _stock_config → { key: value }。分頁不存在回空物件 */
+function stockConfig_() {
+  var read = stockSheetRecords_(STOCK_CONFIG_SHEET);
+  var cfg = {};
+  (read.rows || []).forEach(function (r) {
+    var k = String(r.key == null ? '' : r.key).trim();
+    if (k) cfg[k] = r.value instanceof Date ? keyValue_(r.value) : (r.value == null ? '' : r.value);
+  });
+  return cfg;
+}
+
+function round2_(n) {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * 再平衡試算。純函式。
+ *   ratio ＝ V ÷ (V ＋ 現金)，V ＝ 持有者名下該檔股數 × 現價
+ *   區間 ＝ 目標 × (1 ± 相對門檻)；區間外亮燈，建議金額 ＝ (V ＋ 現金) × 目標 − V（正＝買、負＝賣）
+ * status 不是 ok 時卡片不出現：no_holding（沒持股）、no_cash（沒填現金，設定頁提示）、no_quote（沒報價）
+ */
+function computeRebalance_(cfg, holdings, quotes, myMember, todayKey) {
+  var symbol = normalizeSymbol_(cfg.rebalance_symbol || '00631L');
+  var owner = String(cfg.rebalance_owner == null ? '' : cfg.rebalance_owner).trim() || myMember || '';
+  var target = Number(cfg.target_pct), thr = Number(cfg.threshold_rel_pct);
+  var base = { symbol: symbol, owner: owner, target_pct: isFinite(target) ? target : '', threshold_rel_pct: isFinite(thr) ? thr : '',
+               cash_updated_at: cfg.cash_updated_at || '' };
+  var h = holdingOf_(holdings, owner, symbol);
+  if (!h) return Object.assign(base, { status: 'no_holding' });
+  var cashRaw = cfg.cash;
+  var cash = Number(cashRaw);
+  if (cashRaw === '' || cashRaw == null || !isFinite(cash) || cash < 0) return Object.assign(base, { status: 'no_cash' });
+  if (!isFinite(target) || target <= 0 || target >= 100 || !isFinite(thr) || thr <= 0) return Object.assign(base, { status: 'no_target' });
+  var q = (quotes || {})[symbol];
+  if (!q) return Object.assign(base, { status: 'no_quote' });
+
+  var value = h.qty * q.price, total = value + cash;
+  var ratio = total ? value / total : 0;
+  var t = target / 100, r = thr / 100;
+  var low = t * (1 - r), high = t * (1 + r);
+  var alert = ratio < low || ratio > high;
+  var suggest = total * t - value;
+  var updated = String(cfg.cash_updated_at || '');
+  var stale = !updated || (Date.parse(todayKey) - Date.parse(updated.slice(0, 10))) / 86400000 > STOCK_CASH_STALE_DAYS;
+  return Object.assign(base, {
+    status: 'ok', shares: h.qty, price: q.price, value: Math.round(value), cash: cash,
+    ratio_pct: round2_(ratio * 100), low_pct: round2_(low * 100), high_pct: round2_(high * 100), alert: alert,
+    suggest_amount: alert ? Math.round(suggest) : 0, suggest_shares: alert ? Math.round(suggest / q.price) : 0,
+    cash_stale: stale
+  });
+}
+
+/** 管理者改 _stock_config 的一格（比照 ADR-013 configSet：只收白名單裡的 key、驗過值才寫） */
+function stockConfigSet_(caller, key, value) {
+  var forbidden = adminForbidden_(caller, 'stockConfigSet');
+  if (forbidden) return forbidden;
+  if (STOCK_CONFIG_KEYS.indexOf(key) === -1) return { error: 'invalid_key' };
+  var v = value == null ? '' : value;
+  if (key === 'cash') {
+    v = String(toHalfWidth_(v)).replace(/,/g, '').trim();
+    if (v !== '' && (!isFinite(Number(v)) || Number(v) < 0)) return { error: 'invalid_value', key: key };
+    v = v === '' ? '' : Number(v);
+  } else if (key === 'target_pct' || key === 'threshold_rel_pct') {
+    v = Number(v);
+    if (!isFinite(v) || v <= 0 || v >= 100) return { error: 'invalid_value', key: key };
+  } else if (key === 'rebalance_symbol') {
+    v = normalizeSymbol_(v);
+    if (!isValidSymbol_(v, { trigger: 'write', line_id: caller.line_id }) || v === STOCK_GOLD) return { error: 'invalid_symbol', symbol: v };
+  } else if (key === 'rebalance_owner') {
+    v = String(v).trim();
+    if (v && stockMembers_().indexOf(v) === -1) return { error: 'owner_not_member', owner: v };
+  }
+  var read = stockSheetRecords_(STOCK_CONFIG_SHEET);
+  if (read.error) return { error: read.error };
+  var patch = {};
+  patch[key] = v;
+  if (key === 'cash') patch.cash_updated_at = taipeiDateKey_(new Date());
+  var headers = sheetHeaders_(read.sheet);
+  Object.keys(patch).forEach(function (k) {
+    upsertRow_(read.sheet, headers, { key: k, value: patch[k] }, STOCK_CONFIG_SHEET, 'key');
+  });
+  settingsLog_(caller, 'stockConfigSet ' + key, '→ ' + (v === '' ? '（空白）' : v));
+  return { success: true, key: key, value: v, cash_updated_at: patch.cash_updated_at || '' };
+}
+
+/* ========================================================================== */
+/* T6：提醒規則（ADR-015 D-11、D-12）                                           */
+/*                                                                            */
+/* 判斷邏輯只有這一份：儀表板亮燈（readMany 帶回 hits）與自動推播都用 evaluateRule_。 */
+/* 新增一種規則＝在 STOCK_RULE_TYPES 加一筆，其他地方不用動。                      */
+/* ========================================================================== */
+
+var STOCK_RULE_UNKNOWN_PREFIX = 'adr015_unk_';
+var STOCK_RULE_UNKNOWN_TTL = 21600;   // CacheService 上限 6 小時：同一條不認得的規則最多每 6 小時記一次
+var STOCK_RULES_FUNCTION = 'checkStockRules';
+var STOCK_RULES_MINUTES = 5;
+var STOCK_DAILY_FUNCTION = 'fetchStockDaily';
+var STOCK_DAILY_HOUR = 14;
+var STOCK_DAILY_MINUTE = 30;
+var STOCK_PUSH_SOURCE = '股票提醒';
+
+function ruleNum_(v) {
+  var n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+/** 類型 → { label, check(params, quote, holdings) → null（不判斷）或 { hit, reason } } */
+var STOCK_RULE_TYPES = {
+  price_above: {
+    label: '價格高於',
+    valid: function (p) { return ruleNum_(p.price) > 0; },
+    check: function (p, q) {
+      return { hit: q.price >= Number(p.price), reason: '現價 ' + fmtStock_(q.price, 4) + ' ≥ ' + fmtStock_(p.price, 4) };
+    }
+  },
+  price_below: {
+    label: '價格低於',
+    valid: function (p) { return ruleNum_(p.price) > 0; },
+    check: function (p, q) {
+      return { hit: q.price <= Number(p.price), reason: '現價 ' + fmtStock_(q.price, 4) + ' ≤ ' + fmtStock_(p.price, 4) };
+    }
+  },
+  change_pct: {
+    label: '當日漲跌超過',
+    valid: function (p) { return ruleNum_(p.pct) > 0; },
+    check: function (p, q) {
+      if (q.changePct === '' || q.changePct == null) return null;
+      return { hit: Math.abs(Number(q.changePct)) >= Number(p.pct),
+               reason: '漲跌 ' + signed_(q.changePct, 2) + '%（超過 ±' + fmtStock_(p.pct, 2) + '%）' };
+    }
+  },
+  cost_pct: {
+    label: '相對成本',
+    valid: function (p) { return ruleNum_(p.pct) !== null && Number(p.pct) !== 0 && !!String(p.owner || '').trim(); },
+    check: function (p, q, holdings, symbol) {
+      var h = holdingOf_(holdings, String(p.owner).trim(), symbol);
+      if (!h || !h.avg_cost) return null;                      // 沒持股不判斷
+      var ret = (q.price - h.avg_cost) / h.avg_cost * 100;
+      var pct = Number(p.pct);
+      return { hit: pct < 0 ? ret <= pct : ret >= pct,
+               reason: h.owner + ' 報酬 ' + signed_(ret, 2) + '%（' + (pct < 0 ? '跌破 ' : '漲過 ') + signed_(pct, 2) + '%）' };
+    }
+  }
+};
+
+function ruleParams_(rule) {
+  var p = rule && rule.params;
+  if (p && typeof p === 'object') return p;
+  try { return JSON.parse(String(p || '{}')) || {}; } catch (err) { return null; }
+}
+
+/**
+ * 一條規則對一檔報價。回 { status: 'hit'|'miss'|'skip'|'unknown'|'invalid', reason }。
+ * 不認得的 type 回 unknown（呼叫端記 logs、略過，不中斷其他規則）。
+ */
+function evaluateRule_(rule, quote, holdings) {
+  var type = STOCK_RULE_TYPES[String(rule && rule.type || '').trim()];
+  if (!type) return { status: 'unknown', reason: '不認得的規則類型「' + (rule && rule.type) + '」' };
+  var params = ruleParams_(rule);
+  if (!params || !type.valid(params)) return { status: 'invalid', reason: '規則參數不對' };
+  if (!quote) return { status: 'skip', reason: '沒有報價' };
+  var r = type.check(params, quote, holdings || [], normalizeSymbol_(rule.symbol));
+  if (!r) return { status: 'skip', reason: '' };
+  return { status: r.hit ? 'hit' : 'miss', reason: r.reason };
+}
+
+function noteUnknownRule_(rule) {
+  var cache = scriptCache_();
+  var key = STOCK_RULE_UNKNOWN_PREFIX + String(rule.id);
+  try { if (cache && cache.get(key)) return; if (cache) cache.put(key, '1', STOCK_RULE_UNKNOWN_TTL); } catch (err) {}
+  try {
+    logTransaction_(STOCK_LOG_SOURCE, '失敗', 'rule ' + rule.id, '⚠️ 不認得的規則類型「' + rule.type + '」，略過',
+      '其他規則照常判斷；這條每 6 小時最多記一次', '', String(rule.line_id || ''));
+  } catch (err) {}
+}
+
+/** 規則 → 每檔命中的原因 { 代號: [{ id, type, reason }] }。只看啟用中、沒刪的 */
+function ruleHits_(rules, quotes, holdings) {
+  var hits = {};
+  (rules || []).forEach(function (rule) {
+    if (isTombstone_(rule) || !truthy_(rule.enabled)) return;
+    var sym = normalizeSymbol_(rule.symbol);
+    var r = evaluateRule_(rule, (quotes || {})[sym], holdings);
+    if (r.status === 'unknown') { noteUnknownRule_(rule); return; }
+    if (r.status !== 'hit') return;
+    (hits[sym] = hits[sym] || []).push({ id: String(rule.id), type: String(rule.type), reason: r.reason });
+  });
+  return hits;
+}
+
+/**
+ * PWA 對 stock_rules 的 upsert。規則是個人的：只能改自己的（管理者也一樣），line_id 一律是本人；
+ * last_fired_at 只有排程會寫；PWA 只收認得的類型（不認得的 type 只可能是手改 Sheet 來的）。
+ */
+function guardStockRule_(caller, record) {
+  var rec = Object.assign({}, record || {});
+  var id = keyValue_(rec.id);
+  if (!id) return { error: 'invalid_rule', field: 'id' };
+  var all = stockSheetRecords_(STOCK_RULES_SHEET);
+  if (all.error) return { error: all.error };
+  var existing = all.rows.filter(function (r) { return keyValue_(r.id) === id; })[0] || null;
+  if (existing && String(existing.line_id).trim() !== caller.line_id) return { error: 'not_your_rule' };
+  if (isTombstone_(rec)) {
+    if (!existing) return { error: 'rule_not_found' };
+    return { record: Object.assign({}, existing, { del: 'TRUE' }) };
+  }
+  rec.id = id;
+  rec.symbol = normalizeSymbol_(rec.symbol);
+  rec.type = String(rec.type == null ? '' : rec.type).trim();
+  var type = STOCK_RULE_TYPES[rec.type];
+  if (!type) return { error: 'invalid_rule', field: 'type' };
+  var params = ruleParams_(rec);
+  if (!params || !type.valid(params)) return { error: 'invalid_rule', field: 'params' };
+  if (rec.type === 'cost_pct' && stockMembers_().indexOf(String(params.owner).trim()) === -1) {
+    return { error: 'owner_not_member', owner: params.owner };
+  }
+  var cooldown = rec.cooldown_days === '' || rec.cooldown_days == null ? 1 : Number(rec.cooldown_days);
+  if (!isFinite(cooldown) || cooldown < 1 || Math.round(cooldown) !== cooldown) return { error: 'invalid_rule', field: 'cooldown_days' };
+  if (rec.symbol === STOCK_GOLD || !isValidSymbol_(rec.symbol, { trigger: 'write', line_id: caller.line_id })) {
+    return { error: 'invalid_symbol', symbol: rec.symbol };
+  }
+  rec.params = JSON.stringify(params);
+  rec.enabled = truthy_(rec.enabled) ? 'TRUE' : '';
+  rec.auto_push = truthy_(rec.auto_push) ? 'TRUE' : '';
+  rec.cooldown_days = cooldown;
+  rec.last_fired_at = existing ? existing.last_fired_at : '';
+  rec.line_id = caller.line_id;
+  rec.created_at = existing && existing.created_at ? existing.created_at : new Date().toISOString();
+  rec.del = '';
+  return { record: rec };
+}
+
+function pushQuoteText_(symbol, q, reasons) {
+  return ['📈 股票提醒：' + symbol + (q && q.name ? ' ' + q.name : '')].concat(reasons)
+    .concat(q ? [quoteStamp_(q)] : []).join('\n');
+}
+
+/**
+ * 自動推播（排程每 5 分鐘）。非交易時段直接結束；沒有 enabled && auto_push 的規則就不打報價。
+ * 命中且過了冷卻（cooldown_days）→ 推給規則建立者、寫 last_fired_at。有推播才寫 logs（不然每 5 分鐘一列）。
+ * 交易時段的每一次執行都寫一列 performance（trigger=schedule）。
+ */
+function checkStockRules(nowArg) {
+  var started = Date.now();
+  var now = nowArg instanceof Date ? nowArg : new Date();
+  if (!isTwTradingTime_(now)) return { skipped: 'closed' };
+  var read = stockSheetRecords_(STOCK_RULES_SHEET);
+  var sheet = read.sheet;
+  var candidates = (read.rows || []).map(function (r, i) { return { rule: r, row: i + 2 }; }).filter(function (x) {
+    return !isTombstone_(x.rule) && truthy_(x.rule.enabled) && truthy_(x.rule.auto_push);
+  });
+  if (!candidates.length) {
+    recordSchedulePerf_('stockRules', 0, Date.now() - started);
+    return { candidates: 0, pushed: 0 };
+  }
+  var symbols = candidates.map(function (x) { return normalizeSymbol_(x.rule.symbol); });
+  var quotes = quote_(symbols, { trigger: 'schedule', now: now }).quotes;
+  var needBook = candidates.some(function (x) { return String(x.rule.type).trim() === 'cost_pct'; });
+  var holdings = needBook ? (computeHoldings_(withoutTombstones_(stockSheetRecords_(STOCK_TRADES_SHEET).rows)).holdings || []) : [];
+  var headers = sheet ? sheetHeaders_(sheet) : [];
+  var firedCol = headers.indexOf('last_fired_at') + 1;
+  var pushed = 0;
+  candidates.forEach(function (x) {
+    var rule = x.rule;
+    var sym = normalizeSymbol_(rule.symbol);
+    var r = evaluateRule_(rule, quotes[sym], holdings);
+    if (r.status === 'unknown') { noteUnknownRule_(rule); return; }
+    if (r.status !== 'hit') return;
+    var last = Date.parse(String(rule.last_fired_at || ''));
+    var cooldownMs = (Number(rule.cooldown_days) || 1) * 86400000;
+    if (isFinite(last) && now.getTime() - last < cooldownMs) return;
+    var to = String(rule.line_id || '').trim();
+    if (!to) return;
+    var res = linePush_(to, pushQuoteText_(sym, quotes[sym], [r.reason]));
+    var ok = !!(res && res.ok);
+    if (ok && firedCol) {
+      sheet.getRange(x.row, firedCol, 1, 1).setValues([[now.toISOString()]]);
+      pushed++;
+    }
+    logTransaction_(STOCK_PUSH_SOURCE, ok ? '成功' : '失敗', 'rule ' + rule.id + ' ' + sym + ' ' + rule.type,
+      ok ? '已推播：' + r.reason : '推播失敗', ok ? '' : String((res && res.reason) || ''), '', to);
+  });
+  recordSchedulePerf_('stockRules', pushed, Date.now() - started);
+  return { candidates: candidates.length, pushed: pushed };
+}
+
+/** 自選頁的「推給我」：把這一檔對我命中的原因推給我自己（不提供推到群組：持股資訊私密） */
+function stockPushMe_(caller, rawSymbol) {
+  if (!canUse_(caller.user, 'feat_stock')) return { error: 'forbidden' };
+  var sym = normalizeSymbol_(rawSymbol);
+  var rules = withoutTombstones_(stockSheetRecords_(STOCK_RULES_SHEET).rows).filter(function (r) {
+    return String(r.line_id).trim() === caller.line_id && normalizeSymbol_(r.symbol) === sym;
+  });
+  if (!rules.length) return { error: 'no_hit' };
+  var q = quote_([sym], { trigger: 'manual', line_id: caller.line_id }).quotes[sym];
+  var holdings = computeHoldings_(withoutTombstones_(stockSheetRecords_(STOCK_TRADES_SHEET).rows)).holdings || [];
+  var hits = (ruleHits_(rules, q ? (function () { var o = {}; o[sym] = q; return o; })() : {}, holdings)[sym]) || [];
+  if (!hits.length) return { error: 'no_hit' };
+  var res = linePush_(caller.line_id, pushQuoteText_(sym, q, hits.map(function (h) { return h.reason; })));
+  var ok = !!(res && res.ok);
+  logTransaction_(STOCK_PUSH_SOURCE, ok ? '成功' : '失敗', '推給我 ' + sym, ok ? '已推播 ' + hits.length + ' 條' : '推播失敗',
+    ok ? '' : String((res && res.reason) || ''), '', caller.line_id);
+  return ok ? { success: true, pushed: hits.length } : { error: 'push_failed', reason: (res && res.reason) || '' };
+}
+
+/* ========================================================================== */
+/* T7：盤後收盤價（ADR-015 D-2）                                                */
+/*                                                                            */
+/* 交易日約 14:30 排程跑一次：證交所 STOCK_DAY_ALL（上市）＋櫃買收盤行情（上櫃）。 */
+/* 只寫「自選＋有持股」的代號；日期用資料本身的日期（民國年換西元），所以同一天    */
+/* 重跑不會重複寫，14:30 拿到的若還是前一天的資料，也只會補前一天、不會冒充今天。  */
+/* ========================================================================== */
+
+/** 民國年日期 1151007 → 2026-10-07 */
+function rocDateKey_(raw) {
+  var t = String(raw == null ? '' : raw).trim();
+  var m = /^(\d{2,3})(\d{2})(\d{2})$/.exec(t);
+  if (!m) return '';
+  return (Number(m[1]) + 1911) + '-' + m[2] + '-' + m[3];
+}
+
+/** 一整包盤後資料 → { 代號: { date, close, prev_close } } */
+function parseDayAll_(list, codeField, closeField, changeField) {
+  var out = {};
+  (Array.isArray(list) ? list : []).forEach(function (it) {
+    var code = normalizeSymbol_(it[codeField]);
+    var close = Number(String(it[closeField] == null ? '' : it[closeField]).replace(/,/g, ''));
+    var date = rocDateKey_(it.Date);
+    if (!code || !date || !isFinite(close) || close <= 0) return;
+    var change = Number(String(it[changeField] == null ? '' : it[changeField]).replace(/[,+\s]/g, ''));
+    out[code] = { date: date, close: close, prev_close: isFinite(change) ? quoteRound_(close - change) : '' };
+  });
+  return out;
+}
+
+function fetchDayAllJson_(url) {
+  var res = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) throw new Error(url + ' HTTP ' + res.getResponseCode());
+  var body = probeJson_(res.getContentText());
+  if (!Array.isArray(body)) throw new Error(url + ' ' + (probeJsonError_(res.getContentText()) || '回的不是陣列'));
+  return body;
+}
+
+/** 要收盤價的代號：啟用中的自選＋有持股的（黃金除外） */
+function stockTrackedSymbols_() {
+  var out = [];
+  stockSheetRecords_(STOCK_WATCH_SHEET).rows.filter(function (r) { return truthy_(r.is_active); })
+    .forEach(function (r) { var s = normalizeSymbol_(r.symbol); if (out.indexOf(s) === -1) out.push(s); });
+  (computeHoldings_(withoutTombstones_(stockSheetRecords_(STOCK_TRADES_SHEET).rows)).holdings || [])
+    .forEach(function (h) { if (h.symbol !== STOCK_GOLD && out.indexOf(h.symbol) === -1) out.push(h.symbol); });
+  return out;
+}
+
+function fetchStockDaily() {
+  var started = Date.now();
+  var read = stockSheetRecords_(STOCK_DAILY_SHEET);
+  if (read.error) {
+    logCleanup_('盤後收盤價', '找不到 ' + STOCK_DAILY_SHEET + '，沒有寫', '請管理者傳「初始化」');
+    recordSchedulePerf_('stockDaily', 0, Date.now() - started);
+    return { written: 0, reason: 'sheet_missing' };
+  }
+  var symbols = stockTrackedSymbols_();
+  if (!symbols.length) {
+    recordSchedulePerf_('stockDaily', 0, Date.now() - started);
+    return { written: 0, reason: 'no_symbols' };
+  }
+  var found = {}, errors = [];
+  try {
+    var twse = parseDayAll_(fetchDayAllJson_(TWSE_DAY_ALL_URL), 'Code', 'ClosingPrice', 'Change');
+    symbols.forEach(function (s) { if (twse[s]) found[s] = Object.assign({ source: 'twse' }, twse[s]); });
+  } catch (err) { errors.push(String(err && err.message || err)); }
+  var otc = symbols.filter(function (s) { return !found[s]; });
+  if (otc.length) {
+    try {
+      var tpex = parseDayAll_(fetchDayAllJson_(TPEX_DAILY_URL), 'SecuritiesCompanyCode', 'Close', 'Change');
+      otc.forEach(function (s) { if (tpex[s]) found[s] = Object.assign({ source: 'tpex' }, tpex[s]); });
+    } catch (err) { errors.push(String(err && err.message || err)); }
+  }
+
+  var have = {};
+  read.rows.forEach(function (r) { have[keyValue_(r.date) + '|' + normalizeSymbol_(r.symbol)] = true; });
+  var headers = sheetHeaders_(read.sheet);
+  var rows = [];
+  Object.keys(found).forEach(function (s) {
+    var f = found[s];
+    if (have[f.date + '|' + s]) return;
+    var rec = { date: f.date, symbol: s, close: f.close, prev_close: f.prev_close, source: f.source };
+    rows.push(headers.map(function (h) { return rec[h] === undefined ? '' : rec[h]; }));
+  });
+  if (rows.length) {
+    read.sheet.getRange(read.sheet.getLastRow() + 1, 1, rows.length, headers.length).setValues(rows);
+  }
+  var missing = symbols.filter(function (s) { return !found[s]; });
+  if (!rows.length || missing.length || errors.length) {
+    var dates = Object.keys(found).map(function (s) { return found[s].date; }).filter(function (d, i, a) { return a.indexOf(d) === i; });
+    logCleanup_('盤後收盤價',
+      rows.length ? '寫入 ' + rows.length + ' 檔，但有缺' : '沒有新的收盤價（假日或資料還沒更新）',
+      (dates.length ? '資料日期 ' + dates.join('、') + '｜' : '') + (missing.length ? '找不到：' + missing.join('、') + '｜' : '') + errors.join('；'));
+  }
+  recordSchedulePerf_('stockDaily', rows.length, Date.now() - started);
+  return { written: rows.length, missing: missing, errors: errors };
+}
+
+/** 兩個排程。先刪同名的再建，重跑不累積（比照 installAdr009Triggers） */
+function installStockTriggers_() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    var fn = t.getHandlerFunction();
+    if (fn === STOCK_RULES_FUNCTION || fn === STOCK_DAILY_FUNCTION) ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger(STOCK_RULES_FUNCTION).timeBased().everyMinutes(STOCK_RULES_MINUTES).create();
+  ScriptApp.newTrigger(STOCK_DAILY_FUNCTION).timeBased().atHour(STOCK_DAILY_HOUR).nearMinute(STOCK_DAILY_MINUTE).everyDays(1).create();
 }

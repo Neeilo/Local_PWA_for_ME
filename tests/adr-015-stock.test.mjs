@@ -106,10 +106,11 @@ function network({ fail = {}, fugleStatus = 200, misZ = null } = {}) {
   return { calls, UrlFetchApp };
 }
 
-function env({ net = network(), properties = { FUGLE_API_KEY: KEY }, sheets = {}, overrides = {} } = {}) {
+function env({ net = network(), properties = { FUGLE_API_KEY: KEY }, sheets = {}, overrides = {}, pushImpl = null } = {}) {
   const replies = [];
   const e = loadCodeGs({
     cache: true,
+    pushImpl,
     extraFiles: ['line-router.gs', 'sheet-guide.gs'],
     properties,
     tokens: { [TOK.NEIL]: NEIL, [TOK.MOM]: MOM, [TOK.KID]: KID, [TOK.AUNT]: AUNT },
@@ -211,12 +212,29 @@ describe('T1 報價層', () => {
 
   test('非交易時段：讀 stock_daily 的收盤價，不打外部', () => {
     const daily = new FakeSheet('stock_daily', [['date', 'symbol', 'close', 'prev_close', 'source'],
-      ['2026-10-08', '2330', 2560, 2585, 'twse'], ['2026-10-07', '2330', 2585, 2585, 'twse']]);
+      ['2026-10-09', '2330', 2560, 2585, 'twse'], ['2026-10-08', '2330', 2585, 2585, 'twse']]);
     const e = env({ sheets: { stock_daily: daily } });
     const q = e.call('quote_', ['2330'], { now: SATURDAY }).quotes['2330'];
     assert.equal(q.source, 'close');
     assert.equal(q.price, 2560, '取最新那一天');
     assert.equal(e.net.calls.all.length, 0);
+  });
+
+  test('收盤價不是最近一個交易日的（排程拿到的是前一天）→ 不採用，打外部', () => {
+    const daily = new FakeSheet('stock_daily', [['date', 'symbol', 'close', 'prev_close', 'source'],
+      ['2026-10-08', '2330', 2585, 2585, 'twse']]);
+    const e = env({ sheets: { stock_daily: daily } });
+    const q = e.call('quote_', ['2330'], { now: SATURDAY }).quotes['2330'];
+    assert.equal(q.source, 'fugle', '週六的最近交易日是週五 10/9，10/8 的收盤價過期了');
+  });
+
+  test('最近一個交易日：平日收盤後是今天、盤中與開盤前是前一個平日、週末往回找週五', () => {
+    const e = env();
+    const at = (iso) => e.call('lastTradingDayKey_', new Date(iso));
+    assert.equal(at('2026-10-08T06:00:00Z'), '2026-10-08', '週四 14:00');
+    assert.equal(at('2026-10-08T02:00:00Z'), '2026-10-07', '週四 10:00 盤中');
+    assert.equal(at('2026-10-12T00:00:00Z'), '2026-10-09', '週一 8:00 開盤前');
+    assert.equal(at('2026-10-11T02:00:00Z'), '2026-10-09', '週日');
   });
 
   test('非交易時段但還沒有收盤價（PR-B 的排程還沒跑過）→ 才打外部', () => {
@@ -420,10 +438,10 @@ describe('T2 交易：持有者與權限由後端強制（PWA upsert）', () => 
     assert.equal(trades(e).length, 0);
   });
 
-  test('股票表只開 upsert 與封存；提醒規則這一輪寫不進去', () => {
+  test('股票表只開 upsert 與封存', () => {
     const e = env();
     assert.equal(post(e, { action: 'completeRecurring', token: TOK.NEIL, sheet: 'stock_trades', record: { id: 'x' } }).error, 'unknown_action');
-    assert.equal(post(e, { action: 'upsert', token: TOK.NEIL, sheet: 'stock_rules', record: { id: 'r1' } }).error, 'sheet_not_writable');
+    assert.equal(post(e, { action: 'completeRecurring', token: TOK.NEIL, sheet: 'stock_rules', record: { id: 'x' } }).error, 'unknown_action');
   });
 
   test('feat_stock 關閉者：讀不到、寫不進、readMany 不帶股票資料', () => {
@@ -658,5 +676,325 @@ describe('初始化：建表、補欄位、feat_stock 只預設開管理者', ()
     const e = env();
     const reply = line(e, NEIL, '初始化');
     assert.match(reply, /股票（ADR-015）/);
+  });
+});
+
+/* ========================================================================== */
+/* PR-B                                                                        */
+/* ========================================================================== */
+
+const CONFIG = (over = {}) => {
+  const c = Object.assign({ rebalance_symbol: '00631L', rebalance_owner: '', cash: 200000, cash_updated_at: '2026-10-08',
+    target_pct: 50, threshold_rel_pct: 25 }, over);
+  return new FakeSheet('_stock_config', [['key', 'value']].concat(Object.entries(c)));
+};
+const RULE_HEADERS = ['id', 'symbol', 'type', 'params', 'enabled', 'auto_push', 'cooldown_days', 'last_fired_at', 'line_id', 'created_at', 'del'];
+const rule = (id, symbol, type, params, lineId, extra = {}) => Object.assign({ id, symbol, type, params: JSON.stringify(params),
+  enabled: 'TRUE', auto_push: '', cooldown_days: 1, last_fired_at: '', line_id: lineId, created_at: '', del: '' }, extra);
+const rulesSheet = (rows) => new FakeSheet('stock_rules', [RULE_HEADERS].concat(rows.map((r) => RULE_HEADERS.map((h) => r[h]))));
+const Q = (price, changePct = 0) => ({ price, prevClose: price, change: 0, changePct, time: '', source: 'fugle', name: '' });
+
+describe('T5 再平衡（computeRebalance_）', () => {
+  const calc = (e, price, cfg = {}, holdings = [{ owner: '爸爸', symbol: '00631L', qty: 1000, cost: 1, avg_cost: 0.001 }]) =>
+    e.call('computeRebalance_', Object.assign({ rebalance_symbol: '00631L', rebalance_owner: '', cash: 200000,
+      cash_updated_at: '2026-10-08', target_pct: 50, threshold_rel_pct: 25 }, cfg), holdings, { '00631L': Q(price) }, '爸爸', '2026-10-08');
+
+  test('票面三個例子：53.27% 不亮、60% 不亮、64.3% 亮燈建議賣出 80,000', () => {
+    const e = env();
+    const a = calc(e, 228);
+    assert.equal(a.status, 'ok');
+    assert.equal(a.value, 228000);
+    assert.equal(a.ratio_pct, 53.27);
+    assert.equal(a.low_pct, 37.5);
+    assert.equal(a.high_pct, 62.5);
+    assert.equal(a.alert, false);
+    assert.equal(a.suggest_amount, 0, '沒亮燈不給建議');
+    const b = calc(e, 300);
+    assert.equal(b.ratio_pct, 60);
+    assert.equal(b.alert, false);
+    const c = calc(e, 360);
+    assert.equal(c.ratio_pct, 64.29);
+    assert.equal(c.alert, true);
+    assert.equal(c.suggest_amount, -80000);
+    assert.equal(c.suggest_shares, -222);
+  });
+
+  test('低於區間 → 建議買入（正數）', () => {
+    const e = env();
+    const r = calc(e, 100);                    // V=100,000 / 300,000 = 33.3%
+    assert.equal(r.alert, true);
+    assert.equal(r.suggest_amount, 50000);
+  });
+
+  test('沒持股、沒填現金：卡片不出現（status 不是 ok）', () => {
+    const e = env();
+    assert.equal(calc(e, 228, {}, []).status, 'no_holding');
+    assert.equal(calc(e, 228, { cash: '' }).status, 'no_cash');
+  });
+
+  test('持有者：留白＝管理者自己的 member；指定了就看那個人', () => {
+    const e = env();
+    const momOnly = [{ owner: '媽媽', symbol: '00631L', qty: 1000, cost: 1, avg_cost: 0.001 }];
+    assert.equal(calc(e, 228, {}, momOnly).status, 'no_holding');
+    assert.equal(calc(e, 228, { rebalance_owner: '媽媽' }, momOnly).status, 'ok');
+  });
+
+  test('現金超過 30 天沒更新 → cash_stale', () => {
+    const e = env();
+    assert.equal(calc(e, 228, { cash_updated_at: '2026-09-08' }).cash_stale, false);
+    assert.equal(calc(e, 228, { cash_updated_at: '2026-09-07' }).cash_stale, true);
+  });
+});
+
+describe('T5 再平衡只給管理者', () => {
+  const sheets = () => ({
+    _stock_config: CONFIG(),
+    stock_trades: new FakeSheet('stock_trades', [TRADE_HEADERS, trade('b1', '2026-10-01', '00631L', 'buy', 5000, 40, '爸爸', NEIL)])
+  });
+
+  test('管理者的 readMany 帶 config 與 rebalance；非管理者連鍵都沒有', () => {
+    const e = env({ sheets: sheets() });
+    const admin = post(e, { action: 'readMany', token: TOK.NEIL, sheets: ['tasks'], stock: true, trigger: 'poll' }).stock;
+    assert.equal(admin.rebalance.status, 'ok');
+    assert.equal(admin.rebalance.value, 206400);
+    assert.equal(admin.config.cash, 200000);
+    const mom = post(e, { action: 'readMany', token: TOK.MOM, sheets: ['tasks'], stock: true, trigger: 'poll' }).stock;
+    assert.equal('rebalance' in mom, false);
+    assert.equal('config' in mom, false);
+  });
+
+  test('stockConfigSet：管理者改現金會一起寫 cash_updated_at；非管理者被擋；值不對被擋', () => {
+    const s = sheets();
+    s._stock_config = CONFIG({ cash_updated_at: '2020-01-01' });
+    const e = env({ sheets: s });
+    const out = post(e, { action: 'stockConfigSet', token: TOK.NEIL, key: 'cash', value: '250,000', trigger: 'write' });
+    assert.equal(out.success, true, JSON.stringify(out));
+    const cfg = Object.fromEntries(e.sheets._stock_config.toRecords().map((r) => [r.key, r.value]));
+    assert.equal(cfg.cash, 250000);
+    assert.match(String(cfg.cash_updated_at), /^\d{4}-\d{2}-\d{2}$/);
+    assert.notEqual(cfg.cash_updated_at, '2020-01-01', '改現金要一起更新日期');
+    assert.equal(post(e, { action: 'stockConfigSet', token: TOK.MOM, key: 'cash', value: 1 }).error, 'forbidden');
+    assert.equal(post(e, { action: 'stockConfigSet', token: TOK.NEIL, key: 'target_pct', value: 100 }).error, 'invalid_value');
+    assert.equal(post(e, { action: 'stockConfigSet', token: TOK.NEIL, key: 'rebalance_owner', value: '路人' }).error, 'owner_not_member');
+    assert.equal(post(e, { action: 'stockConfigSet', token: TOK.NEIL, key: 'cash_updated_at', value: '2020-01-01' }).error, 'invalid_key');
+  });
+});
+
+describe('T6 規則判斷（evaluateRule_，判斷只有這一份）', () => {
+  const ev = (e, r, q, holdings = []) => e.call('evaluateRule_', r, q, holdings).status;
+
+  test('四種 type 各自命中與不命中', () => {
+    const e = env();
+    assert.equal(ev(e, rule('1', '2330', 'price_above', { price: 2700 }, NEIL), Q(2700)), 'hit');
+    assert.equal(ev(e, rule('1', '2330', 'price_above', { price: 2700 }, NEIL), Q(2699)), 'miss');
+    assert.equal(ev(e, rule('2', '00631L', 'price_below', { price: 38 }, NEIL), Q(38)), 'hit');
+    assert.equal(ev(e, rule('2', '00631L', 'price_below', { price: 38 }, NEIL), Q(38.01)), 'miss');
+    assert.equal(ev(e, rule('3', '2330', 'change_pct', { pct: 3 }, NEIL), Q(1, -3.2)), 'hit');
+    assert.equal(ev(e, rule('3', '2330', 'change_pct', { pct: 3 }, NEIL), Q(1, 2.9)), 'miss');
+    const held = [{ owner: '爸爸', symbol: '00631L', qty: 1000, cost: 40000, avg_cost: 40 }];
+    assert.equal(ev(e, rule('4', '00631L', 'cost_pct', { pct: -15, owner: '爸爸' }, NEIL), Q(34), held), 'hit');
+    assert.equal(ev(e, rule('4', '00631L', 'cost_pct', { pct: -15, owner: '爸爸' }, NEIL), Q(34.1), held), 'miss');
+    assert.equal(ev(e, rule('5', '00631L', 'cost_pct', { pct: 20, owner: '爸爸' }, NEIL), Q(48), held), 'hit');
+    assert.equal(ev(e, rule('5', '00631L', 'cost_pct', { pct: 20, owner: '爸爸' }, NEIL), Q(47.9), held), 'miss');
+  });
+
+  test('cost_pct 那個持有者沒持股 → 不判斷（skip，不是 miss 也不是 hit）', () => {
+    const e = env();
+    assert.equal(ev(e, rule('4', '00631L', 'cost_pct', { pct: -15, owner: '媽媽' }, NEIL), Q(1), []), 'skip');
+  });
+
+  test('不認得的 type 回 unknown；參數壞掉回 invalid', () => {
+    const e = env();
+    assert.equal(ev(e, rule('9', '2330', 'rsi_above', { v: 70 }, NEIL), Q(1)), 'unknown');
+    assert.equal(ev(e, Object.assign(rule('8', '2330', 'price_above', {}, NEIL), { params: '{壞掉' }), Q(1)), 'invalid');
+  });
+
+  test('ruleHits_：unknown 略過、記 logs（6 小時內同一條只記一次），不中斷其他規則；停用與刪除的不算', () => {
+    const e = env();
+    const rules = [rule('9', '2330', 'rsi_above', {}, NEIL), rule('1', '2330', 'price_above', { price: 1 }, NEIL),
+      rule('2', '2330', 'price_above', { price: 1 }, NEIL, { enabled: '' }), rule('3', '2330', 'price_above', { price: 1 }, NEIL, { del: 'TRUE' })];
+    const hits = e.call('ruleHits_', rules, { 2330: Q(2560) }, []);
+    assert.deepEqual(hits['2330'].map((h) => h.id), ['1']);
+    e.call('ruleHits_', rules, { 2330: Q(2560) }, []);
+    assert.equal(e.transactions.filter((t) => /不認得的規則類型/.test(t[3])).length, 1);
+  });
+});
+
+describe('T6 規則的寫入與讀取', () => {
+  const up = (e, tok, record) => post(e, { action: 'upsert', token: TOK[tok], sheet: 'stock_rules', record, trigger: 'write' });
+  const base = { id: 'r1', symbol: '2330', type: 'price_above', params: { price: 2700 }, enabled: true, auto_push: true, cooldown_days: 1 };
+
+  test('建立：line_id 一律是本人、params 存成 JSON、布林存 TRUE／空白', () => {
+    const e = env({ sheets: { stock_rules: rulesSheet([]) } });
+    const out = up(e, 'MOM', Object.assign({}, base, { line_id: NEIL, last_fired_at: '2099-01-01' }));
+    assert.equal(out.success, true, JSON.stringify(out));
+    const r = e.sheets.stock_rules.toRecords()[0];
+    assert.equal(r.line_id, MOM);
+    assert.equal(r.params, '{"price":2700}');
+    assert.equal(r.enabled, 'TRUE');
+    assert.equal(r.last_fired_at, '', '只有排程會寫 last_fired_at');
+  });
+
+  test('只能改自己的規則（管理者也一樣）；不認得的 type、冷卻 0 天、黃金、cost_pct 持有者不在名單都擋', () => {
+    const e = env({ sheets: { stock_rules: rulesSheet([rule('r1', '2330', 'price_above', { price: 1 }, MOM)]) } });
+    assert.equal(up(e, 'NEIL', Object.assign({}, base)).error, 'not_your_rule');
+    assert.equal(up(e, 'NEIL', Object.assign({}, base, { id: 'x', type: 'rsi_above' })).field, 'type');
+    assert.equal(up(e, 'NEIL', Object.assign({}, base, { id: 'x', cooldown_days: 0 })).field, 'cooldown_days');
+    assert.equal(up(e, 'NEIL', Object.assign({}, base, { id: 'x', symbol: 'GOLD' })).error, 'invalid_symbol');
+    assert.equal(up(e, 'NEIL', Object.assign({}, base, { id: 'x', type: 'cost_pct', params: { pct: -15, owner: '路人' } })).error, 'owner_not_member');
+    assert.equal(up(e, 'NEIL', Object.assign({}, base, { id: 'x', params: { price: -1 } })).field, 'params');
+  });
+
+  test('readMany：只回自己的規則；命中的帶原因（判斷在雲端）', () => {
+    const e = env({ sheets: { stock_rules: rulesSheet([
+      rule('r1', '2330', 'price_above', { price: 2500 }, MOM), rule('r2', '2330', 'price_below', { price: 1 }, MOM),
+      rule('r3', '2330', 'price_above', { price: 1 }, NEIL)]) } });
+    const s = post(e, { action: 'readMany', token: TOK.MOM, sheets: ['tasks'], stock: true, trigger: 'poll' }).stock;
+    assert.deepEqual(s.rules.map((r) => r.id), ['r1', 'r2']);
+    assert.deepEqual(s.hits['2330'].map((h) => h.id), ['r1']);
+    assert.match(s.hits['2330'][0].reason, /現價 2,560 ≥ 2,500/);
+    assert.ok('2330' in s.quotes, '規則用到的代號就算不在自選裡也要報價');
+  });
+});
+
+describe('T6 自動推播（checkStockRules）', () => {
+  const run = (e, now = OPEN) => e.call('checkStockRules', now);
+
+  test('非交易時段直接結束，不讀規則、不打外部', () => {
+    const e = env({ sheets: { stock_rules: rulesSheet([rule('r1', '2330', 'price_above', { price: 1 }, MOM, { auto_push: 'TRUE' })]) } });
+    assert.deepEqual(run(e, SATURDAY), { skipped: 'closed' });
+    assert.equal(e.net.calls.all.length, 0);
+    assert.equal(e.pushes.length, 0);
+  });
+
+  test('沒有 enabled && auto_push 的規則 → 不打報價（fetch 次數＝0），但寫一列 performance', () => {
+    const e = env({ sheets: { stock_rules: rulesSheet([rule('r1', '2330', 'price_above', { price: 1 }, MOM),
+      rule('r2', '2330', 'price_above', { price: 1 }, MOM, { auto_push: 'TRUE', enabled: '' })]) } });
+    assert.equal(run(e).candidates, 0);
+    assert.equal(e.net.calls.all.length, 0);
+    assert.ok(e.sheets.performance.toRecords().some((r) => r.action === 'stockRules' && r.trigger === 'schedule'));
+  });
+
+  test('命中 → 推給規則建立者、寫 last_fired_at、寫 logs；冷卻內不重推；過了冷卻再推', () => {
+    const e = env({ sheets: { stock_rules: rulesSheet([rule('r1', '2330', 'price_above', { price: 2500 }, MOM, { auto_push: 'TRUE' })]) } });
+    assert.equal(run(e).pushed, 1);
+    assert.equal(e.pushes[0].to, MOM);
+    assert.match(e.pushes[0].text, /股票提醒：2330 台積電\n現價 2,560 ≥ 2,500/);
+    assert.equal(e.sheets.stock_rules.toRecords()[0].last_fired_at, OPEN.toISOString());
+    assert.ok(e.transactions.some((t) => t[0] === '股票提醒' && t[1] === '成功'));
+    e.clock.advance(61);
+    assert.equal(run(e, new Date(OPEN.getTime() + 3600000)).pushed, 0, '一小時後還在冷卻（1 天）');
+    assert.equal(e.pushes.length, 1);
+    e.clock.advance(61);
+    assert.equal(run(e, new Date(OPEN.getTime() + 86400000)).pushed, 1, '隔天同一時間');
+  });
+
+  test('不認得的 type 不中斷其他規則；推播失敗不寫 last_fired_at', () => {
+    const e = env({
+      sheets: { stock_rules: rulesSheet([rule('r0', '2330', 'rsi_above', {}, NEIL, { auto_push: 'TRUE' }),
+        rule('r1', '2330', 'price_above', { price: 1 }, MOM, { auto_push: 'TRUE' })]) },
+      pushImpl: () => ({ ok: false, code: 429, reason: 'quota' })
+    });
+    assert.equal(run(e).pushed, 0);
+    assert.equal(e.pushes.length, 1, 'r1 還是有試著推');
+    assert.equal(e.sheets.stock_rules.toRecords()[1].last_fired_at, '');
+    assert.ok(e.transactions.some((t) => t[0] === '股票提醒' && t[1] === '失敗'));
+  });
+
+  test('「推給我」：只推給自己、只推自己命中的；沒命中回 no_hit', () => {
+    const e = env({ sheets: { stock_rules: rulesSheet([rule('r1', '2330', 'price_above', { price: 2500 }, MOM),
+      rule('r2', '0050', 'price_above', { price: 9999 }, MOM)]) } });
+    assert.equal(post(e, { action: 'stockPushMe', token: TOK.MOM, symbol: '2330', trigger: 'manual' }).success, true);
+    assert.equal(e.pushes[0].to, MOM);
+    assert.equal(post(e, { action: 'stockPushMe', token: TOK.MOM, symbol: '0050', trigger: 'manual' }).error, 'no_hit');
+    assert.equal(post(e, { action: 'stockPushMe', token: TOK.NEIL, symbol: '2330', trigger: 'manual' }).error, 'no_hit', 'Neil 沒有規則');
+    assert.equal(post(e, { action: 'stockPushMe', token: TOK.AUNT, symbol: '2330', trigger: 'manual' }).error, 'forbidden');
+    assert.equal(e.pushes.length, 1);
+  });
+});
+
+describe('T7 盤後收盤價（fetchStockDaily）', () => {
+  const DAILY_HEADERS = ['date', 'symbol', 'close', 'prev_close', 'source'];
+  const TWSE = [{ Date: '1151008', Code: '2330', ClosingPrice: '2,560.00', Change: '-25.0000' },
+    { Date: '1151008', Code: '00631L', ClosingPrice: '41.28', Change: '+1.2800' },
+    { Date: '1151008', Code: '1101', ClosingPrice: '30.00', Change: '0.0000' },
+    { Date: '1151008', Code: '0050', ClosingPrice: '115.00', Change: '-1.0000' }];
+  const TPEX = [{ Date: '1151008', SecuritiesCompanyCode: '6488', Close: '1130.00', Change: '-85.00' }];
+  function dailyNet({ twse = TWSE, tpex = TPEX, bom = false } = {}) {
+    const calls = { twse: 0, tpex: 0, all: [] };
+    const res = (status, body) => ({ getResponseCode: () => status, getContentText: () => (bom ? '﻿' : '') + JSON.stringify(body) });
+    return { calls, UrlFetchApp: {
+      fetchAll: () => { throw new Error('盤後不該打即時報價'); },
+      fetch: (url) => {
+        calls.all.push(url);
+        if (url.includes('openapi.twse')) { calls.twse++; return res(200, twse); }
+        if (url.includes('tpex')) { calls.tpex++; return res(200, tpex); }
+        throw new Error('沒預期的網址 ' + url);
+      } } };
+  }
+  const sheets = (dailyRows = []) => ({
+    stock_daily: new FakeSheet('stock_daily', [DAILY_HEADERS].concat(dailyRows)),
+    stock_watch: new FakeSheet('stock_watch', [['symbol', 'name', 'sort', 'is_active', 'added_by', 'created_at'],
+      ['2330', '', 10, 'TRUE', NEIL, ''], ['6488', '', 20, 'TRUE', NEIL, ''], ['0050', '', 30, 'FALSE', NEIL, '']]),
+    stock_trades: new FakeSheet('stock_trades', [TRADE_HEADERS, trade('b1', '2026-10-01', '00631L', 'buy', 1000, 40, '爸爸', NEIL),
+      trade('b2', '2026-10-01', 'GOLD', 'buy', 1, 3500, '爸爸', NEIL)])
+  });
+
+  test('只寫自選（啟用中）＋有持股的代號；上市讀證交所、上櫃讀櫃買；昨收＝收盤－漲跌；民國年換西元', () => {
+    const e = env({ net: dailyNet(), sheets: sheets() });
+    const out = e.call('fetchStockDaily');
+    assert.equal(out.written, 3);
+    const rows = e.sheets.stock_daily.toRecords();
+    assert.deepEqual(rows.map((r) => r.symbol).sort(), ['00631L', '2330', '6488'], '停用的自選（0050）、沒追蹤的（1101）不寫');
+    assert.deepEqual(out.missing, [], '黃金不抓收盤價，也不算「找不到」');
+    const tsmc = rows.find((r) => r.symbol === '2330');
+    assert.equal(tsmc.date, '2026-10-08');
+    assert.equal(tsmc.close, 2560);
+    assert.equal(tsmc.prev_close, 2585);
+    assert.equal(rows.find((r) => r.symbol === '6488').source, 'tpex');
+    assert.ok(e.sheets.performance.toRecords().some((r) => r.action === 'stockDaily' && r.trigger === 'schedule'));
+  });
+
+  test('同一天重跑不重複寫；資料沒更新（假日）不寫，但寫一列 logs 說明', () => {
+    const e = env({ net: dailyNet(), sheets: sheets() });
+    e.call('fetchStockDaily');
+    const n = e.sheets.stock_daily.toRecords().length;
+    const again = e.call('fetchStockDaily');
+    assert.equal(again.written, 0);
+    assert.equal(e.sheets.stock_daily.toRecords().length, n);
+    assert.ok(e.transactions.some((t) => t[2] === '盤後收盤價' && /沒有新的收盤價/.test(t[3]) && /資料日期 2026-10-08/.test(t[4])));
+  });
+
+  test('全部都在證交所就不打櫃買；開頭帶 BOM 照樣讀得到', () => {
+    const s = sheets();
+    s.stock_watch = new FakeSheet('stock_watch', [['symbol', 'name', 'sort', 'is_active', 'added_by', 'created_at'], ['2330', '', 10, 'TRUE', NEIL, '']]);
+    const net = dailyNet({ bom: true });
+    const e = env({ net, sheets: s });
+    assert.equal(e.call('fetchStockDaily').written, 2);
+    assert.equal(net.calls.tpex, 0);
+  });
+
+  test('證交所掛了：上櫃照樣寫，缺的代號與錯誤寫進 logs', () => {
+    const net = dailyNet();
+    const fetch = net.UrlFetchApp.fetch;
+    net.UrlFetchApp.fetch = (url) => (url.includes('openapi.twse') ? { getResponseCode: () => 503, getContentText: () => '' } : fetch(url));
+    const e = env({ net, sheets: sheets() });
+    assert.equal(e.call('fetchStockDaily').written, 1);
+    assert.ok(e.transactions.some((t) => t[2] === '盤後收盤價' && /找不到：.*2330/.test(t[4]) && /HTTP 503/.test(t[4])));
+  });
+});
+
+describe('初始化：股票的兩個排程', () => {
+  test('跑三次：checkStockRules（每 5 分鐘）與 fetchStockDaily（每天約 14:30）各只有一個', () => {
+    const e = env();
+    for (let i = 0; i < 3; i++) line(e, NEIL, '初始化');
+    const rules = e.triggers.filter((t) => t.handler === 'checkStockRules');
+    const daily = e.triggers.filter((t) => t.handler === 'fetchStockDaily');
+    assert.equal(rules.length, 1);
+    assert.equal(rules[0].everyMinutes, 5);
+    assert.equal(daily.length, 1);
+    assert.equal(daily[0].hour, 14);
+    assert.equal(daily[0].minute, 30);
+    assert.match(e.replies.pop(), /checkStockRules（每 5 分鐘，只在盤中動作）\n⏰ fetchStockDaily（每天約 14:30）/);
   });
 });
