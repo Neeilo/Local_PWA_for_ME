@@ -294,6 +294,11 @@
   .dash-hero .cur{font-size:16px; font-weight:600; color:var(--muted); margin-right:4px;}
   .dash-sub{font-size:13px; color:var(--muted); margin-top:2px;}
   .donut-wrap{display:flex; align-items:center; gap:14px; margin-top:12px;}
+  .donut .arc-in{cursor:pointer;}
+  .lg-row.tap{cursor:pointer; background:none; border:none; padding:0; text-align:left; color:inherit; font:inherit; width:100%;}
+  .lg-sub{display:grid; grid-template-columns:10px 1fr auto; gap:7px; align-items:center; padding-left:14px; font-size:12px; color:var(--muted);}
+  .lg-sub .lg-dot{width:8px; height:8px;}
+  .lg-sub .lg-val{font-size:12px;}
   .donut{width:132px; height:132px; flex:none;}
   .donut-center{font-size:15px; font-weight:700; fill:var(--ink);}
   .donut-center-sub{font-size:9px; fill:var(--muted-ink);}
@@ -3975,22 +3980,79 @@ function renderExpenseView(){
 }
 
 /* ---------- 首頁 Dashboard ---------- */
-/* 甜甜圈：固定分類順序繪製、區塊間留 2px 底色間隙，圖例直接標示名稱與金額
-   （相鄰色已通過 CVD 檢驗，標籤與間隙為第二編碼，識別不單靠顏色） */
-function donutSVG(rows,total){
-  const R=54, SW=17, C=2*Math.PI*R, GAP=rows.length>1?2:0;
-  let offset=0;
-  const arcs=rows.map(r=>{
-    const len=Math.max(C*(r.amount/total)-GAP, 1);
-    const seg=`<circle cx="70" cy="70" r="${R}" fill="none" style="stroke:${catColor(r.cat)}"
+/* 雙環甜甜圈（ADR-015 T9）：內圈大類、外圈細項。固定分類順序繪製、區塊間留 2px 底色間隙，
+   圖例直接標示名稱與金額（相鄰色已通過 CVD 檢驗，標籤與間隙為第二編碼，識別不單靠顏色）。
+   外圈每段的角度落在所屬大類的範圍內；同大類的細項用同色系深淺交替（color-mix 混卡片底色，
+   亮暗主題各自跟著 --card 走）；未細分＝同色半透明；佔總支出 <3% 的細項在該大類內併成「其他」。 */
+const DONUT_SUB_MIN_SHARE=0.03;
+const DONUT_UNSORTED='未細分';
+let donutOpen=null;          // 圖例展開中的大類（點內圈或圖例切換；不記憶）
+
+/** 一個大類這個月有選細項的那幾段：[{name, amount}]，依設定的細項順序；<3% 的併成「其他」 */
+function subBreakdown(mk, cat, total){
+  const sums={}, order=((expenseCategory(cat)||{}).subs||[]).slice();
+  expensesOfMonth(mk).filter(e=>e.type==='expense' && e.category===cat).forEach(e=>{
+    const k=e.subcategory || DONUT_UNSORTED;
+    sums[k]=(sums[k]||0)+e.amount;
+  });
+  Object.keys(sums).forEach(k=>{ if(k!==DONUT_UNSORTED && !order.includes(k)) order.push(k); });
+  const subs=order.filter(k=>sums[k]>0).map(k=>({name:k, amount:sums[k], unsorted:false}));
+  const big=subs.filter(x=>x.amount/total>=DONUT_SUB_MIN_SHARE);
+  const small=subs.filter(x=>x.amount/total<DONUT_SUB_MIN_SHARE).reduce((n,x)=>n+x.amount,0);
+  if(small>0) big.push({name:'其他', amount:small, unsorted:false});
+  return big;            // 沒選細項的那些錢由 donutOuter 補成「未細分」那一段
+}
+/**
+ * 外圈的每一段（純函式）。rows＝內圈大類 [{cat, amount}]；subsOf(cat) 回那個大類的細項。
+ * 回 [{cat, name, amount, start, unsorted, shade}]：start／amount 以金額表示，畫的時候再換成弧長——
+ * 外圈一個大類的各段加起來恰好等於內圈那一段。內圈的「其他」（大類太多時合併的）整段未細分。
+ */
+function donutOuter(rows, subsOf){
+  const out=[];
+  let start=0;
+  rows.forEach(r=>{
+    const subs = r.cat==='其他' && !expenseCategory('其他') ? [] : (subsOf(r.cat)||[]);
+    const covered=subs.reduce((n,x)=>n+x.amount,0);
+    const list = subs.length ? subs.slice() : [];
+    if(r.amount-covered>0.0001) list.push({name:DONUT_UNSORTED, amount:r.amount-covered, unsorted:true});
+    let shade=0;
+    list.forEach(x=>{
+      out.push({cat:r.cat, name:x.name, amount:x.amount, start, unsorted:!!x.unsorted, shade: x.unsorted ? 0 : (shade++ % 2)});
+      start+=x.amount;
+    });
+  });
+  return out;
+}
+function arcCircle(R, SW, C, startAmt, amt, total, gap, style, extra){
+  const len=Math.max(C*(amt/total)-gap, 1);
+  return `<circle cx="70" cy="70" r="${R}" fill="none" style="${style}" ${extra||''}
       stroke-width="${SW}" stroke-dasharray="${len.toFixed(2)} ${(C-len).toFixed(2)}"
-      stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 70 70)"></circle>`;
-    offset+=C*(r.amount/total);
+      stroke-dashoffset="${(-C*(startAmt/total)).toFixed(2)}" transform="rotate(-90 70 70)">`;
+}
+/* 外圈一段的顏色。prop＝stroke（圓環）或 background（圖例圓點）。
+   先寫純色當備援：不認得 color-mix 的瀏覽器會留下第一個宣告 */
+function subPaint(prop, cat, shade, unsorted){
+  const base=catColor(cat);
+  if(unsorted) return `${prop}:${base};${prop==='stroke'?'stroke-opacity':'opacity'}:.35`;
+  return `${prop}:${base};${prop}:color-mix(in srgb, ${base} ${shade?55:85}%, var(--card))`;
+}
+function donutSVG(rows,total,outer){
+  const R=46, SW=15, C=2*Math.PI*R, GAP=rows.length>1?2:0;
+  const R2=62, SW2=9, C2=2*Math.PI*R2;
+  let at=0;
+  const arcs=rows.map(r=>{
+    const pct=Math.round(r.amount/total*100);
+    const seg=arcCircle(R, SW, C, at, r.amount, total, GAP, `stroke:${catColor(r.cat)}`,
+      `class="arc-in" onclick="toggleDonutCat('${esc(r.cat)}')"`)
+      + `<title>${esc(r.cat)} ${fmtAmount(r.amount)}（${pct}%）</title></circle>`;
+    at+=r.amount;
     return seg;
   }).join('');
-  return `<svg class="donut" viewBox="0 0 140 140" role="img" aria-label="本月各類支出佔比">
+  const outerArcs=(outer||[]).map(o=>arcCircle(R2, SW2, C2, o.start, o.amount, total, (outer.length>1?2:0), subPaint('stroke', o.cat, o.shade, o.unsorted))
+      + `<title>${esc(o.cat)}＞${esc(o.name)} ${fmtAmount(o.amount)}</title></circle>`).join('');
+  return `<svg class="donut" viewBox="0 0 140 140" role="img" aria-label="本月各類支出佔比（內圈大類、外圈細項）">
     <circle cx="70" cy="70" r="${R}" fill="none" stroke="var(--line)" stroke-width="${SW}"></circle>
-    ${arcs}
+    ${arcs}${outerArcs}
     <text class="donut-center" x="70" y="70" text-anchor="middle">${fmtAmount(total)}</text>
     <text class="donut-center-sub" x="70" y="84" text-anchor="middle">TWD 本月支出</text>
   </svg>`;
@@ -4005,19 +4067,30 @@ function renderDashExpense(){
       <div class="dash-sub">${fmtMonth(mk)}　還沒有支出紀錄</div>`;
     return;
   }
+  const outer=donutOuter(rows, cat=>subBreakdown(mk, cat, total));
+  if(donutOpen && !rows.some(r=>r.cat===donutOpen)) donutOpen=null;
   const legend=rows.map(r=>{
     const pct=Math.round(r.amount/total*100);
-    return `<div class="lg-row">
+    const open=donutOpen===r.cat;
+    const subs=open ? outer.filter(o=>o.cat===r.cat).map(o=>`<div class="lg-sub">
+        <span class="lg-dot" style="${subPaint('background', o.cat, o.shade, o.unsorted)}"></span>
+        <span class="lg-name">${esc(o.name)}</span>
+        <span class="lg-val">${fmtAmount(o.amount)}</span></div>`).join('') : '';
+    return `<button class="lg-row tap" onclick="toggleDonutCat('${esc(r.cat)}')" aria-expanded="${open}">
         <span class="lg-dot" style="background:${catColor(r.cat)}"></span>
-        <span class="lg-name">${esc(r.cat)}</span>
+        <span class="lg-name">${esc(r.cat)} ${open?'▴':'▾'}</span>
         <span class="lg-val">${fmtAmount(r.amount)}・${pct}%</span>
         <span class="lg-bar"><i style="width:${pct}%;background:${catColor(r.cat)}"></i></span>
-      </div>`;
+      </button>${subs}`;
   }).join('');
   el.innerHTML=`
     <div class="dash-hero"><span class="cur">NT$</span>${fmtAmount(total)}</div>
     <div class="dash-sub">${fmtMonth(mk)}</div>
-    <div class="donut-wrap">${donutSVG(rows,total)}<div class="legend">${legend}</div></div>`;
+    <div class="donut-wrap">${donutSVG(rows,total,outer)}<div class="legend">${legend}</div></div>`;
+}
+function toggleDonutCat(cat){
+  donutOpen = donutOpen===cat ? null : cat;
+  renderDashExpense();
 }
 function renderDashTasks(){
   const top=state.tasks.filter(t=>!t.done && inScope(t)).sort(byPriority).slice(0,3);
