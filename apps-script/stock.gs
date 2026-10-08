@@ -80,8 +80,23 @@ function probeFetch_(url, headers) {
   }
 }
 
+/**
+ * 開頭的 UTF-8 BOM（\uFEFF）在執行記錄裡看不見，JSON.parse 卻會因它失敗——
+ * 2026-10-08 實測櫃買 OpenAPI「HTTP 200、內容看起來是 JSON、卻讀不到清單」，先排除這個
+ */
+function probeJsonText_(text) {
+  return String(text).replace(/^\uFEFF/, '');
+}
+
 function probeJson_(text) {
-  try { return JSON.parse(text); } catch (e) { return null; }
+  try { return JSON.parse(probeJsonText_(text)); } catch (e) { return null; }
+}
+
+/** 讀不出 JSON 時說清楚為什麼：錯誤訊息＋開頭字元碼（看不見的字元才查得到） */
+function probeJsonError_(text) {
+  try { JSON.parse(probeJsonText_(text)); return ''; } catch (e) {
+    return '不是合法 JSON（' + String(e && e.message || e) + '｜開頭字元碼 ' + String(text).charCodeAt(0) + '）';
+  }
 }
 
 function probeSample_(value) {
@@ -170,7 +185,8 @@ function probeDayAll_(report, label, url, codeField) {
   var body = probeJson_(r.text);
   var list = Array.isArray(body) ? body : null;
   console.log('[' + label + '] → ' + probeHead_(r) +
-    (list ? '｜' + list.length + ' 筆｜欄位：' + (list[0] ? Object.keys(list[0]).join(',') : '（空）') : '｜' + probeSample_(r.text)));
+    (list ? '｜' + list.length + ' 筆｜欄位：' + (list[0] ? Object.keys(list[0]).join(',') : '（空）')
+      : '｜' + (body ? '回的不是陣列' : probeJsonError_(r.text)) + '｜' + probeSample_(r.text)));
   var rows = [];
   (list || []).forEach(function (it) {
     var hit = STOCK_PROBE_SYMBOLS.filter(function (sym) { return String(it[codeField]).trim() === sym.code; })[0];
@@ -180,7 +196,8 @@ function probeDayAll_(report, label, url, codeField) {
   });
   var found = rows.map(function (row) { return row.code; });
   var ok = r.status === 200 && !!list && list.length > 0;
-  var verdict = (list ? list.length + ' 筆，探針代號找到：' + (found.join('、') || '（無）') : '讀不到清單（' + probeHead_(r) + '）') +
+  var verdict = (list ? list.length + ' 筆，探針代號找到：' + (found.join('、') || '（無）')
+    : '讀不到清單（' + probeHead_(r) + (r.status === 200 && !body ? '｜' + probeJsonError_(r.text) : '') + '）') +
     (list && list[0] && list[0].Date ? '｜資料日期 ' + list[0].Date : '');
   report.sources.push({ source: label, ok: ok, verdict: verdict, rows: rows });
 }
