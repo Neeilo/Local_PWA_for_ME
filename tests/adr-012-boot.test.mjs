@@ -373,8 +373,11 @@ describe('canUse_ 與前端 featureAllowed 一字不差', () => {
     const front = loadFrontend();
     const bySheet = back.read('FEATURE_BY_SHEET');
     assert.deepEqual(bySheet, { tasks: 'feat_tasks', expenses: 'feat_expense', reviews: 'feat_review',
-      notes: 'feat_notes', moods: 'feat_mood' });
+      notes: 'feat_notes', moods: 'feat_mood',
+      // ADR-015：股票三張表同一個功能
+      stock_trades: 'feat_stock', stock_watch: 'feat_stock', stock_rules: 'feat_stock' });
     const byView = front.read('FEATURE_BY_VIEW');
-    assert.deepEqual(Object.values(byView).sort(), Object.values(bySheet).sort());
+    const uniq = (o) => [...new Set(Object.values(o))].sort();
+    assert.deepEqual(uniq(byView), uniq(bySheet));
   });
 });

@@ -181,6 +181,21 @@ describe('MIS', () => {
 });
 
 describe('盤後 OpenAPI', () => {
+  test('開頭帶 UTF-8 BOM 照樣讀得到（2026-10-08 櫃買實測 HTTP 200 卻讀不到清單）', () => {
+    const { bySource } = run({ responder: (url, o) => {
+      const r = happy(url, o);
+      return url.includes('tpex') ? { status: 200, body: '\uFEFF' + JSON.stringify(r.body) } : r;
+    } });
+    assert.equal(bySource['櫃買 OpenAPI'].ok, true);
+    assert.deepEqual(bySource['櫃買 OpenAPI'].rows.map((r) => r.code), ['6488']);
+  });
+
+  test('真的不是合法 JSON：總結寫出錯誤訊息與開頭字元碼，下一輪才知道要修什麼', () => {
+    const { bySource } = run({ responder: (url, o) => (url.includes('tpex') ? { status: 200, body: '[\n{"a":1},]' } : happy(url, o)) });
+    assert.equal(bySource['櫃買 OpenAPI'].ok, false);
+    assert.match(bySource['櫃買 OpenAPI'].verdict, /不是合法 JSON（[\s\S]+｜開頭字元碼 91）/);
+  });
+
   test('證交所找得到上市代號、櫃買找得到上櫃代號，並列出資料日期', () => {
     const { bySource } = run();
     assert.deepEqual(bySource['證交所 OpenAPI'].rows.map((r) => r.code), ['2330', '00631L']);

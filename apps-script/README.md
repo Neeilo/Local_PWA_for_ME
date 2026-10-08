@@ -23,7 +23,7 @@
 | `Code.gs` | PWA ↔ Sheets 同步（`doGet` 讀取、`handlePwaSync_` 寫入） |
 | `line-router.gs` | LINE 快速輸入 → Sheets 路由，並持有統一入口 `doPost` |
 | `sheet-guide.gs` | `_guide` 導覽分頁：分頁登記表＋每天自動重新產生（`refreshGuide()`） |
-| `stock.gs` | 股票（ADR-015）。目前只有資料源探針 `probeStockSources()`：編輯器手動執行，回報富果／MIS／證交所與櫃買 OpenAPI 打不打得到、欄位長怎樣 |
+| `stock.gs` | 股票（ADR-015）：報價層 `quote_()`（富果 → MIS → GOOGLEFINANCE；非交易時段讀 `stock_daily`）、持股（移動平均）、交易／自選的寫入把關、LINE「買/」「賣/」「股/」的處理、建表 `installStock_()`（併入「初始化」）。資料源探針 `probeStockSources()` 也在這裡，編輯器手動執行 |
 | `build-info.gs` | **不在 repo**：CI 部署時產生的發行號（`BUILD_INFO`），LINE 回「沒有這個前綴」時附在最後一行。`npm run pull` 會把它帶回來，已列入 `.gitignore` |
 
 ⚠️ **兩個密鑰一律讀指令碼屬性，不可寫回原始碼**（見下）。線上版原本把
@@ -103,7 +103,7 @@ PWA 編輯任一筆支出 →「轉成分期」→ 填期數（必填）、頭�
 | `GEMINI_MODEL` | 覆寫預設模型 ID（選填） | 用程式內建預設值 |
 | ~~`AUTH_MODE`~~ | **已退場**（2026-10-01 直接關門，不留過渡期） | 不再被讀取，可以刪掉 |
 | `LINE_OA_ID` | LINE 官方帳號 ID（例如 `@123abcde`），續期畫面的「開啟 LINE 傳送」按鈕用（選填） | 按鈕不出現，只剩「複製指令」 |
-| `FUGLE_API_KEY` | 富果行情 API key（股票即時報價，ADR-015） | 探針略過富果、明講沒測；PR-A 之後報價改走 MIS／Google 備援 |
+| `FUGLE_API_KEY` | 富果行情 API key（股票即時報價，ADR-015） | 報價直接改走證交所 MIS（再不行 GOOGLEFINANCE）；探針略過富果、明講沒測 |
 
 > ⚠️ 這個 repo 會整包發布到 GitHub Pages，此資料夾也會公開。
 > **任何權杖、SECRET 一律放 Apps Script 的「指令碼屬性」，不要寫進這裡的檔案。**
