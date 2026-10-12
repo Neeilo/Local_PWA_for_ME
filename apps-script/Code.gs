@@ -41,6 +41,9 @@ var STOCK_CONFIG_SHEET = '_stock_config';
 /** GOOGLEFINANCE 備援的公式暫存頁（第三順位報價，見 stock.gs） */
 var STOCK_GF_SHEET = '_stock_gf';
 
+/** Gmail 控制員（ADR-016）。欄位與規則見 gmail.gs；名稱放這裡的理由同股票 */
+var GMAIL_RULES_SHEET = 'gmail_rules';
+
 /**
  * PWA 連一筆都不准寫的分頁（任何 action 都一樣，包括 upsert）。
  *
@@ -54,7 +57,7 @@ var STOCK_GF_SHEET = '_stock_gf';
  */
 var GUIDE_SHEET = '_guide';
 var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET,
-                    LINE_GROUPS_SHEET, STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET];
+                    LINE_GROUPS_SHEET, STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET];
 
 /**
  * PWA 連讀都不准讀的分頁（ADR-010 D-8）。
@@ -71,9 +74,12 @@ var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_
  *
  * 股票（ADR-015）：_stock_config 有現金與再平衡設定，只走管理者專用 action（PR-B）；
  * stock_daily／_stock_gf 是報價層自己用的，前端拿的是 readMany 附帶的整理好的報價。
+ *
+ * gmail_rules（ADR-016 PR-0）：這一輪只有探針讀它，Neil 直接在 Sheet 上填規則盤點表。
+ * 寄件者與帳單種類不該讓家人讀到；PR-B 做規則頁時改走管理員專用 action，讀寫一樣不開放。
  */
 var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET, LINE_GROUPS_SHEET,
-                   STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET];
+                   STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET];
 
 /**
  * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
