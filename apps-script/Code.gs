@@ -567,6 +567,8 @@ function routePwaSync_(body, perf) {
   if (body.action === 'pushPreview') return jsonOut(pushPreview_(caller, body));
   if (body.action === 'pushSend') return jsonOut(pushSend_(caller, body));
   if (body.action === 'stockConfigSet') return jsonOut(stockConfigSet_(caller, body.key, body.value));
+  if (body.action === 'gmailView') return jsonOut(gmailView_(caller, body.what));
+  if (body.action === 'gmailRuleSet') return jsonOut(gmailRuleSet_(caller, body.record));
   if (body.action === 'stockPushMe') return jsonOut(stockPushMe_(caller, body.symbol));
 
   if (NO_PWA_WRITE.indexOf(body.sheet) !== -1 || isBackupSheet_(body.sheet)) {
@@ -3240,7 +3242,7 @@ function planEnd_(caller, planId, today) {
 /* ========================================================================== */
 
 var SETTINGS_LOG_SOURCE = '設定';
-var GROUP_SET_FIELDS = ['is_active', 'cmd_expense', 'cmd_tasks', 'cmd_query', 'notify_due'];
+var GROUP_SET_FIELDS = ['is_active', 'cmd_expense', 'cmd_tasks', 'cmd_query', 'notify_due', 'notify_gmail'];
 var CONFIG_SET_FIELDS = ['is_active', 'color', 'targets', 'aliases', 'sort'];
 var CONFIG_KINDS = ['category', 'sub', 'target'];
 var CONFIG_NAME_MAX = 20;
