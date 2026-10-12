@@ -1094,7 +1094,8 @@ describe('代號開頭的 0 不能被 Sheet 吃掉', () => {
       record: { id: 'p1', trade_date: '2026-10-08', symbol: '00878', side: 'buy', qty: 100, price: 21.9 } });
     assert.deepEqual(trades(e).map((t) => t.symbol), ['0056', '00878']);
     const s = post(e, { action: 'readMany', token: TOK.NEIL, sheets: ['tasks'], stock: true, trigger: 'poll' }).stock;
-    assert.deepEqual(s.holdings.map((h) => h.symbol), ['0056', '00878']);
+    // 持股依第一筆交易日排序；LINE 那筆是「今天」，所以只比代號、不比順序（10-08 之後順序會反過來）
+    assert.deepEqual(s.holdings.map((h) => h.symbol).sort(), ['0056', '00878']);
     assert.match(line(e, NEIL, '賣/0056/1000/37'), /✅ 賣出 0056/);
   });
 
