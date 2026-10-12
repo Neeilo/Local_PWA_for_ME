@@ -253,6 +253,17 @@ class FakeSpreadsheet {
  * 回傳的 call() 直接呼叫原始碼裡的函式，read() 讀得到頂層的 const
  * （vm 的頂層 const 不會變成全域屬性，但同一個 context 裡的後續運算看得見）。
  */
+/** 只有資料夾的雲端硬碟：「初始化」建 Drive 資料夾用。檔案相關的測試自己帶假的 DriveApp */
+function fakeFolder() {
+  const children = {};
+  const folder = {
+    getName: () => '我的雲端硬碟',
+    getFoldersByName: (n) => { let done = !children[n]; return { hasNext: () => !done, next: () => { done = true; return children[n]; } }; },
+    createFolder: (n) => { children[n] = fakeFolder(); return children[n]; }
+  };
+  return folder;
+}
+
 export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [], cache = false, overrides = {}, mailImpl = null, tokens = {}, realLogs = false, autoNumber = false } = {}) {
   const logs = [];              // console.log 的內容
   const transactions = [];      // logTransaction_ 收到的參數
@@ -338,6 +349,12 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
       },
       getRemainingDailyQuota: () => 100
     },
+    // Gmail／Drive（ADR-016）：預設是「已授權、信箱與雲端硬碟都空的」。要驗信件處理的測試用 overrides 換掉
+    GmailApp: {
+      getUserLabelByName: () => null,
+      search: () => { throw new Error('測試不碰 Gmail（要測的請用 overrides 換掉 GmailApp）'); }
+    },
+    DriveApp: { getRootFolder: () => fakeFolder() },
     LockService: {
       getScriptLock: () => ({
         tryLock: () => { if (lock.busy) return false; lock.held = true; return true; },
