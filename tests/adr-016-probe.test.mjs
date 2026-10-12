@@ -96,6 +96,12 @@ function env({ rows = RULES(), responder, sheets } = {}) {
 /* ========================================================================== */
 describe('probeGmail：只讀不寫', () => {
 
+  test('先要求 Gmail 權限再查（選擇性授權沒勾到 Gmail 時，重新跳出授權畫面）', () => {
+    const e = env();
+    e.call('probeGmail');
+    assert.deepEqual(e.scopeChecks, [{ mode: 'FULL', scopes: ['https://mail.google.com/'] }]);
+  });
+
   test('Gmail 只碰 search 與讀主旨／日期；Sheet 一格都不改', () => {
     const e = env();
     const before = JSON.stringify(e.sheets.gmail_rules.values);

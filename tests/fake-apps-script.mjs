@@ -271,6 +271,7 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
   const mails = [];             // MailApp.sendEmail 收到的參數
   const lock = { held: false, busy: false };   // busy=true 模擬「另一個封存正在跑」
   const triggers = [];          // ScriptApp 建出來的觸發器
+  const scopeChecks = [];       // ScriptApp.requireScopes／requireAllScopes 被要求過的權限
   const counters = { opens: 0 }; // getActiveSpreadsheet 被呼叫的次數
   // 預先發好的裝置 token：{ 'tok-neil': 'Uneil' }。ADR-010 關門後每個 PWA 請求都要帶 token，
   // 不在這裡發的話，每支測試都得先走一遍 LINE 配對。只存雜湊，跟正式的 pairClaim_ 一樣。
@@ -320,7 +321,11 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
       const i = triggers.indexOf(t.__spec);
       if (i >= 0) triggers.splice(i, 1);
     },
-    newTrigger: makeTriggerBuilder
+    newTrigger: makeTriggerBuilder,
+    // 選擇性授權（2025 起）：測試環境當作全部都已授權，只記下被要求過哪些
+    AuthMode: { FULL: 'FULL' },
+    requireScopes: (mode, scopes) => { scopeChecks.push({ mode, scopes: [...scopes] }); },
+    requireAllScopes: (mode) => { scopeChecks.push({ mode, scopes: 'all' }); }
   };
 
   const context = createContext({
@@ -411,6 +416,7 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
     transactions,
     pushes,
     triggers,
+    scopeChecks,
     cache: fakeCache,
     mails,
     lock,

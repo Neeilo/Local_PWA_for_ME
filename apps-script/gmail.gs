@@ -22,6 +22,9 @@ var GMAIL_RULES_HEADERS = ['rule_id', 'is_active', 'source_name', 'mail_type', '
 /** 信種（D-2）：信用卡帳單、eTag、電子報 */
 var GMAIL_MAIL_TYPES = ['bill', 'etag', 'newsletter'];
 
+/** GmailApp 要的是完整的 Gmail 權限（沒有只讀可選） */
+var GMAIL_SCOPE = 'https://mail.google.com/';
+
 var GMAIL_PROBE_DAYS = 30;
 /** GmailApp.search 一次最多回 500 個對話串；到頂就標「以上」 */
 var GMAIL_PROBE_MAX = 500;
@@ -107,8 +110,14 @@ function installGmailRules_() {
 /* 探針（PR-0）                                                                 */
 /* ========================================================================== */
 
-/** 編輯器手動執行的入口 */
+/**
+ * 編輯器手動執行的入口。
+ *
+ * 先要求 Gmail 權限：Google 的「選擇性授權」讓每個權限各有一個勾選框，沒勾到 Gmail 的話
+ * 執行照跑、查信才失敗（2026-10-12 實測）。requireScopes 會在缺權限時停下來、重新跳出授權畫面
+ */
 function probeGmail() {
+  ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, [GMAIL_SCOPE]);
   return probeGmail_();
 }
 
@@ -518,6 +527,8 @@ function uninstallGmailController() {
  * 只讀：查一個標籤、看雲端硬碟根目錄的名字，不建任何東西。
  */
 function authorizeGmailController() {
+  // 選擇性授權：任何一個權限沒勾，就停下來重新跳出授權畫面（見 probeGmail）
+  ScriptApp.requireAllScopes(ScriptApp.AuthMode.FULL);
   GmailApp.getUserLabelByName(GMAIL_DONE_LABEL);
   console.log('✅ Gmail 權限已授權');
   console.log('✅ Drive 權限已授權（' + DriveApp.getRootFolder().getName() + '）');

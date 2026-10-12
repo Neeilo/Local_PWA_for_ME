@@ -417,6 +417,13 @@ describe('T1／T4「初始化」', () => {
     assert.equal(e.read('scheduleHours_()').runGmailController, '每天約 9 點');
   });
 
+  test('authorizeGmailController 要求全部權限（選擇性授權：任何一個沒勾就重新跳出授權畫面）', () => {
+    const e = env();
+    e.call('authorizeGmailController');
+    assert.deepEqual(e.scopeChecks, [{ mode: 'FULL', scopes: 'all' }]);
+    assert.deepEqual(e.drive.folders, [], '只讀：不建任何資料夾');
+  });
+
   test('移除排程有獨立入口，不動其他排程', () => {
     const e = env({ sheets: { line_users: usersSheet(), line_groups: groupsSheet() }, extraFiles: INIT_FILES });
     e.call('installAdr009Triggers');
