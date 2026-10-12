@@ -253,6 +253,17 @@ class FakeSpreadsheet {
  * 回傳的 call() 直接呼叫原始碼裡的函式，read() 讀得到頂層的 const
  * （vm 的頂層 const 不會變成全域屬性，但同一個 context 裡的後續運算看得見）。
  */
+/** 只有資料夾的雲端硬碟：「初始化」建 Drive 資料夾用。檔案相關的測試自己帶假的 DriveApp */
+function fakeFolder() {
+  const children = {};
+  const folder = {
+    getName: () => '我的雲端硬碟',
+    getFoldersByName: (n) => { let done = !children[n]; return { hasNext: () => !done, next: () => { done = true; return children[n]; } }; },
+    createFolder: (n) => { children[n] = fakeFolder(); return children[n]; }
+  };
+  return folder;
+}
+
 export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [], cache = false, overrides = {}, mailImpl = null, tokens = {}, realLogs = false, autoNumber = false } = {}) {
   const logs = [];              // console.log 的內容
   const transactions = [];      // logTransaction_ 收到的參數
@@ -260,6 +271,7 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
   const mails = [];             // MailApp.sendEmail 收到的參數
   const lock = { held: false, busy: false };   // busy=true 模擬「另一個封存正在跑」
   const triggers = [];          // ScriptApp 建出來的觸發器
+  const scopeChecks = [];       // ScriptApp.requireScopes／requireAllScopes 被要求過的權限
   const counters = { opens: 0 }; // getActiveSpreadsheet 被呼叫的次數
   // 預先發好的裝置 token：{ 'tok-neil': 'Uneil' }。ADR-010 關門後每個 PWA 請求都要帶 token，
   // 不在這裡發的話，每支測試都得先走一遍 LINE 配對。只存雜湊，跟正式的 pairClaim_ 一樣。
@@ -309,7 +321,11 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
       const i = triggers.indexOf(t.__spec);
       if (i >= 0) triggers.splice(i, 1);
     },
-    newTrigger: makeTriggerBuilder
+    newTrigger: makeTriggerBuilder,
+    // 選擇性授權（2025 起）：測試環境當作全部都已授權，只記下被要求過哪些
+    AuthMode: { FULL: 'FULL' },
+    requireScopes: (mode, scopes) => { scopeChecks.push({ mode, scopes: [...scopes] }); },
+    requireAllScopes: (mode) => { scopeChecks.push({ mode, scopes: 'all' }); }
   };
 
   const context = createContext({
@@ -338,6 +354,12 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
       },
       getRemainingDailyQuota: () => 100
     },
+    // Gmail／Drive（ADR-016）：預設是「已授權、信箱與雲端硬碟都空的」。要驗信件處理的測試用 overrides 換掉
+    GmailApp: {
+      getUserLabelByName: () => null,
+      search: () => { throw new Error('測試不碰 Gmail（要測的請用 overrides 換掉 GmailApp）'); }
+    },
+    DriveApp: { getRootFolder: () => fakeFolder() },
     LockService: {
       getScriptLock: () => ({
         tryLock: () => { if (lock.busy) return false; lock.held = true; return true; },
@@ -394,6 +416,7 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
     transactions,
     pushes,
     triggers,
+    scopeChecks,
     cache: fakeCache,
     mails,
     lock,

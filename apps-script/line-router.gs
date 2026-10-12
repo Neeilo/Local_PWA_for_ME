@@ -640,7 +640,7 @@ function initSteps_() {
       return { level: warn ? 'warn' : 'ok', text: lines.join('\n　') };
     } },
     { label: '股票（ADR-015）', run: installStock_ },
-    { label: 'Gmail 規則表（ADR-016）', run: installGmailRules_ },
+    { label: 'Gmail 控制員（ADR-016）', run: installGmail_ },
     { label: '排程（到期提醒＋_guide＋未驗證彙總＋股票提醒＋盤後收盤價）', run: function () {
       installAdr009Triggers();
       installGuideTrigger();            // 裝好會順便更新一次 _guide
@@ -677,6 +677,7 @@ function scheduleHours_() {
   h[GUIDE_REFRESH_FUNCTION] = '每天約 ' + GUIDE_REFRESH_HOUR + ' 點';
   h[UNAUTH_FLUSH_FUNCTION] = '每小時';
   h[STOCK_RULES_FUNCTION] = '每 ' + STOCK_RULES_MINUTES + ' 分鐘，只在盤中動作';
+  h[GMAIL_CONTROLLER_FUNCTION] = '每天約 ' + GMAIL_CONTROLLER_HOUR + ' 點';
   h[STOCK_DAILY_FUNCTION] = '交易日 ' + STOCK_DAILY_HOUR + '～' + STOCK_DAILY_LAST_HOUR + ' 點每小時，拿到當天收盤就停';
   return h;
 }
