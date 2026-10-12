@@ -372,8 +372,10 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
 
   runInContext(readFileSync(join(ROOT, 'apps-script', 'Code.gs'), 'utf8'), context, { filename: 'Code.gs' });
   // 同一個 Apps Script 專案的其他檔案：線上是共用全域，這裡就載進同一個 context。
-  // stock.gs 一律載入：Code.gs 的 boot／readMany／upsert 會呼叫它（ADR-015），線上它永遠在
-  const files = ['stock.gs'].concat(extraFiles.filter((name) => name !== 'stock.gs'));
+  // stock.gs 一律載入：Code.gs 的 boot／readMany／upsert 會呼叫它（ADR-015），線上它永遠在。
+  // gmail.gs 同理：line-router.gs 的「初始化」會呼叫它（ADR-016）
+  const ALWAYS = ['stock.gs', 'gmail.gs'];
+  const files = ALWAYS.concat(extraFiles.filter((name) => ALWAYS.indexOf(name) === -1));
   files.forEach((name) => {
     runInContext(readFileSync(join(ROOT, 'apps-script', name), 'utf8'), context, { filename: name });
   });

@@ -640,6 +640,7 @@ function initSteps_() {
       return { level: warn ? 'warn' : 'ok', text: lines.join('\n　') };
     } },
     { label: '股票（ADR-015）', run: installStock_ },
+    { label: 'Gmail 規則表（ADR-016）', run: installGmailRules_ },
     { label: '排程（到期提醒＋_guide＋未驗證彙總＋股票提醒＋盤後收盤價）', run: function () {
       installAdr009Triggers();
       installGuideTrigger();            // 裝好會順便更新一次 _guide

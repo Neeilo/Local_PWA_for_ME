@@ -76,6 +76,9 @@ function guideRegistry_() {
     { sheet: STOCK_GF_SHEET, category: '系統', purpose: 'GOOGLEFINANCE 備援報價的公式暫存（每次用到整張重寫）',
       writers: '只有 GAS（報價層第三順位）', readers: '只有 GAS',
       key: 'symbol', adr: '015' },
+    { sheet: GMAIL_RULES_SHEET, category: '功能模組', purpose: 'Gmail 控制員的認信規則（寄件者＋主旨關鍵字 → 信種、標籤、存不存附件、推不推、用哪個解析器）',
+      writers: 'Neil 在 Sheet 上填（PWA 一般讀寫碰不到）；初始化建表頭', readers: '只有 GAS（目前只有探針 probeGmail）',
+      key: 'rule_id', adr: '016' },
     { sheet: GUIDE_SHEET, category: '系統', purpose: '本導覽表',
       writers: '只有 refreshGuide()', readers: 'Neil',
       key: '分頁名稱', adr: '' }
