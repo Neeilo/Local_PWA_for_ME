@@ -2,8 +2,9 @@
  * Gmail 控制員（ADR-016）。
  *
  * 每天 9 點 runGmailController 依 gmail_rules 掃最近 3 天的信 → Gmail 只貼標籤 →
- * 帳單 PDF 原封不動存 Drive → 寫 gmail_log（一封一列）。不封存、不標已讀、不刪除、不呼叫 Gemini。
- * 解析金額／截止日與群組彙總推播在 PR-B。
+ * 帳單 PDF 原封不動存 Drive → 規則有解析器就抓金額／截止日 → 寫 gmail_log（一封一列）→
+ * 推一則彙總到開了 notify_gmail 的群組。不封存、不標已讀、不刪除、不呼叫 Gemini。
+ * 各家銀行的解析器（GMAIL_PARSERS）等 Neil 的樣本信（PR-B3）。
  *
  * 去重以 gmail_log.msg_id 為準，**不靠標籤**：GmailApp 的標籤是貼在整串對話上的，同主旨的
  * eTag 通知會被 Gmail 歸成同一串——查詢若排除「已處理」標籤，第一封之後的新信永遠查不到。
@@ -213,8 +214,10 @@ function gmailOverlaps_(hitsByThread) {
 
 var GMAIL_LOG_HEADERS = ['msg_id', 'received_at', 'rule_id', 'mail_type', 'source_name', 'subject', 'amount',
                          'due_date', 'status', 'attachment_url', 'gmail_link', 'processed_at'];
-/** 狀態（T1）：PR-B 加上「✅ 已解析」「⚠️ 待確認」；沒有解析器的一律是這個 */
+/** 狀態（T1）：有解析器且抓到＝已解析；有解析器卻抓不到＝待確認；沒有解析器＝僅標籤 */
+var GMAIL_STATUS_PARSED = '✅ 已解析';
 var GMAIL_STATUS_LABEL_ONLY = '🏷️ 僅標籤';
+var GMAIL_STATUS_CHECK = '⚠️ 待確認';
 var GMAIL_DONE_LABEL = 'NeilOS/已處理';
 var GMAIL_SCAN_DAYS = 3;
 /** 一條規則一次最多看幾串。三天內不該有這麼多，到頂就寫 logs */
@@ -225,10 +228,16 @@ var GMAIL_CONTROLLER_HOUR = 9;       // 與到期提醒同時段（D-8）
 var GMAIL_AUTH_HINT = '在 GAS 編輯器執行一次 authorizeGmailController';
 
 /**
- * 解析器對照表：名稱 → (內文純文字) → { amount, due_date } | null。PR-B 才加入第一批；
+ * 解析器對照表（T5）：名稱 → (內文純文字) → { amount, due_date } | null。純函式，比照 ADR-015 evaluateRule_：
+ * 新增一家只加一筆，並在 tests/fixtures/gmail/ 放那家的樣本信（PR-B3，等 Neil 的樣本）。
  * 規則填了這裡沒有的名字 → 當留白（只貼標籤）＋ logs ⚠️
  */
 var GMAIL_PARSERS = {};
+
+/** LINE 文字訊息上限 5000 字；留一點給「其餘 N 封」 */
+var GMAIL_SUMMARY_MAX = 5000;
+/** App 郵件列表一次最多帶幾筆（新的在前） */
+var GMAIL_VIEW_LIMIT = 200;
 
 /** 排程入口 */
 function runGmailController() {
@@ -262,6 +271,7 @@ function runGmailController_(now) {
     var cutoff = now.getTime() - GMAIL_SCAN_DAYS * 86400000;
     var claimed = {};          // 這一輪已處理的信 → 哪條規則（規則照 rule_id 由小到大跑）
     var labels = {};
+    var digest = [];           // 要進群組彙總的（規則 notify=TRUE 的新信）
     rules.forEach(function (rule) {
       var threads;
       try {
@@ -289,11 +299,18 @@ function runGmailController_(now) {
           done[id] = true;
           processed++;
           saved += r.saved;
+          if (truthy_(rule.notify)) digest.push(r.item);
         });
       });
     });
 
-    logCleanup_('Gmail 控制員 ' + day, '處理 ' + processed + ' 封（存附件 ' + saved + ' 個）', notes.join('｜'));
+    // 推播出錯不能讓整輪變成「例外中止」：信都已經記好了，只是彙總沒送到
+    if (digest.length) {
+      try { gmailPushDigest_(gmailDigestText_(digest, day), notes); }
+      catch (err) { notes.push('彙總沒有推（' + String(err && err.message || err) + '）'); }
+    }
+    logCleanup_('Gmail 控制員 ' + day, '處理 ' + processed + ' 封（存附件 ' + saved + ' 個）' +
+      (digest.length ? '，彙總 ' + digest.length + ' 封' : ''), notes.join('｜'));
     console.log('Gmail 控制員完成：處理 ' + processed + ' 封，存附件 ' + saved + ' 個' + (notes.length ? '\n' + notes.join('\n') : ''));
     return { processed: processed, saved: saved, notes: notes };
   } catch (err) {
@@ -359,18 +376,123 @@ function gmailProcessMessage_(rule, thread, msg, log, labels, now) {
   } catch (err) {
     return { error: '附件存不進 Drive（' + String(err && err.message || err) + '），下次再試' };
   }
-  gmailAppendLog_(log, {
+  var parsed = gmailParse_(rule, msg);
+  var item = {
     msg_id: String(msg.getId()), received_at: msg.getDate().toISOString(), rule_id: rule.rule_id,
     mail_type: rule.mail_type, source_name: rule.source_name, subject: msg.getSubject(),
-    amount: '', due_date: '', status: GMAIL_STATUS_LABEL_ONLY,
+    amount: parsed.amount, due_date: parsed.due_date, status: parsed.status,
     attachment_url: urls.join('\n'), gmail_link: thread.getPermalink(), processed_at: now.toISOString()
-  });
+  };
+  gmailAppendLog_(log, item);
+  var warn = parsed.warn || '';
   try {
     gmailLabel_(thread, rule.label, labels);
   } catch (err) {
-    return { saved: urls.length, warn: '已記錄，但貼標籤失敗（' + String(err && err.message || err) + '）' };
+    warn = (warn ? warn + '；' : '') + '已記錄，但貼標籤失敗（' + String(err && err.message || err) + '）';
   }
-  return { saved: urls.length };
+  return { saved: urls.length, warn: warn, item: item };
+}
+
+/**
+ * 解析（T5）。沒有解析器（或名字不認得）＝僅標籤、不讀內文；有解析器就讀純文字內文交給它。
+ * 回來的值不合法、只抓到一半、解析器丟例外 → 待確認，金額與截止日都留白：**絕不猜值**
+ */
+function gmailParse_(rule, msg) {
+  var name = String(rule.parser == null ? '' : rule.parser).trim();
+  var fn = name ? GMAIL_PARSERS[name] : null;
+  var none = { amount: '', due_date: '', status: GMAIL_STATUS_LABEL_ONLY };
+  if (!fn) return none;
+  var out;
+  try {
+    out = fn(String(msg.getPlainBody() || ''));
+  } catch (err) {
+    return { amount: '', due_date: '', status: GMAIL_STATUS_CHECK,
+             warn: '解析器 ' + name + ' 失敗（' + String(err && err.message || err) + '）' };
+  }
+  var amount = out && typeof out.amount === 'number' && isFinite(out.amount) && out.amount > 0 ? out.amount : null;
+  var due = out && /^\d{4}-\d{2}-\d{2}$/.test(String(out.due_date || '')) ? String(out.due_date) : null;
+  if (amount === null || due === null) return { amount: '', due_date: '', status: GMAIL_STATUS_CHECK };
+  return { amount: amount, due_date: due, status: GMAIL_STATUS_PARSED };
+}
+
+/* ---------- 群組彙總（T6） ---------- */
+
+function gmailMoney_(n) {
+  return 'NT$' + String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+/** 'YYYY-MM-DD' → 'M/D' */
+function gmailMd_(key) {
+  var p = String(key).split('-');
+  return Number(p[1]) + '/' + Number(p[2]);
+}
+
+/**
+ * 一則彙總。只寫來源名稱、金額、截止日、連結（待確認的才寫主旨），不寫寄件者、卡號、內文。
+ * 太長就從後面截掉，最後一行「其餘 N 封」——N 是完全沒出現在訊息裡的封數。
+ */
+function gmailDigestText_(items, day) {
+  var entries = [];        // { text, ids }：每一行；section 標題併進該段第一行
+  var section = function (title, rows) {
+    rows.forEach(function (r, i) { entries.push({ text: (i ? '' : '\n' + title + '\n') + r.text, ids: r.ids }); });
+  };
+  var of = function (type) { return items.filter(function (it) { return it.mail_type === type; }); };
+
+  section('🧾 帳單', of('bill').map(function (it) {
+    var parts = ['・' + it.source_name, it.status === GMAIL_STATUS_PARSED ? gmailMoney_(it.amount) : '金額待確認'];
+    if (it.due_date) parts.push(gmailMd_(it.due_date) + ' 截止');
+    if (it.attachment_url) parts.push('📎 ' + String(it.attachment_url).split('\n')[0]);
+    return { text: parts.join('｜'), ids: [it.msg_id] };
+  }));
+
+  var etag = of('etag');
+  if (etag.length) {
+    var parsed = etag.filter(function (it) { return it.status === GMAIL_STATUS_PARSED; });
+    var total = parsed.reduce(function (s, it) { return s + it.amount; }, 0);
+    var line = '🚗 eTag ' + etag.length + ' 筆' + (parsed.length ? '，合計 ' + gmailMoney_(total) : '') +
+      (parsed.length && parsed.length < etag.length ? '（' + (etag.length - parsed.length) + ' 筆金額待確認）' : '');
+    entries.push({ text: '\n' + line, ids: etag.map(function (it) { return it.msg_id; }) });
+  }
+
+  var news = of('newsletter');
+  if (news.length) {
+    var names = [];
+    news.forEach(function (it) { if (names.indexOf(it.source_name) === -1) names.push(it.source_name); });
+    entries.push({ text: '\n📰 電子報 ' + news.length + ' 封：' + names.join('、'), ids: news.map(function (it) { return it.msg_id; }) });
+  }
+
+  section('⚠️ 待確認', items.filter(function (it) { return it.status === GMAIL_STATUS_CHECK; }).map(function (it) {
+    return { text: '・' + it.subject + '\n　' + it.gmail_link, ids: [it.msg_id] };
+  }));
+
+  var text = '📬 Gmail 彙總 ' + gmailMd_(day) + '（' + items.length + ' 封）';
+  var shown = {};
+  var reserve = 40;
+  for (var i = 0; i < entries.length; i++) {
+    if (text.length + 1 + entries[i].text.length > GMAIL_SUMMARY_MAX - reserve) break;
+    text += '\n' + entries[i].text;
+    entries[i].ids.forEach(function (id) { shown[id] = true; });
+  }
+  if (i < entries.length) {
+    var rest = items.filter(function (it) { return !shown[it.msg_id]; }).length;
+    text += '\n\n…其餘 ' + rest + ' 封，到 App 看';
+  }
+  return text;
+}
+
+/** 推給「啟用＋notify_gmail＋bot 沒離開」的群組（ADR-014 notify_* 同一套判斷）。不推個人 */
+function gmailPushDigest_(text, notes) {
+  var all = readLineGroups_();
+  if (!all.ok) { notes.push('讀不到 ' + LINE_GROUPS_SHEET + '，彙總沒有推（' + all.error + '）'); return; }
+  var targets = all.rows.map(function (r) { return r.record; }).filter(function (g) {
+    return truthy_(g.is_active) && truthy_(g.notify_gmail) && !keyValue_(g.left_at);
+  });
+  if (!targets.length) { notes.push('沒有開 notify_gmail 的群組，彙總沒有推'); return; }
+  targets.forEach(function (g) {
+    var id = keyValue_(g.group_id);
+    var r = linePush_(id, text);
+    if (!r.ok) notes.push('彙總推到 ' + id + ' 失敗（' + r.reason + '）');
+  });
 }
 
 /** 附件白名單（D-9）：規則要存、不是電子報、副檔名 .pdf。原封不動：不解密、不解析。同名不覆蓋 */
@@ -534,4 +656,87 @@ function authorizeGmailController() {
   console.log('✅ Drive 權限已授權（' + DriveApp.getRootFolder().getName() + '）');
   console.log('回 LINE 再傳一次「初始化」，Drive 資料夾就會建好');
   return { ok: true };
+}
+
+/* ========================================================================== */
+/* PR-B：給 App 的管理員 API（T7 的後端）                                        */
+/* PWA 一般 read／upsert 仍然碰不到 gmail_*（NO_PWA_READ／NO_PWA_WRITE 不變），     */
+/* 只有這兩個驗過權限與欄位的 action。                                            */
+/* ========================================================================== */
+
+var GMAIL_BOOL_FIELDS = ['is_active', 'save_attachment', 'notify'];
+
+/** 管理者＋feat_gmail（D-7）。非管理者就算被勾了 feat_gmail 也不行 */
+function gmailForbidden_(caller, action) {
+  var forbidden = adminForbidden_(caller, action);
+  if (forbidden) return forbidden;
+  if (canUse_(caller.user, 'feat_gmail')) return null;
+  try { logTransaction_(SETTINGS_LOG_SOURCE, '失敗', action, '沒有「郵件」功能的權限', '', '', caller.line_id); } catch (err) {}
+  return { error: 'forbidden' };
+}
+
+/** what = rules（設定頁）／log（📬 郵件列表，新的在前，最多 GMAIL_VIEW_LIMIT 筆） */
+function gmailView_(caller, what) {
+  var forbidden = gmailForbidden_(caller, 'gmailView ' + what);
+  if (forbidden) return forbidden;
+  if (what === 'rules') {
+    var read = gmailRulesRead_();
+    if (read.error) return { error: read.error };
+    return { success: true, rules: read.rules.map(function (r) { return plainRecord_(r, GMAIL_RULES_HEADERS); }),
+             parsers: Object.keys(GMAIL_PARSERS).sort(), mail_types: GMAIL_MAIL_TYPES.slice() };
+  }
+  if (what === 'log') {
+    var log = sheetRecords_(SpreadsheetApp.getActiveSpreadsheet(), GMAIL_LOG_SHEET, {});
+    if (log.error) return { error: log.error };
+    var rows = log.rows.map(function (r) { return plainRecord_(r, GMAIL_LOG_HEADERS); });
+    rows.sort(function (a, b) { return String(b.received_at).localeCompare(String(a.received_at)); });
+    return { success: true, rows: rows.slice(0, GMAIL_VIEW_LIMIT), total: rows.length };
+  }
+  return { error: 'unknown_view' };
+}
+
+/**
+ * 新增或編輯一條規則。rule_id 留白＝新增（取最大的數字＋1）；有 rule_id＝只改送來的欄位。
+ * 停用＝is_active FALSE，不刪列：gmail_log 裡的舊信還指著這個 rule_id。
+ */
+function gmailRuleSet_(caller, input) {
+  var forbidden = gmailForbidden_(caller, 'gmailRuleSet');
+  if (forbidden) return forbidden;
+  input = input || {};
+  var read = gmailRulesRead_();
+  if (read.error) return { error: read.error };
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(GMAIL_RULES_SHEET);
+
+  var id = String(input.rule_id == null ? '' : input.rule_id).trim();
+  var rule;
+  if (id) {
+    var found = read.rules.filter(function (r) { return String(r.rule_id).trim() === id; })[0];
+    if (!found) return { error: 'rule_not_found', rule_id: id };
+    rule = plainRecord_(found, GMAIL_RULES_HEADERS);
+  } else {
+    var max = 0;
+    read.rules.forEach(function (r) { var n = Number(r.rule_id); if (isFinite(n) && n > max) max = n; });
+    rule = plainRecord_({ is_active: true }, GMAIL_RULES_HEADERS);
+    rule.rule_id = max + 1;
+  }
+  GMAIL_RULES_HEADERS.forEach(function (h) {
+    if (h !== 'rule_id' && Object.prototype.hasOwnProperty.call(input, h)) rule[h] = input[h];
+  });
+  GMAIL_RULES_HEADERS.forEach(function (h) {
+    if (GMAIL_BOOL_FIELDS.indexOf(h) !== -1) rule[h] = truthy_(rule[h]) ? 'TRUE' : 'FALSE';
+    else if (h !== 'rule_id') rule[h] = String(rule[h] == null ? '' : rule[h]).trim();
+  });
+
+  if (!rule.source_name) return { error: 'missing_source_name' };
+  // 停用中的規則控制員不會用：不擋，否則一條填錯的舊規則連「先停用」都做不到
+  if (rule.is_active === 'TRUE') {
+    if (GMAIL_MAIL_TYPES.indexOf(rule.mail_type) === -1) return { error: 'invalid_mail_type' };
+    if (!gmailRuleQuery_(rule, GMAIL_SCAN_DAYS)) return { error: 'empty_query' };
+    if (rule.parser && !GMAIL_PARSERS[rule.parser]) return { error: 'unknown_parser', parser: rule.parser };
+  }
+
+  upsertRow_(sheet, sheetHeaders_(sheet), rule, GMAIL_RULES_SHEET, 'rule_id');
+  settingsLog_(caller, 'gmailRuleSet ' + rule.source_name, (id ? '修改' : '新增') + ' rule_id=' + rule.rule_id,
+    'is_active=' + rule.is_active + '｜mail_type=' + rule.mail_type);
+  return { success: true, rule: rule };
 }

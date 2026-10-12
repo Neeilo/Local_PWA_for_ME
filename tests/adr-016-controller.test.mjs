@@ -40,7 +40,7 @@ const NEWS = { rule_id: 3, is_active: 'TRUE', source_name: '天下', mail_type: 
                label: '電子報', save_attachment: 'TRUE' };
 
 const att = (name) => ({ name });
-const msg = (id, from, subject, date, attachments = []) => ({ id, from, subject, date, attachments });
+const msg = (id, from, subject, date, attachments = [], body = '') => ({ id, from, subject, date, attachments, body });
 
 /* ---------------------------------------------------------------------------
  * 假 GmailApp／DriveApp：只放行白名單方法，其他方法一被碰到就記成越權
@@ -48,6 +48,7 @@ const msg = (id, from, subject, date, attachments = []) => ({ id, from, subject,
 const GMAIL_OK = new Set(['GmailApp.search', 'GmailApp.getUserLabelByName', 'GmailApp.createLabel',
   'thread.getId', 'thread.getMessages', 'thread.getPermalink', 'thread.addLabel',
   'message.getId', 'message.getFrom', 'message.getSubject', 'message.getDate', 'message.getAttachments',
+  'message.getPlainBody',
   'attachment.getName', 'attachment.copyBlob', 'blob.setName', 'label.getName']);
 
 function guarded(kind, impl, touched) {
@@ -72,6 +73,7 @@ function fakeGmail(threads, { searchImpl = null } = {}) {
     getPermalink: () => 'https://mail.google.com/mail/u/0/#all/' + t.id,
     getMessages: () => t.messages.map((m) => guarded('message', {
       getId: () => m.id, getFrom: () => m.from, getSubject: () => m.subject, getDate: () => m.date,
+      getPlainBody: () => m.body,
       getAttachments: () => m.attachments.map((a) => guarded('attachment', {
         getName: () => a.name,
         copyBlob: () => { const b = { name: a.name }; return guarded('blob', { setName: (n) => { b.name = n; return b; } }, touched); }
@@ -117,7 +119,7 @@ function fakeDrive({ failCreateFile = false } = {}) {
   return { DriveApp: { getRootFolder: () => root.api }, files, folders };
 }
 
-function env({ rules = [BILL, ETAG, NEWS], threads = [], log = logSheet(), sheets = null, drive = fakeDrive(), searchImpl, extra = {}, extraFiles = [] } = {}) {
+function env({ rules = [BILL, ETAG, NEWS], threads = [], log = logSheet(), sheets = null, drive = fakeDrive(), searchImpl, extra = {}, extraFiles = ['line-router.gs'] } = {}) {
   const gmail = fakeGmail(threads, { searchImpl });
   const all = sheets || { gmail_rules: rulesSheet(rules), gmail_log: log };
   const e = loadCodeGs({ sheets: all, extraFiles, overrides: Object.assign({ GmailApp: gmail.GmailApp, DriveApp: drive.DriveApp }, extra) });
@@ -447,5 +449,275 @@ describe('權限與登記', () => {
     const reg = e.read('guideRegistry_()');
     assert.ok(reg.some((x) => x.sheet === 'gmail_log'));
     assert.match(reg.find((x) => x.sheet === 'ETC_Data').purpose, /歷史（凍結）/);
+  });
+});
+
+/* ==========================================================================
+ * PR-B1：解析器骨架（T5）、群組彙總推播（T6）、給 App 的管理員 API
+ * ========================================================================== */
+
+/** 測試用的解析器：內文寫「金額 1,234 截止 2026-10-25」就抓得到；其他一律 null */
+const FAKE_PARSERS = {
+  demo_v1: (text) => {
+    const m = /金額\s*([\d,]+)\s*截止\s*(\d{4}-\d{2}-\d{2})/.exec(text);
+    return m ? { amount: Number(m[1].replace(/,/g, '')), due_date: m[2] } : null;
+  },
+  half_v1: () => ({ amount: 500, due_date: '' }),
+  boom_v1: () => { throw new Error('格式變了'); }
+};
+
+const ME = 'Uneil', MOM = 'Umom';
+const ADMIN = { line_id: ME, user: { line_id: ME, is_active: 'TRUE', is_admin: 'TRUE', feat_gmail: 'TRUE' } };
+
+const GROUP_H = ['group_id', 'name', 'is_active', 'cmd_expense', 'cmd_tasks', 'cmd_query', 'joined_at', 'left_at',
+                 'created_at', 'updated_at', 'notify_due', 'cmd_gmail', 'notify_gmail'];
+const groupRow = (o) => GROUP_H.map((h) => (o[h] === undefined ? '' : o[h]));
+const GROUPS = () => new FakeSheet('line_groups', [GROUP_H,
+  groupRow({ group_id: 'Cgmail', name: 'Gmail 控制員', is_active: 'TRUE', notify_gmail: 'TRUE' }),
+  groupRow({ group_id: 'Cfamily', name: '家人', is_active: 'TRUE', notify_due: 'TRUE' }),
+  groupRow({ group_id: 'Coff', name: '停用', is_active: '', notify_gmail: 'TRUE' }),
+  groupRow({ group_id: 'Cleft', name: '已離開', is_active: 'TRUE', notify_gmail: 'TRUE', left_at: '2026-10-01' })
+]);
+
+function envB({ rules = [BILL, ETAG, NEWS], threads = [], groups = GROUPS(), pushImpl, parsers = FAKE_PARSERS, extraSheets = {} } = {}) {
+  const gmail = fakeGmail(threads);
+  const drive = fakeDrive();
+  const e = loadCodeGs({
+    extraFiles: ['line-router.gs', 'sheet-guide.gs'],
+    pushImpl,
+    sheets: Object.assign({ gmail_rules: rulesSheet(rules), gmail_log: logSheet(), line_groups: groups }, extraSheets),
+    overrides: { GmailApp: gmail.GmailApp, DriveApp: drive.DriveApp, GMAIL_PARSERS: parsers }
+  });
+  return Object.assign(e, { gmail, drive, run: () => e.call('runGmailController_', NOW) });
+}
+
+describe('T5 解析器骨架', () => {
+
+  test('規則有解析器、抓得到：✅ 已解析，金額與截止日寫進 gmail_log', () => {
+    const r = Object.assign({}, BILL, { parser: 'demo_v1' });
+    const e = envB({ rules: [r], threads: [thread('t1', [msg('m1', 'service@cathaybk.com.tw', '帳單', daysAgo(1), [], '本期應繳金額 1,234 截止 2026-10-25')])] });
+    e.run();
+    const row = logRows(e)[0];
+    assert.equal(row.status, '✅ 已解析');
+    assert.equal(row.amount, 1234);
+    assert.equal(row.due_date, '2026-10-25');
+  });
+
+  test('抓不到、只抓到一半、解析器丟例外：⚠️ 待確認，金額與截止日都留白（絕不猜值）', () => {
+    const rules = [Object.assign({}, BILL, { parser: 'demo_v1' }), Object.assign({}, ETAG, { parser: 'half_v1' }),
+                   Object.assign({}, NEWS, { mail_type: 'bill', parser: 'boom_v1' })];
+    const e = envB({ rules, threads: [
+      thread('t1', [msg('m1', 'service@cathaybk.com.tw', '帳單', daysAgo(1), [], '版面改了，找不到金額')]),
+      thread('t2', [msg('m2', 'etc@fetc.net.tw', 'eTag', daysAgo(1), [], 'x')]),
+      thread('t3', [msg('m3', 'news@cw.com.tw', '帳單', daysAgo(1), [], 'y')])
+    ] });
+    e.run();
+    const rows = logRows(e);
+    assert.deepEqual(rows.map((r) => r.status), ['⚠️ 待確認', '⚠️ 待確認', '⚠️ 待確認']);
+    assert.ok(rows.every((r) => r.amount === '' && r.due_date === ''));
+    const tx = e.transactions.find((x) => /^Gmail 控制員/.test(x[2]));
+    assert.match(tx[4], /m3 解析器 boom_v1 失敗（格式變了）/);
+  });
+
+  test('沒有解析器的規則不讀內文', () => {
+    const e = envB({ threads: [thread('t1', [msg('m1', 'service@cathaybk.com.tw', '帳單', daysAgo(1), [], '機密內文')])] });
+    e.run();
+    assert.ok(!e.gmail.touched.includes('message.getPlainBody'));
+    assert.equal(logRows(e)[0].status, '🏷️ 僅標籤');
+  });
+
+  test('解析器只收合法值：金額要是正數、截止日要是 YYYY-MM-DD', () => {
+    const e = envB({ rules: [Object.assign({}, BILL, { parser: 'bad_v1' })], parsers: { bad_v1: () => ({ amount: 'NT$1,234', due_date: '10/25' }) },
+      threads: [thread('t1', [msg('m1', 'service@cathaybk.com.tw', '帳單', daysAgo(1))])] });
+    e.run();
+    assert.equal(logRows(e)[0].status, '⚠️ 待確認');
+  });
+});
+
+describe('T6 群組彙總推播', () => {
+
+  const BILL_P = Object.assign({}, BILL, { parser: 'demo_v1' });
+  const ETAG_P = Object.assign({}, ETAG, { parser: 'demo_v1' });
+  const NEWS2 = { rule_id: 4, is_active: 'TRUE', source_name: '商周', mail_type: 'newsletter', from: 'news@bw.com.tw', notify: 'TRUE' };
+  const NEWS_N = Object.assign({}, NEWS, { notify: 'TRUE' });
+  const allThreads = () => [
+    thread('t1', [msg('m1', 'service@cathaybk.com.tw', '國泰帳單', daysAgo(1), [att('b.pdf')], '金額 12,345 截止 2026-10-25')]),
+    thread('t2', [msg('e1', 'etc@fetc.net.tw', 'eTag', daysAgo(1), [], '金額 120 截止 2026-10-20'),
+                  msg('e2', 'etc@fetc.net.tw', 'eTag', daysAgo(0), [], '金額 80 截止 2026-10-21')]),
+    thread('t3', [msg('n1', 'news@cw.com.tw', '天下', daysAgo(1))]),
+    thread('t4', [msg('n2', 'news@bw.com.tw', '商周', daysAgo(1))])
+  ];
+
+  test('一則彙總只推給「啟用＋notify_gmail＋沒離開」的群組；不推個人', () => {
+    const e = envB({ rules: [BILL_P, ETAG_P, NEWS_N, NEWS2], threads: allThreads() });
+    e.run();
+    assert.deepEqual(e.pushes.map((p) => p.to), ['Cgmail']);
+    const text = e.pushes[0].text;
+    assert.match(text, /^📬 Gmail 彙總 10\/12（5 封）/);
+    assert.match(text, /🧾 帳單\n・國泰世華｜NT\$12,345｜10\/25 截止｜📎 https:\/\/drive\//);
+    assert.match(text, /🚗 eTag 2 筆，合計 NT\$200/);
+    assert.match(text, /📰 電子報 2 封：天下、商周/);
+    assert.doesNotMatch(text, /cathaybk|fetc|@/, '不寫寄件者地址');
+  });
+
+  test('⚠️ 待確認：列主旨＋Gmail 連結', () => {
+    const e = envB({ rules: [BILL_P], threads: [thread('t1', [msg('m1', 'service@cathaybk.com.tw', '國泰世華 9 月帳單', daysAgo(1), [], '改版了')])] });
+    e.run();
+    assert.match(e.pushes[0].text, /⚠️ 待確認\n・國泰世華 9 月帳單\n　https:\/\/mail\.google\.com\/mail\/u\/0\/#all\/t1/);
+    assert.match(e.pushes[0].text, /🧾 帳單\n・國泰世華｜金額待確認/);
+  });
+
+  test('0 封不推；notify 沒開的不列；全部都沒開也不推', () => {
+    const e0 = envB();
+    e0.run();
+    assert.equal(e0.pushes.length, 0);
+    const quiet = Object.assign({}, BILL, { notify: 'FALSE' });
+    const e1 = envB({ rules: [quiet], threads: [thread('t1', [msg('m1', 'service@cathaybk.com.tw', '帳單', daysAgo(1))])] });
+    e1.run();
+    assert.equal(logRows(e1).length, 1, '照樣處理');
+    assert.equal(e1.pushes.length, 0);
+  });
+
+  test('同一封只推一次：第二次跑沒有新信就不推', () => {
+    const e = envB({ rules: [BILL_P], threads: [thread('t1', [msg('m1', 'service@cathaybk.com.tw', '帳單', daysAgo(1))])] });
+    e.run();
+    e.run();
+    assert.equal(e.pushes.length, 1);
+  });
+
+  test('太長就截斷，最後寫「其餘 N 封」，不超過 LINE 上限', () => {
+    const many = Array.from({ length: 400 }, (_, i) =>
+      thread('t' + i, [msg('m' + i, 'service@cathaybk.com.tw', '很長的主旨'.repeat(5) + i, daysAgo(1))]));
+    const e = envB({ rules: [Object.assign({}, BILL_P)], threads: many });
+    e.run();
+    const text = e.pushes[0].text;
+    assert.ok(text.length <= 5000, String(text.length));
+    assert.match(text, /…其餘 \d+ 封，到 App 看/);
+  });
+
+  test('沒有開 notify_gmail 的群組：不推，logs 講清楚', () => {
+    const e = envB({ rules: [BILL], threads: [thread('t1', [msg('m1', 'service@cathaybk.com.tw', '帳單', daysAgo(1))])],
+      groups: new FakeSheet('line_groups', [GROUP_H]) });
+    e.run();
+    assert.equal(e.pushes.length, 0);
+    const tx = e.transactions.find((x) => /^Gmail 控制員/.test(x[2]));
+    assert.match(tx[4], /沒有開 notify_gmail 的群組，彙總沒有推/);
+  });
+
+  test('推播那一步丟例外：信照樣記錄，logs 照樣寫（不是整輪例外中止）', () => {
+    const e = envB({ rules: [BILL], threads: [thread('t1', [msg('m1', 'service@cathaybk.com.tw', '帳單', daysAgo(1))])] });
+    e.read('readLineGroups_ = function () { throw new Error("Sheet 暫時無法存取"); }');
+    e.run();
+    assert.equal(logRows(e).length, 1);
+    const tx = e.transactions.find((x) => /^Gmail 控制員/.test(x[2]));
+    assert.equal(tx[1], '成功');
+    assert.match(tx[4], /彙總沒有推（Sheet 暫時無法存取）/);
+  });
+
+  test('推播失敗寫進 logs（信已經記錄，不重推）', () => {
+    const e = envB({ rules: [BILL], threads: [thread('t1', [msg('m1', 'service@cathaybk.com.tw', '帳單', daysAgo(1))])],
+      pushImpl: () => ({ ok: false, code: 429, reason: 'HTTP 429' }) });
+    e.run();
+    const tx = e.transactions.find((x) => /^Gmail 控制員/.test(x[2]));
+    assert.match(tx[4], /彙總推到 Cgmail 失敗（HTTP 429）/);
+  });
+});
+
+describe('給 App 的管理員 API（gmailView／gmailRuleSet）', () => {
+
+  const USERS = () => new FakeSheet('line_users', [
+    ['line_id', 'display_name', 'is_active', 'is_admin', 'feat_tasks', 'feat_gmail'],
+    [ME, 'Neil', 'TRUE', 'TRUE', 'TRUE', 'TRUE'],
+    [MOM, '媽', 'TRUE', '', 'TRUE', 'TRUE']
+  ]);
+  const apiEnv = (over = {}) => {
+    const e = envB(Object.assign({ extraSheets: { line_users: USERS() } }, over));
+    return e;
+  };
+  const momCaller = { line_id: MOM, user: { line_id: MOM, is_active: 'TRUE', is_admin: '', feat_gmail: 'TRUE' } };
+  const adminNoFeat = { line_id: ME, user: { line_id: ME, is_active: 'TRUE', is_admin: 'TRUE', feat_gmail: '' } };
+
+  test('規則：回全部規則（含停用）＋解析器名單（下拉選單用）', () => {
+    const e = apiEnv({ rules: [BILL, Object.assign({}, NEWS, { is_active: 'FALSE' })] });
+    const r = e.call('gmailView_', ADMIN, 'rules');
+    assert.equal(r.success, true);
+    assert.deepEqual(r.rules.map((x) => x.rule_id), [1, 3]);
+    assert.deepEqual(r.parsers, ['boom_v1', 'demo_v1', 'half_v1']);
+    assert.deepEqual(r.mail_types, ['bill', 'etag', 'newsletter']);
+  });
+
+  test('郵件列表：新的在前，最多 200 筆', () => {
+    const e = apiEnv();
+    const rows = Array.from({ length: 205 }, (_, i) => LOG_HEADERS.map((h) => (h === 'msg_id' ? 'm' + i : h === 'received_at' ? new Date(Date.UTC(2026, 8, 1) + i * 3600000).toISOString() : '')));
+    e.sheets.gmail_log.values.push(...rows);
+    const r = e.call('gmailView_', ADMIN, 'log');
+    assert.equal(r.rows.length, 200);
+    assert.equal(r.rows[0].msg_id, 'm204');
+    assert.equal(r.total, 205);
+  });
+
+  test('非管理者就算勾了 feat_gmail 也拒絕；管理者沒勾 feat_gmail 也拒絕', () => {
+    const e = apiEnv();
+    assert.equal(e.call('gmailView_', momCaller, 'log').error, 'forbidden');
+    assert.equal(e.call('gmailView_', adminNoFeat, 'rules').error, 'forbidden');
+    assert.equal(e.call('gmailRuleSet_', momCaller, { source_name: 'x', mail_type: 'bill', from: 'a@b.c' }).error, 'forbidden');
+  });
+
+  test('新增規則：rule_id 自動取最大＋1，真假值寫成 TRUE／FALSE，寫 logs', () => {
+    const e = apiEnv({ rules: [Object.assign({}, BILL, { rule_id: 10001 })] });
+    const r = e.call('gmailRuleSet_', ADMIN, { source_name: '玉山', mail_type: 'bill', from: 'ebill@esun.com.tw',
+      subject_kw: '帳單', save_attachment: true, notify: false, is_active: true });
+    assert.equal(r.success, true);
+    assert.equal(r.rule.rule_id, 10002);
+    const saved = e.sheets.gmail_rules.toRecords()[1];
+    assert.equal(saved.source_name, '玉山');
+    assert.equal(saved.save_attachment, 'TRUE');
+    assert.equal(saved.notify, 'FALSE');
+    assert.ok(e.transactions.some((t) => t[0] === '設定' && /gmailRuleSet/.test(t[2])));
+  });
+
+  test('編輯：只改送來的欄位，其他照舊；停用＝is_active FALSE（不刪列）', () => {
+    const e = apiEnv({ rules: [BILL] });
+    e.call('gmailRuleSet_', ADMIN, { rule_id: 1, is_active: false });
+    const rows = e.sheets.gmail_rules.toRecords();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].is_active, 'FALSE');
+    assert.equal(rows[0].from, 'service@cathaybk.com.tw');
+  });
+
+  test('擋不合法的規則：信種、寄件者主旨都空、不認得的解析器、沒有名稱、改不存在的 id', () => {
+    const e = apiEnv({ rules: [BILL] });
+    const set = (rec) => e.call('gmailRuleSet_', ADMIN, rec).error;
+    assert.equal(set({ source_name: 'x', mail_type: '帳單', from: 'a@b.c' }), 'invalid_mail_type');
+    assert.equal(set({ source_name: 'x', mail_type: 'bill' }), 'empty_query');
+    assert.equal(set({ source_name: 'x', mail_type: 'bill', from: 'a@b.c', parser: 'nope' }), 'unknown_parser');
+    assert.equal(set({ source_name: ' ', mail_type: 'bill', from: 'a@b.c' }), 'missing_source_name');
+    assert.equal(set({ rule_id: 99, is_active: false }), 'rule_not_found');
+    assert.equal(e.sheets.gmail_rules.toRecords().length, 1, '一列都沒動');
+  });
+
+  test('填錯的舊規則可以先停用（停用中的不擋驗證），要重新啟用時才擋', () => {
+    const bad = { rule_id: 7, is_active: 'TRUE', source_name: '舊的', mail_type: '帳單', from: 'x@y.com' };
+    const e = apiEnv({ rules: [bad] });
+    assert.equal(e.call('gmailRuleSet_', ADMIN, { rule_id: 7, is_active: false }).success, true);
+    assert.equal(e.sheets.gmail_rules.toRecords()[0].is_active, 'FALSE');
+    assert.equal(e.call('gmailRuleSet_', ADMIN, { rule_id: 7, is_active: true }).error, 'invalid_mail_type');
+  });
+
+  test('經過 PWA 路由：要帶 token，管理員拿得到', () => {
+    const TOK = 'tok-neil';
+    const e = loadCodeGs({ extraFiles: ['line-router.gs', 'sheet-guide.gs'], tokens: { [TOK]: ME },
+      sheets: { line_users: USERS(), gmail_rules: rulesSheet([BILL]), gmail_log: logSheet() } });
+    const out = JSON.parse(e.call('handlePwaSync_', { postData: { contents: JSON.stringify({ action: 'gmailView', what: 'rules', token: TOK, trigger: 'manual' }) } }).body);
+    assert.equal(out.success, true);
+    assert.equal(out.rules.length, 1);
+  });
+
+  test('群組的 notify_gmail 可以在 App 開關（groupSet）', () => {
+    const e = apiEnv();
+    const r = e.call('groupSet_', ADMIN, 'Cfamily', 'notify_gmail', true);
+    assert.equal(r.success, true);
+    assert.equal(e.sheets.line_groups.toRecords()[1].notify_gmail, 'TRUE');
+    assert.ok(e.read('LINE_GROUPS_HEADERS').includes('notify_gmail'));
   });
 });

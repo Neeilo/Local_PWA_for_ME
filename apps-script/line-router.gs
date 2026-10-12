@@ -1982,7 +1982,7 @@ function diagnoseGemini() {
 /* ========================================================================== */
 
 var LINE_GROUPS_HEADERS = ['group_id', 'name', 'is_active', 'cmd_expense', 'cmd_tasks', 'cmd_query',
-  'joined_at', 'left_at', 'created_at', 'updated_at', 'notify_due'];
+  'joined_at', 'left_at', 'created_at', 'updated_at', 'notify_due', 'cmd_gmail', 'notify_gmail'];
 var GROUP_CMD_FIELDS = ['cmd_expense', 'cmd_tasks', 'cmd_query'];
 /** 前綴 → 群組的指令開關。「分類」是記帳的一部分；初始化不在這裡（只限一對一） */
 var GROUP_CMD_BY_PREFIX = { '記帳': 'cmd_expense', '收入': 'cmd_expense', '任務': 'cmd_tasks' };
