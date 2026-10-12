@@ -1070,6 +1070,15 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
   </section>
 
   <!-- 雜記 -->
+  <!-- 📬 郵件（ADR-016 T7）：Gmail 控制員處理過的信，唯讀。打開這頁才抓（切區不打雲端） -->
+  <section class="view" id="view-mail">
+    <div class="card">
+      <div class="seg" id="mailSeg"></div>
+      <div id="mailBody"></div>
+      <div style="margin-top:10px"><button class="btn ghost" onclick="reloadMail()">重新整理</button></div>
+    </div>
+  </section>
+
   <section class="view" id="view-notes">
     <div class="card">
       <textarea id="noteInput" placeholder="任何想法、待辦靈感、雜項…"></textarea>
@@ -1213,22 +1222,23 @@ const FEATURE_ITEMS = [
   { view:'tasks',    icon:'☑️', label:'任務' },
   { view:'review',   icon:'🌙', label:'日誌' },
   { view:'mood',     icon:'💚', label:'心情' },
-  { view:'stocks',   icon:'📈', label:'股票' }
+  { view:'stocks',   icon:'📈', label:'股票' },
+  { view:'mail',     icon:'📬', label:'郵件' }
 ];
 
 /* ---------- 兩區（ADR-014 D-1～D-8） ----------
    💰 財務、✅ 生產力。切區＝導覽圖示、主色、首頁主題卡一起換；任務與白板是兩區共用的地基。
    每支手機記住上次的區（localStorage，介面偏好，不上雲端）；第一次預設財務。
    導覽五格固定：任務永遠在右側第一格，切區不移位。null＝這一區沒有東西放，留空佔位。
-   股票格（ADR-015）依 feat_stock 開。 */
+   股票格（ADR-015）依 feat_stock 開；生產力區第 5 格 📬 郵件（ADR-016）只給管理者＋feat_gmail。 */
 const ZONE_KEY='personal-os-zone';
 const ZONE_HINT_KEY='personal-os-zone-hint';
 const ZONES={
   finance:      { label:'財務',   nav:['expenses','plans','home','tasks','stocks'] },
-  productivity: { label:'生產力', nav:['notes','review','home','tasks',null] }
+  productivity: { label:'生產力', nav:['notes','review','home','tasks','mail'] }
 };
 const VIEW_NAV={ expenses:['💰','記帳'], plans:['🧾','分期'], tasks:['☑️','任務'],
-                 notes:['📎','雜記'], review:['🌙','日誌'], stocks:['📈','股票'] };
+                 notes:['📎','雜記'], review:['🌙','日誌'], stocks:['📈','股票'], mail:['📬','郵件'] };
 /* 舊版「導覽配置」留在手機裡的設定。不讀、不遷移，開機時刪掉 */
 const LEGACY_NAV_KEYS=['personal-os-nav-placement','personal-os-nav-slot'];
 let zone='finance';
@@ -1258,7 +1268,7 @@ const LINE_USERS_SHEET = 'line_users';
 /* 分頁 ↔ 功能欄。首頁刻意不在表上：它是進 App 的第一頁，關掉沒意義（D-1）。 */
 const FEATURE_BY_VIEW = {
   expenses:'feat_expense', notes:'feat_notes', tasks:'feat_tasks',
-  review:'feat_review', mood:'feat_mood', stocks:'feat_stock'
+  review:'feat_review', mood:'feat_mood', stocks:'feat_stock', mail:'feat_gmail'
 };
 // 標籤直接沿用 FEATURE_ITEMS，避免同一個名字在兩個地方各寫一次、改了一邊忘了另一邊
 const FEATURE_KEYS = FEATURE_ITEMS.map(function(it){ return FEATURE_BY_VIEW[it.view]; });
@@ -2654,7 +2664,7 @@ async function purgePerf(){
 /* ---------- 系統設定（管理員，2026-10-06） ----------
    四張原本只能在 Sheet 上看的表。資料只放記憶體，按了分頁才抓；改動送專用 action，
    雲端驗過欄位與值才寫（PWA 的一般 read／upsert 碰不到這幾張表）。 */
-const SYS_TABS = [['groups','群組'],['config','分類'],['plans','分期'],['guide','導覽']];
+const SYS_TABS = [['groups','群組'],['config','分類'],['plans','分期'],['gmail','信件規則'],['guide','導覽']];
 const SYS_COLORS = ['c1','c2','c3','c4','c5','c6','c7','c8'];
 let sysTab = null;
 let sysData = {};          // { groups:{rows}, config:{rows,warnings}, guide:{headers,rows} }
@@ -2678,6 +2688,7 @@ function renderSysCard(){
   body.innerHTML = sysTab==='groups' ? sysGroupsHtml(d)
                  : sysTab==='config' ? sysConfigHtml(d)
                  : sysTab==='plans'  ? sysPlansHtml()
+                 : sysTab==='gmail'  ? sysGmailHtml(d)
                  : sysGuideHtml(d);
 }
 async function openSysTab(tab){
@@ -2685,7 +2696,10 @@ async function openSysTab(tab){
   if(tab==='plans'){ renderSysCard(); return; }       // 計畫列 boot／輪詢已經帶回來了
   sysLoading=true; renderSysCard();
   let r=null;
-  try{ r=await cloudPost({action:'adminView', what:tab, trigger:'manual'}); }catch(e){ r=null; }
+  try{
+    r=await cloudPost(tab==='gmail' ? {action:'gmailView', what:'rules', trigger:'manual'}
+                                    : {action:'adminView', what:tab, trigger:'manual'});
+  }catch(e){ r=null; }
   sysLoading=false;
   sysData[tab]=r||{success:false};
   renderSysCard();
@@ -2703,7 +2717,7 @@ function sysGroupsHtml(d){
     return `<div class="sys-row">
       <div class="who">${esc(g.name||'(沒有名稱)')}<small>${esc(g.group_id)}</small></div>
       <div class="meta">${state}${g.joined_at?'・加入 '+esc(String(g.joined_at).slice(0,10)):''}</div>
-      <div class="adm-grid">${btn('is_active','✅ 啟用')}${btn('cmd_expense','記帳')}${btn('cmd_tasks','任務')}${btn('cmd_query','查詢')}${btn('notify_due','⏰ 到期推群組')}</div>
+      <div class="adm-grid">${btn('is_active','✅ 啟用')}${btn('cmd_expense','記帳')}${btn('cmd_tasks','任務')}${btn('cmd_query','查詢')}${btn('notify_due','⏰ 到期推群組')}${btn('notify_gmail','📬 郵件彙總')}</div>
     </div>`;
   }).join('');
 }
@@ -2792,6 +2806,111 @@ async function addConfigItem(){
   let r=null;
   try{ r=await cloudPost({action:'configAdd', record:rec, trigger:'write'}); }catch(e){ r=null; }
   applyConfigResult(r);
+}
+
+/* 信件規則（ADR-016 T7）：Gmail 控制員的認信規則。改一欄送一欄；停用＝is_active false（不刪列：
+   gmail_log 的舊信還指著這個 rule_id）。解析器選項來自雲端的對照表，不在前端寫死 */
+const GMAIL_TYPE_LABEL = { bill:'🧾 帳單', etag:'🚗 eTag', newsletter:'📰 電子報' };
+const GMAIL_ERRORS = {
+  missing_source_name:'來源名稱不能空白', invalid_mail_type:'信種只能是帳單／eTag／電子報',
+  empty_query:'寄件者與主旨關鍵字至少填一個（都空會撈到整個信箱）', unknown_parser:'雲端沒有這個解析器',
+  rule_not_found:'找不到這條規則，請重新整理', forbidden:'只有管理者（而且開了 📬 郵件）可以改'
+};
+function sysGmailHtml(d){
+  const types=d.mail_types||Object.keys(GMAIL_TYPE_LABEL), parsers=d.parsers||[];
+  const opt=(list,cur,label)=>list.map(v=>`<option value="${esc(v)}" ${String(cur)===v?'selected':''}>${esc(label?label(v):v)}</option>`).join('');
+  const list=(d.rules||[]).map((r,i)=>{
+    const on=truthy(r.is_active);
+    const input=(f,ph)=>`<input type="text" placeholder="${ph}" value="${esc(r[f])}" onchange="setGmailRule(${i},'${f}',this.value)">`;
+    const flag=(f,label)=>`<button class="${truthy(r[f])?'on':''}" onclick="setGmailRule(${i},'${f}',${!truthy(r[f])})">${label}</button>`;
+    return `<div class="sys-row">
+      <div class="who">${esc(r.source_name)}<small>#${esc(r.rule_id)}・${esc(GMAIL_TYPE_LABEL[r.mail_type]||r.mail_type)}</small></div>
+      <div class="row">${input('from','寄件者（可用 OR）')}${input('subject_kw','主旨關鍵字')}</div>
+      <div class="row">${input('label','Gmail 標籤')}
+        <select onchange="setGmailRule(${i},'mail_type',this.value)">${opt(types,r.mail_type,t=>GMAIL_TYPE_LABEL[t]||t)}</select>
+        <select onchange="setGmailRule(${i},'parser',this.value)"><option value="">（不解析）</option>${opt(parsers,r.parser)}</select></div>
+      <div class="adm-grid">${flag('is_active',on?'✅ 啟用中':'已停用')}${flag('save_attachment','📎 存 PDF')}${flag('notify','📣 列入彙總')}</div>
+    </div>`;
+  }).join('');
+  return (list || '<div class="empty-hint">還沒有規則</div>') + `<div class="sys-add">
+    <div class="field-label">新增規則（存好後可以先在編輯器跑 probeGmail 確認抓得對）</div>
+    <div class="row"><input type="text" id="gmAddName" placeholder="來源名稱（例：玉山）">
+      <select id="gmAddType">${opt(types,'bill',t=>GMAIL_TYPE_LABEL[t]||t)}</select></div>
+    <div class="row"><input type="text" id="gmAddFrom" placeholder="寄件者"><input type="text" id="gmAddKw" placeholder="主旨關鍵字"></div>
+    <div class="row"><input type="text" id="gmAddLabel" placeholder="Gmail 標籤（例：帳單/玉山）"></div>
+    <div style="margin-top:8px"><button class="btn" onclick="addGmailRule()">新增</button></div>
+  </div>`;
+}
+async function saveGmailRule(record){
+  let r=null;
+  try{ r=await cloudPost({action:'gmailRuleSet', record, trigger:'write'}); }catch(e){ r=null; }
+  if(!r || !r.success){ toast('⚠️ '+(r ? (GMAIL_ERRORS[r.error]||r.error) : '沒有存到雲端')); return null; }
+  return r.rule;
+}
+/* 開關先在畫面上變；雲端沒存到就變回來 */
+async function setGmailRule(i, field, value){
+  const rule=((sysData.gmail||{}).rules||[])[i]; if(!rule) return;
+  const before=rule[field];
+  rule[field]=typeof value==='boolean' ? (value?'TRUE':'FALSE') : value; renderSysCard();
+  const saved=await saveGmailRule({rule_id:rule.rule_id, [field]:value});
+  if(!saved){ rule[field]=before; renderSysCard(); return; }
+  Object.assign(rule, saved); renderSysCard(); toast('已存，明天 9 點起生效');
+}
+async function addGmailRule(){
+  const v=id=>document.getElementById(id).value;
+  const saved=await saveGmailRule({source_name:v('gmAddName'), mail_type:v('gmAddType'), from:v('gmAddFrom'),
+    subject_kw:v('gmAddKw'), label:v('gmAddLabel'), is_active:true, notify:true, save_attachment:v('gmAddType')==='bill'});
+  if(!saved) return;
+  ((sysData.gmail=sysData.gmail||{success:true}).rules=sysData.gmail.rules||[]).push(saved);
+  renderSysCard(); toast('已新增 #'+saved.rule_id);
+}
+
+/* ---------- 📬 郵件（ADR-016 T7） ----------
+   唯讀列表。只在打開這一頁時抓一次（切區、輪詢都不抓），要新的按「重新整理」。
+   只顯示 gmail_log 有的東西：來源、主旨、金額、截止日、狀態、連結——沒有內文 */
+const MAIL_FILTERS = [['all','全部'],['bill','🧾 帳單'],['etag','🚗 eTag'],['newsletter','📰 電子報'],['check','⚠️ 待確認']];
+let mailData = null;          // { success, rows, total } | { error }
+let mailLoading = false;
+let mailType = 'all';
+async function openMailView(){
+  if(mailData && mailData.success){ renderMailView(); return; }
+  await reloadMail();
+}
+async function reloadMail(){
+  mailLoading=true; renderMailView();
+  let r=null;
+  try{ r=await cloudPost({action:'gmailView', what:'log', trigger:'manual'}); }catch(e){ r=null; }
+  mailLoading=false;
+  mailData=r||{error:'network'};
+  renderMailView();
+}
+function pickMailType(t){ mailType=t; renderMailView(); }
+/* 連結來自 gmail_log（雲端寫的 Drive／Gmail 網址）；只放行 https，Sheet 被改成 javascript: 也不會變成可點的東西 */
+function httpsOnly(u){ u=String(u||'').trim(); return /^https:\/\//i.test(u) ? u : ''; }
+function mailMoney(n){ return 'NT$'+String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+function renderMailView(){
+  const seg=document.getElementById('mailSeg'), body=document.getElementById('mailBody');
+  if(!body) return;
+  if(seg) seg.innerHTML=MAIL_FILTERS.map(([k,l])=>`<button class="${mailType===k?'sel':''}" onclick="pickMailType('${k}')">${l}</button>`).join('');
+  if(mailLoading){ body.innerHTML='<div class="empty-hint">讀取中…</div>'; return; }
+  if(!mailData || !mailData.success){
+    const why=mailData&&mailData.error==='forbidden' ? '只有管理者（而且開了 📬 郵件）看得到' : '讀不到（'+esc((mailData&&mailData.error)||'連線失敗')+'）';
+    body.innerHTML=`<div class="empty-hint">${why}，按「重新整理」再試</div>`; return;
+  }
+  const rows=mailData.rows.filter(r=>mailType==='all' || (mailType==='check' ? String(r.status).indexOf('待確認')!==-1 : r.mail_type===mailType));
+  if(!rows.length){ body.innerHTML='<div class="empty-hint">沒有符合的信</div>'; return; }
+  body.innerHTML=rows.map(r=>{
+    const day=localDateKey(r.received_at);
+    const money=r.amount!=='' && r.amount!=null ? mailMoney(r.amount) : '';
+    const due=r.due_date ? (Number(String(r.due_date).slice(5,7))+'/'+Number(String(r.due_date).slice(8,10))+' 截止') : '';
+    const files=String(r.attachment_url||'').split('\n').map(httpsOnly).filter(Boolean).map((u,i)=>`<a href="${esc(u)}" target="_blank" rel="noopener">📎${i?i+1:''}</a>`).join(' ');
+    const gmail=httpsOnly(r.gmail_link);
+    return `<div class="sys-row">
+      <div class="who">${esc(r.source_name)}<small>${esc(day)}・${esc(GMAIL_TYPE_LABEL[r.mail_type]||r.mail_type)}・${esc(r.status)}</small></div>
+      <div>${esc(r.subject)}</div>
+      <div class="meta">${[money,due].filter(Boolean).map(esc).join('・')} ${files} ${gmail?`<a href="${esc(gmail)}" target="_blank" rel="noopener">✉️ Gmail</a>`:''}</div>
+    </div>`;
+  }).join('') + (mailData.total>mailData.rows.length ? `<div class="empty-hint">只列最近 ${mailData.rows.length} 封（共 ${mailData.total} 封）</div>` : '');
 }
 
 /* 分期：所有計畫一覽，結束／刪除走記帳分頁同一組動作 */
@@ -3234,11 +3353,12 @@ function renderDashStocks(){
 }
 
 /* ---------- 導覽 ---------- */
-const TITLES={home:'首頁',expenses:'記帳',plans:'分期',tasks:'任務',review:'日誌',notes:'雜記',stocks:'股票'};
+const TITLES={home:'首頁',expenses:'記帳',plans:'分期',tasks:'任務',review:'日誌',notes:'雜記',stocks:'股票',mail:'郵件'};
 /* 分頁能不能進。日誌頁也放心情：兩個功能有一個開就進得去（D-7）。股票看 feat_stock（ADR-015） */
 function viewAllowed(name){
   if(name==='plans') return featureAllowed('expenses');     // 分期就是記帳的一部分（各期是 expenses 的列）
   if(name==='review') return featureAllowed('review') || featureAllowed('mood');
+  if(name==='mail') return featureAllowed('mail') && isAdmin();   // 雲端也一樣：非管理者就算被勾了也讀不到（ADR-016 D-7）
   return featureAllowed(name);
 }
 function currentView(){
@@ -3257,6 +3377,7 @@ function switchView(name){
   if(name==='plans') renderPlansView();
   if(name==='review'){ loadTodayReview(); renderReviewView(); }
   if(name==='stocks') renderStocksView();
+  if(name==='mail') openMailView();
   window.scrollTo(0,0);
   renderNav();
 }

@@ -106,7 +106,8 @@ describe('Pages：白名單發布', () => {
   });
 
   test('index.html 引用的本機檔案都在白名單裡', () => {
-    const refs = [...read('index.html').matchAll(/(?:href|src)="([^"#:]+)"/g)].map((m) => m[1]);
+    // 樣板字串裡的 ${…} 是執行時才填的外部連結（例如 ADR-016 郵件列表的 Drive／Gmail 連結），不是本機檔案
+    const refs = [...read('index.html').matchAll(/(?:href|src)="([^"#:]+)"/g)].map((m) => m[1]).filter((r) => !r.includes('${'));
     assert.ok(refs.length > 0);
     for (const r of refs) assert.ok(SITE_FILES.includes(r), `index.html 引用 ${r}，但它不會被發布`);
   });
