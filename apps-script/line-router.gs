@@ -144,6 +144,16 @@ var ROUTE_TABLE = {
     format: formatTaskSuccess_,
     summary: summarizeTask_
   },
+  // ADR-018 A-4：提醒跟任務同一張表（kind=reminder），建好接著問日期、再問重複
+  '提醒': {
+    sheetName: 'tasks',
+    usage: '提醒/內容',
+    taskKind: 'reminder',
+    parse: parseReminder_,
+    build: buildTaskRow_,
+    format: formatReminderSuccess_,
+    summary: summarizeReminder_
+  },
   '記帳': {
     sheetName: 'expenses',
     usage: '記帳/金額/分類[/備註]',
@@ -576,7 +586,7 @@ function recordRoute_(prefix, route, parsed, userId, text, chatId) {
     var rowNumber = appendToSheet_(route.sheetName, record);
     logTransaction_(prefix, '成功', text, route.summary(parsed, route), '', rowNumber, userId);
     // 任務建好再問到期日（ADR-014 D-20）：不按也沒關係，任務已經在了
-    if (route.sheetName === 'tasks') return taskDatePrompt_(route.format(parsed, route), record.id, userId);
+    if (route.sheetName === 'tasks') return taskDatePrompt_(route.format(parsed, route), record.id, userId, record.kind === 'reminder');
     return route.format(parsed, route);
   } catch (err) {
     console.log('寫入失敗：' + err);
@@ -624,6 +634,11 @@ function initSteps_() {
       if (g.reason) { warn = true; lines.push('⚠️ ' + LINE_GROUPS_SHEET + ' 沒有表頭，沒有補 notify_due'); }
       else if (g.added.length) lines.push(LINE_GROUPS_SHEET + ' 補上：notify_due');
       return { level: warn ? 'warn' : 'ok', text: lines.length ? lines.join('\n　') : '欄位已齊備' };
+    } },
+    { label: '待辦／提醒歸類（ADR-018）', run: function () {
+      var k = classifyTaskKinds_();
+      if (k.reason) return { level: 'warn', text: k.reason === 'sheet_missing' ? '找不到 tasks 分頁，沒有歸類' : 'tasks 還沒有 kind 欄，沒有歸類' };
+      return { level: 'ok', text: '歸為提醒 ' + k.reminder + ' 筆、待辦 ' + k.todo + ' 筆（已有分類的不動；歸錯的到 App 改）' };
     } },
     { label: 'ADR-013 記帳分類', run: function () {
       adr013 = installAdr013();
@@ -845,14 +860,22 @@ function parseExpense_(rest, route) {
 /* ========================================================================== */
 
 /** tasks：id | text | is_completed | created_at | priority */
-function buildTaskRow_(parsed) {
+function buildTaskRow_(parsed, route) {
   return {
     id: Date.now(),
     text: parsed.content,
     is_completed: false,
     created_at: new Date().toISOString(),
-    priority: parsed.priority || DEFAULT_PRIORITY
+    priority: parsed.priority || DEFAULT_PRIORITY,
+    kind: (route && route.taskKind) || 'todo'
   };
+}
+
+/** 「提醒/」之後整串都是內容（提醒沒有優先度；內容含「/」也不切） */
+function parseReminder_(rest, route) {
+  var content = String(rest).trim();
+  if (!content) return { error: '內容是空的喔。\n格式：' + route.usage };
+  return { content: content };
 }
 
 /** expenses：id | expense_date | type | category | subcategory | targets | amount | note | created_at */
@@ -1632,6 +1655,14 @@ function formatAmount_(n) {
   return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
+function formatReminderSuccess_(parsed) {
+  return '🔔 已新增提醒\n' + parsed.content;
+}
+
+function summarizeReminder_(parsed) {
+  return '提醒「' + parsed.content + '」';
+}
+
 function summarizeTask_(parsed) {
   return '任務「' + parsed.content + '」／優先度 ' + (parsed.priority || DEFAULT_PRIORITY);
 }
@@ -1985,7 +2016,7 @@ var LINE_GROUPS_HEADERS = ['group_id', 'name', 'is_active', 'cmd_expense', 'cmd_
   'joined_at', 'left_at', 'created_at', 'updated_at', 'notify_due', 'cmd_gmail', 'notify_gmail'];
 var GROUP_CMD_FIELDS = ['cmd_expense', 'cmd_tasks', 'cmd_query'];
 /** 前綴 → 群組的指令開關。「分類」是記帳的一部分；初始化不在這裡（只限一對一） */
-var GROUP_CMD_BY_PREFIX = { '記帳': 'cmd_expense', '收入': 'cmd_expense', '任務': 'cmd_tasks' };
+var GROUP_CMD_BY_PREFIX = { '記帳': 'cmd_expense', '收入': 'cmd_expense', '任務': 'cmd_tasks', '提醒': 'cmd_tasks' };
 GROUP_CMD_BY_PREFIX[QUERY_PREFIX] = 'cmd_query';
 var GROUP_CMD_LABEL = { cmd_expense: '記帳', cmd_tasks: '任務', cmd_query: '查詢' };
 var GROUP_LOG_SOURCE = '群組';
@@ -2259,6 +2290,7 @@ function quickCategoryPrompt_(prefix, amount, userId) {
 function handlePostback_(event) {
   var data = parseQuickData_(event.postback && event.postback.data);
   if (String(data.td) === '1') { handleTaskDatePostback_(event, data); return; }
+  if (String(data.tr) === '1') { handleReminderRepeatPostback_(event, data); return; }
   if (String(data.qr) !== '1') return;
   var src = event.source || {};
   var userId = src.userId || '';
@@ -2384,8 +2416,8 @@ function parseTaskDateInput_(raw, todayKey) {
   return parseDateKey_(key) ? key : '';
 }
 
-/** 建好任務之後的回覆：原本的成功訊息＋到期日按鈕 */
-function taskDatePrompt_(text, taskId, userId) {
+/** 建好任務之後的回覆：原本的成功訊息＋到期日按鈕。提醒（ADR-018）一定要有日期，不給「不設日期」 */
+function taskDatePrompt_(text, taskId, userId, reminder) {
   var today = lineTodayKey_();
   var base = { td: 1, t: taskId, u: userId || '', n: Utilities.getUuid().replace(/-/g, '').slice(0, 16) };
   var post = function (label, d) {
@@ -2398,6 +2430,7 @@ function taskDatePrompt_(text, taskId, userId) {
   items.push({ type: 'action', action: { type: 'datetimepicker', label: '📅 選日期',
     data: quickData_(Object.assign({}, base, { d: 'pick' })), mode: 'date', initial: addDaysKey_(today, 1), min: today } });
   items.push(post('✏️ 自己輸入', 'input'));
+  if (reminder) return { text: text + '\n📅 哪一天提醒你？', quickReply: { items: items } };
   items.push(post('不設日期', 'none'));
   return { text: text + '\n📅 要設到期日嗎？', quickReply: { items: items } };
 }
@@ -2476,10 +2509,86 @@ function applyTaskDue_(taskId, nonce, key, userId, input) {
     setDeviceFields_(sheet, headers, rows[0], { due_date: key, notified: '' });
     cache.put(nkey, '1', TASK_DATE_NONCE_TTL);
     logTransaction_('任務', '成功', input, '到期日 → ' + key, 'id=' + taskId, rows[0], userId);
+    // 提醒（ADR-018 A-4）：日期之後接著問重複。✏️ 自己輸入那條路也走到這裡
+    if (isReminder_(rec)) return reminderRepeatPrompt_('✅ ' + shortDateLabel_(key) + ' 提醒你', taskId, userId);
     return '✅ 到期日 ' + shortDateLabel_(key);
   } catch (err) {
     console.log('寫入到期日失敗：' + err);
     logTransaction_('任務', '失敗', input, '寫入到期日失敗', String(err && err.stack || err), '', userId);
+    return '寫入失敗了：' + err.message;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* ---------- 提醒的第三段：重複（ADR-018 A-4） ----------
+   不重複／每週／每月／每年。跟日期按鈕同一套：資料全在 postback data、只有建立者按得動、
+   同一組按鈕只生效一次（nonce 另外一組，日期那組用過了不影響這組）。
+   週期跟著時間走（9 點排程翻頁），不像待辦跟著完成走。 */
+var REMINDER_REPEAT_OPTIONS = [
+  { label: '不重複', r: 'none' }, { label: '每週', r: '週' }, { label: '每月', r: '月' }, { label: '每年', r: '年' }
+];
+var REMINDER_REPEAT_NONCE_PREFIX = 'adr018_tr_';
+
+function reminderRepeatPrompt_(text, taskId, userId) {
+  var base = { tr: 1, t: taskId, u: userId || '', n: Utilities.getUuid().replace(/-/g, '').slice(0, 16) };
+  return { text: text + '\n🔁 要重複嗎？', quickReply: { items: REMINDER_REPEAT_OPTIONS.map(function (o) {
+    return { type: 'action', action: { type: 'postback', label: o.label,
+      data: quickData_(Object.assign({}, base, { r: o.r })), displayText: o.label } };
+  }) } };
+}
+
+/** postback：過門跟日期按鈕一模一樣（群組三道／一對一白名單 → 任務權限 → 只限建立者） */
+function handleReminderRepeatPostback_(event, data) {
+  var src = event.source || {};
+  var userId = src.userId || '';
+  var input = '提醒重複（按鈕：' + (data.r || '?') + '）';
+  var denied = null;
+  if (isGroupSource_(src)) {
+    denied = groupGate_(src, 'cmd_tasks', input, userId);
+  } else {
+    var w = writeGate_(userId, 'LINE ' + input);
+    if (!w.allowed) denied = lineDeniedMessage_(w.error);
+  }
+  lineReply_(event.replyToken, denied !== null ? denied : reminderRepeatStep_(data, userId, input));
+}
+
+function reminderRepeatStep_(data, userId, input) {
+  if (!canUse_(lineUserById_(userId), FEATURE_BY_SHEET.tasks)) {
+    var label = FEATURE_LABEL[FEATURE_BY_SHEET.tasks];
+    logTransaction_('任務', '失敗', input, '沒有「' + label + '」功能的權限', 'code=forbidden｜feat_tasks', '', userId);
+    return '你沒有「' + label + '」功能的權限。\n需要的話請管理者到 App 的「成員與權限」打開。';
+  }
+  var opt = REMINDER_REPEAT_OPTIONS.filter(function (o) { return o.r === data.r; })[0];
+  if (!data.t || !data.n || !opt) return '這個按鈕看不懂，之後可以在 App 改。';
+  if (data.u && data.u !== userId) return '這組按鈕是別人叫出來的，請他自己點。';
+  var cache = scriptCache_();
+  if (!cache) return '暫時沒辦法用按鈕設定，之後可以在 App 改。';
+  var nkey = REMINDER_REPEAT_NONCE_PREFIX + data.n;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(QUICK_LOCK_MS)) return '有點忙，請再試一次。';
+  try {
+    if (cache.get(nkey)) return '這筆的重複已經設過了 👌';
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('tasks');
+    var headers = sheet ? sheetHeaders_(sheet) : [];
+    var idCol = headers.indexOf('id') + 1;
+    if (!sheet || !idCol || headers.indexOf('recur_unit') === -1) return '任務表還沒準備好（缺週期欄），請管理者傳「' + INIT_COMMAND + '」。';
+    var rows = findRowsByKey_(sheet, [idCol], String(data.t));
+    var rec = {};
+    if (rows.length) {
+      var line = sheet.getRange(rows[0], 1, 1, headers.length).getValues()[0];
+      headers.forEach(function (h, i) { rec[h] = line[i]; });
+    }
+    if (!rows.length || truthy_(rec.del)) return '找不到這筆提醒（可能已經刪掉了）。';
+    if (keyValue_(rec.line_id) !== userId) return '這筆提醒是別人建的，請他自己設。';
+    var once = opt.r === 'none';
+    setDeviceFields_(sheet, headers, rows[0], { recur_interval: once ? '' : 1, recur_unit: once ? '' : opt.r });
+    cache.put(nkey, '1', TASK_DATE_NONCE_TTL);
+    logTransaction_('任務', '成功', input, '提醒重複 → ' + opt.label, 'id=' + data.t, rows[0], userId);
+    return once ? '✅ 只提醒一次' : '✅ ' + opt.label + '提醒';
+  } catch (err) {
+    console.log('寫入提醒重複失敗：' + err);
+    logTransaction_('任務', '失敗', input, '寫入提醒重複失敗', String(err && err.stack || err), '', userId);
     return '寫入失敗了：' + err.message;
   } finally {
     lock.releaseLock();

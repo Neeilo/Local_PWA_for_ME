@@ -36,11 +36,14 @@ function env(fetchImpl) {
 const writes = (e) => e.calls.filter(c => c.body && c.body.action);
 
 /* ========================================================================== */
-describe('新增週期任務', () => {
+// ADR-018（2026-10-13）：新增時「選提醒才出現重複」，待辦不再帶週期——這組改在提醒分段跑。
+// 欄位與送出的形狀沒變；待辦模式不送週期的測試在 adr-018-reminders-frontend。
+describe('新增週期任務（ADR-018 起：提醒）', () => {
 
   test('到期日與週期一起送上去', () => {
     const e = env();
     withFields(e, { taskInput: '繳水費', newTaskDue: '2026-10-05', newTaskRecurN: '1', newTaskRecurUnit: '月' });
+    e.raw('taskSeg = "reminder"');
 
     e.call('addTask');
 
@@ -54,17 +57,19 @@ describe('新增週期任務', () => {
   test('只填週期沒填到期日就擋下來——週期無從算起', () => {
     const e = env();
     withFields(e, { taskInput: '繳水費', newTaskDue: '', newTaskRecurN: '1', newTaskRecurUnit: '月' });
+    e.raw('taskSeg = "reminder"');
 
     e.call('addTask');
 
     assert.equal(writes(e).length, 0, '安靜忽略比擋下來更糟');
-    assert.ok(e.toasts.some(t => t.includes('要先有到期日')));
+    assert.ok(e.toasts.some(t => t.includes('提醒要有日期')));
     assert.equal(e.read('state.tasks.length'), 0);
   });
 
   test('沒選單位時週期欄位留空，不會被塞預設值', () => {
     const e = env();
     withFields(e, { taskInput: '一次性的', newTaskDue: '2026-10-05', newTaskRecurN: '3', newTaskRecurUnit: '' });
+    e.raw('taskSeg = "reminder"');
 
     e.call('addTask');
 
@@ -77,6 +82,7 @@ describe('新增週期任務', () => {
   test('選了單位沒填數字就當 1', () => {
     const e = env();
     withFields(e, { taskInput: 'x', newTaskDue: '2026-10-05', newTaskRecurN: '', newTaskRecurUnit: '週' });
+    e.raw('taskSeg = "reminder"');
 
     e.call('addTask');
 

@@ -605,7 +605,8 @@ function routePwaSync_(body, perf) {
     const headers = sheetHeaders_(sheet);
     // key_field 可以是字串或陣列：line_users 用 'line_id'，reviews 用
     // ['review_date','line_id']（那張表沒有 id 欄，ADR-009 §一.5）
-    var record = body.sheet === TASKS_SHEET ? keepOriginChat_(sheet, headers, body.record || {}) : (body.record || {});
+    var record = body.sheet === TASKS_SHEET ? guardReminderDone_(keepOriginChat_(sheet, headers, body.record || {}), caller)
+      : (body.record || {});
     var keyField = body.key_field;
     // 股票（ADR-015 D-8／D-9）：持有者、誰能改、賣超、自選上限都由後端決定
     if (body.sheet === STOCK_TRADES_SHEET || body.sheet === STOCK_WATCH_SHEET || body.sheet === STOCK_RULES_SHEET) {
@@ -642,6 +643,8 @@ function routePwaSync_(body, perf) {
   if (body.action === 'completeRecurring') {
     const headers = sheetHeaders_(sheet);
     const rec = keepOriginChat_(sheet, headers, body.record || {});
+    // ADR-018 A-2：提醒沒有「完成」，週期跟著時間走（9 點排程翻頁）。前端被拒會退回一般 upsert，那裡也會擋
+    if (isReminder_(rec)) return jsonOut({ error: 'reminder_not_completable' });
     const next = nextDueDate_(rec.due_date, rec.recur_interval, rec.recur_unit,
                               keyValue_(body.today) || keyValue_(new Date()));
 
@@ -916,7 +919,8 @@ function tombstoneRows_(sheet, headers, keyField) {
  */
 var ADR009_COLUMNS = {
   // origin_chat：ADR-014 D-17（群組建立的任務記下群組 ID，到期提醒推回那個群組）
-  tasks:    ['del', 'archive', 'board', 'due_date', 'recur_interval', 'recur_unit', 'notified', 'origin_chat'],
+  // kind：ADR-018 A-2（todo／reminder；空白＝待辦，由「初始化」歸類）
+  tasks:    ['del', 'archive', 'board', 'due_date', 'recur_interval', 'recur_unit', 'notified', 'origin_chat', 'kind'],
   expenses: ['del', 'archive', 'board'],
   notes:    ['del', 'archive', 'board'],
   reviews:  ['del', 'archive'],
@@ -979,6 +983,37 @@ function ensureAdr009Columns() {
 }
 
 /**
+ * 待辦／提醒歸類（ADR-018 A-2，「初始化」的一步）：kind 空白的列，有 recur_interval → reminder、
+ * 其餘 → todo。已經有值的不碰（人在 App 改過的不會被改回來），可重複執行。
+ * 已刪的列也補值（免得哪天還原回來是空白），但不算進回報的筆數。
+ * 一次寫回整欄：一列一列寫，舊資料多的時候會逾時。
+ */
+function classifyTaskKinds_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TASKS_SHEET);
+  if (!sheet) return { reason: 'sheet_missing', reminder: 0, todo: 0 };
+  var headers = sheetHeaders_(sheet);
+  var col = headers.indexOf('kind');
+  if (col === -1) return { reason: 'no_kind_column', reminder: 0, todo: 0 };
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { reminder: 0, todo: 0 };
+  var values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+  var out = { reminder: 0, todo: 0 };
+  var changed = false;
+  var kinds = values.map(function (row) {
+    var rec = {};
+    headers.forEach(function (h, i) { rec[h] = row[i]; });
+    var cur = keyValue_(rec.kind);
+    if (cur || !keyValue_(rec.id)) return [row[col]];
+    var kind = keyValue_(rec.recur_interval) ? 'reminder' : 'todo';
+    changed = true;
+    if (!isTombstone_(rec)) out[kind]++;
+    return [kind];
+  });
+  if (changed) sheet.getRange(2, col + 1, kinds.length, 1).setValues(kinds);
+  return out;
+}
+
+/**
  * tasks.origin_chat 只有 LINE 寫得進去（ADR-014 D-17）：PWA 送上來的值一律不信，
  * 改用雲端那一列現有的值（新任務＝空白）。
  *
@@ -990,13 +1025,36 @@ function ensureAdr009Columns() {
 function keepOriginChat_(sheet, headers, record) {
   var out = Object.assign({}, record);
   var col = headers.indexOf('origin_chat') + 1;
+  var kindCol = headers.indexOf('kind') + 1;
   var idCol = headers.indexOf('id') + 1;
-  if (!col) { delete out.origin_chat; return out; }
-  out.origin_chat = '';
+  var keepKind = kindCol && (record || {}).kind === undefined;
+  if (!col) delete out.origin_chat; else out.origin_chat = '';
   var id = keyValue_(record && record.id);
-  if (!idCol || !id) return out;
+  if (!idCol || !id || (!col && !keepKind)) return out;
   var rows = findRowsByKey_(sheet, [idCol], id);
-  if (rows.length) out.origin_chat = keyValue_(sheet.getRange(rows[0], col, 1, 1).getValues()[0][0]);
+  if (!rows.length) return out;
+  var line = sheet.getRange(rows[0], 1, 1, headers.length).getValues()[0];
+  if (col) out.origin_chat = keyValue_(line[col - 1]);
+  // ADR-018：舊版 App 不知道 kind，送上來的 record 沒有這個鍵——沿用雲端的值，提醒才不會被洗成待辦。
+  // 有帶就照帶的（App 可以把待辦改成提醒）。同一次讀列，不多讀
+  if (keepKind) out.kind = keyValue_(line[kindCol - 1]);
+  return out;
+}
+
+/** ADR-018 A-2：這一列是不是提醒。空白、todo、其他值都當待辦 */
+function isReminder_(record) {
+  return keyValue_((record || {}).kind) === 'reminder';
+}
+
+/**
+ * 提醒不能標完成（ADR-018 A-2，前後端都擋）。不回錯誤：前端的待送佇列遇到錯誤會一直重送，
+ * 一筆被擋的寫入會卡住後面所有的寫入。改成把完成改回空白、其他欄照寫，並留一列 logs（不可靜默）。
+ */
+function guardReminderDone_(record, caller) {
+  if (!isReminder_(record) || !truthy_(record.is_completed)) return record;
+  var out = Object.assign({}, record, { is_completed: '' });
+  logTransaction_('任務', '失敗', 'PWA upsert → ' + TASKS_SHEET + ' id=' + keyValue_(record.id),
+    '提醒不能標完成，完成已改回空白（其他欄照寫）', 'ADR-018 A-2', '', caller.line_id);
   return out;
 }
 
@@ -1260,6 +1318,30 @@ function todayKeyFrom_(arg) {
 }
 
 /**
+ * 提醒翻頁（ADR-018 A-3）。純函式：回要動哪些列、怎麼動，不碰 Sheet。
+ *  - 週期提醒、due_date < 今天 → roll：跳到下一個 ≥ 今天的日期（nextDueDate_，月底沿用既有算法；
+ *    Neil 2026-10-13 接受 1/31→2/28→3/28 的漂移）
+ *  - 單次提醒、過期 ≥ 30 天 → archive（設 del，走既有的封存寄信流程）；未滿 30 天不動，前端放「已過」
+ * 待辦不在這裡：待辦的週期跟著完成走（ADR-009）。
+ */
+var REMINDER_ARCHIVE_DAYS = 30;
+function reminderRollPlan_(records, todayKey) {
+  var out = [];
+  (records || []).forEach(function (r) {
+    if (!isReminder_(r) || isTombstone_(r)) return;
+    var days = daysUntil_(r.due_date, todayKey);
+    if (days === null || days >= 0) return;
+    if (keyValue_(r.recur_interval) || keyValue_(r.recur_unit)) {
+      var next = nextDueDate_(r.due_date, r.recur_interval, r.recur_unit, todayKey);
+      if (next) out.push({ record: r, action: 'roll', due: next });
+      return;
+    }
+    if (days <= -REMINDER_ARCHIVE_DAYS) out.push({ record: r, action: 'archive' });
+  });
+  return out;
+}
+
+/**
  * 每天跑一次的到期檢查。由 installAdr009Triggers() 建立的觸發器呼叫。
  *
  * 推成功才標記 notified：推失敗就標記，等於這筆從此再也不會提醒，而使用者
@@ -1329,7 +1411,25 @@ function checkDueReminders(todayKey) {
     });
 
     if (failed) notes.unshift('有 ' + failed + ' 筆推播失敗，未標記 notified，明天會再試');
-    logCleanup_('到期檢查 ' + today, '通知 ' + sent + ' 筆（符合門檻 ' + due.length + ' 筆）', notes.join('｜'));
+
+    // ADR-018 A-3：同一輪，推播之後再翻頁。這一期該推卻推失敗的不翻：翻了那一期就安靜地被跳過了
+    var rolled = 0, archived = 0;
+    reminderRollPlan_(records, today).forEach(function (p) {
+      var rec = p.record;
+      if (p.action === 'roll') {
+        if (dueRemindersToNotify_([rec], today).length) return;
+        rec.due_date = p.due;
+        rec.notified = '';
+        rolled++;
+      } else {
+        rec.del = 'TRUE';
+        archived++;
+      }
+      upsertRow_(sheet, headers, rec, TASKS_SHEET, 'id');
+    });
+
+    logCleanup_('到期檢查 ' + today, '通知 ' + sent + ' 筆（符合門檻 ' + due.length + ' 筆）；提醒翻頁 ' + rolled +
+      ' 筆、封存 ' + archived + ' 筆', notes.join('｜'));
     console.log('到期檢查完成：通知 ' + sent + ' / ' + due.length + ' 筆');
     return { notified: sent, matched: due.length };
   } catch (err) {
