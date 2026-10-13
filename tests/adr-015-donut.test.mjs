@@ -106,37 +106,47 @@ describe('畫出來的樣子', () => {
     assert.match(svg, new RegExp(`stroke-dasharray="${(C2 * 0.15 - 2).toFixed(2)} [^"]+"\\s+stroke-dashoffset="${(-C2 * 0.4).toFixed(2)}"`));
   });
 
-  test('中心數字維持本月總支出', () => {
+  // ADR-018：完整雙環圖搬到記帳頁（expDonut）；首頁磚只放大數字＋迷你雙環（只有內圈、不能點）
+  test('首頁磚：大數字＋迷你雙環，不帶圖例、不能點', () => {
     const e = env();
     e.call('renderDashExpense');
-    assert.match(e.read('__els.dashExpense.innerHTML'), /<text class="donut-center"[^>]*>10,000<\/text>/);
+    assert.match(e.read('__els.dashExpense.innerHTML'), /10,000/);
+    const mini = e.read('__els.dashExpenseDonut.innerHTML');
+    assert.match(mini, /class="mini-donut"/);
+    assert.doesNotMatch(mini, /onclick|lg-row/);
+  });
+
+  test('中心數字維持本月總支出', () => {
+    const e = env();
+    e.call('renderExpenseDonut');
+    assert.match(e.read('__els.expDonut.innerHTML'), /<text class="donut-center"[^>]*>10,000<\/text>/);
   });
 });
 
 describe('點內圈或圖例：展開細項（名稱＋金額），再點收起', () => {
   test('展開飲食 → 圖例列出四段的名稱與金額；再點收起', () => {
     const e = env();
-    e.call('renderDashExpense');
-    assert.doesNotMatch(e.read('__els.dashExpense.innerHTML'), /lg-sub/);
+    e.call('renderExpenseDonut');
+    assert.doesNotMatch(e.read('__els.expDonut.innerHTML'), /lg-sub/);
     e.call('toggleDonutCat', '飲食');
-    const html = e.read('__els.dashExpense.innerHTML');
+    const html = e.read('__els.expDonut.innerHTML');
     for (const [name, amt] of [['外食', '4,000'], ['買菜', '1,500'], ['其他', '300'], ['未細分', '200']]) {
       assert.match(html, new RegExp(`<span class="lg-name">${name}</span>\\s*<span class="lg-val">${amt}</span>`), name);
     }
     assert.match(html, /aria-expanded="true"/);
     e.call('toggleDonutCat', '飲食');
-    assert.doesNotMatch(e.read('__els.dashExpense.innerHTML'), /lg-sub/);
+    assert.doesNotMatch(e.read('__els.expDonut.innerHTML'), /lg-sub/);
   });
 
   test('一次只展開一個大類；展開中的大類這個月不見了就收起', () => {
     const e = env();
     e.call('toggleDonutCat', '飲食');
     e.call('toggleDonutCat', '交通');
-    const html = e.read('__els.dashExpense.innerHTML');
+    const html = e.read('__els.expDonut.innerHTML');
     assert.match(html, /<span class="lg-name">加油<\/span>/);
     assert.doesNotMatch(html, /<span class="lg-name">外食<\/span>/, '圖例只展開交通');
     e.raw('state.expenses = state.expenses.filter(x => x.category !== "交通")');
-    e.call('renderDashExpense');
+    e.call('renderExpenseDonut');
     assert.equal(e.read('donutOpen'), null);
   });
 });

@@ -50,58 +50,7 @@ function frontend({ reviews = [], storage } = {}) {
   return e;
 }
 
-/* ========================================================================== */
-describe('今日指南針：輪詢不會把它洗掉', () => {
-
-  test('存了指南針 → 雲端那列沒有 compass 欄 → pull 之後仍在', async () => {
-    const e = frontend();
-    stableDom(e, { rvCompass: '先把股票票收尾', rvGood: '跑步', rvStuck: '', rvNext: '' });
-    e.call('saveReview');
-    const k = e.call('myReviewKey');
-    const date = k.split('|')[0];
-
-    // 後端存好了，輪詢讀回來的那列沒有 compass（reviews 表沒這欄）
-    e.cloud.reviews = [{ review_date: date, good: '跑步', stuck: '', most_important: '', line_id: ME }];
-    e.raw('outbox = []');
-    await e.callRaw('pullFromCloud');
-
-    assert.equal(e.read('state.reviews["' + k + '"].compass'), '先把股票票收尾',
-      '輪詢一次就清空，等於這欄從來沒存過');
-    assert.equal(e.read('state.reviews["' + k + '"].good'), '跑步', '其他欄照雲端');
-    e.call('loadTodayReview');
-    assert.equal(e.read('__els.rvCompass.value'), '先把股票票收尾');
-  });
-
-  test('重新開 App（新的一份程式、同一個 localStorage）也還在', () => {
-    const e1 = frontend();
-    stableDom(e1, { rvCompass: '早點睡', rvGood: '', rvStuck: '', rvNext: '' });
-    e1.call('saveReview');
-    const k = e1.call('myReviewKey');
-    const saved = e1.localStorage.getItem('personal-os-compass-v1');
-
-    const e2 = frontend({ storage: { 'personal-os-compass-v1': saved } });
-    assert.equal(e2.call('compassOf', k), '早點睡');
-  });
-
-  test('清空指南針會真的清掉，不會從本機復活', () => {
-    const e = frontend();
-    stableDom(e, { rvCompass: '要清掉的', rvGood: '有寫', rvStuck: '', rvNext: '' });
-    e.call('saveReview');
-    const k = e.call('myReviewKey');
-    e.raw('__els.rvCompass.value = ""');
-    e.call('saveReview');
-    assert.equal(e.call('compassOf', k), '');
-  });
-
-  test('只留最近 60 天，不會無限長大', () => {
-    const e = frontend();
-    for (let i = 1; i <= 70; i++) e.call('saveCompass', '2026-01-' + String(i).padStart(3, '0') + '|' + ME, 'x' + i);
-    const store = JSON.parse(e.localStorage.getItem('personal-os-compass-v1'));
-    assert.equal(Object.keys(store).length, 60);
-    assert.equal(store['2026-01-070|' + ME], 'x70', '留下的是最新的');
-    assert.equal(store['2026-01-001|' + ME], undefined);
-  });
-});
+/* 「今日指南針」那組已隨 ADR-018 退場（換成首頁「給自己的一段話」，存在雲端 self_notes；舊的本機指南針可忽略） */
 
 /* ========================================================================== */
 describe('.sync-badge 沒事時不留空膠囊', () => {
@@ -111,32 +60,28 @@ describe('.sync-badge 沒事時不留空膠囊', () => {
 });
 
 /* ========================================================================== */
-describe('「只看我的」套到雜記與心情', () => {
+describe('「只看我的」套到雜記（心情已隨 ADR-018 退場）', () => {
 
   function scoped() {
     const e = frontend();
     stableDom(e);
     e.raw(`state.notes = [{id:1, txt:"我的雜記", ts:1, line_id:"${ME}"}, {id:2, txt:"媽媽的雜記", ts:2, line_id:"${MOM}"}]`);
-    e.raw(`state.moods = [{id:1, level:3, note:"我的心情", ts:1, line_id:"${ME}"}, {id:2, level:4, note:"媽媽的心情", ts:2, line_id:"${MOM}"}]`);
     return e;
   }
 
-  test('只看我的 → 雜記、心情都只剩自己的', () => {
+  test('只看我的 → 雜記只剩自己的', () => {
     const e = scoped();
     e.raw('scopeMine = true');
-    e.call('renderNotes'); e.call('renderMoods');
+    e.call('renderNotes');
     const notes = e.read('__els.noteList.innerHTML');
-    const moods = e.read('__els.moodList.innerHTML');
     assert.ok(notes.includes('我的雜記') && !notes.includes('媽媽的雜記'));
-    assert.ok(moods.includes('我的心情') && !moods.includes('媽媽的心情'));
   });
 
   test('全部 → 兩個人的都在', () => {
     const e = scoped();
     e.raw('scopeMine = false');
-    e.call('renderNotes'); e.call('renderMoods');
+    e.call('renderNotes');
     assert.ok(e.read('__els.noteList.innerHTML').includes('媽媽的雜記'));
-    assert.ok(e.read('__els.moodList.innerHTML').includes('媽媽的心情'));
   });
 
   test('雜記頁有自己的切換列，多人時才顯示', () => {

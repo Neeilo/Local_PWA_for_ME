@@ -154,7 +154,7 @@ describe('boot 成功：身份 → 名單 → 資料 → 補送', () => {
     const acts = e.calls.map((c) => c.body.action + ':' + (c.body.trigger || '-'));
     assert.deepEqual(acts, ['boot:foreground', 'readMany:manual', 'readMany:poll']);
     for (const c of e.calls.filter((x) => x.body.action === 'readMany')) {
-      assert.deepEqual(c.body.sheets, ['tasks', 'reviews', 'moods', 'notes', 'expenses']);
+      assert.deepEqual(c.body.sheets, ['tasks', 'notes', 'expenses'], 'reviews／moods 已退場（ADR-018）');
     }
   });
 });
@@ -221,7 +221,8 @@ describe('等待畫面（D-5）', () => {
     const els = stableDom(e);
     e.call('renderDashboard');
     assert.match(els.dashExpense.innerHTML, /skel/);
-    assert.match(els.dashTasks.innerHTML, /skel/);
+    assert.match(els.deepTodo.innerHTML, /skel/);
+    assert.match(els.urgentList.innerHTML, /skel/);
     assert.match(els.boardList.innerHTML, /skel/);
     assert.doesNotMatch(els.dashExpense.innerHTML, /還沒有支出紀錄/);
 
@@ -235,8 +236,9 @@ describe('等待畫面（D-5）', () => {
     const els = stableDom(e);
     e.raw('deviceToken = null; localOnly = true');
     e.call('renderDashboard');
-    assert.doesNotMatch(els.dashTasks.innerHTML, /skel/);
-    assert.match(els.dashTasks.innerHTML, /目前沒有進行中的任務/);
+    assert.doesNotMatch(els.deepTodo.innerHTML, /skel/);
+    assert.match(els.deepTodo.innerHTML, /目前沒有進行中的待辦/);
+    assert.match(els.urgentList.innerHTML, /3 天內沒有急事/);
   });
 
   test('讀取失敗時骨架留著（連線橫幅會講原因），不改成「沒有資料」', async () => {

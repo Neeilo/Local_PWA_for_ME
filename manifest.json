@@ -1,7 +1,7 @@
 {
   "name": "Neil OS 個人小系統",
   "short_name": "Neil OS",
-  "description": "任務、複盤、心情與雜記的個人小系統",
+  "description": "待辦、提醒、記帳與雜記的個人小系統",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

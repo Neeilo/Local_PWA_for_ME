@@ -209,11 +209,13 @@ describe('提醒不能標完成；編輯可以改類型', () => {
 /* ========================================================================== */
 describe('首頁', () => {
 
-  test('「接下來要做的」只放待辦（那張卡有勾選框）', () => {
+  test('深入卡：待辦頁有勾選框、只放待辦；提醒頁沒有勾選框（ADR-018 C-1 起取代「接下來要做的」）', () => {
     const e = env();
     seed(e, [{ txt: '買菜', kind: 'todo' }, { txt: '繳房租', kind: 'reminder', due: dayKey(1) }]);
-    e.call('renderDashTasks');
-    const h = html(e, 'dashTasks');
-    assert.ok(h.includes('買菜') && !h.includes('繳房租'));
+    e.call('renderDeep');
+    const todo = html(e, 'deepTodo'), rem = html(e, 'deepReminder');
+    assert.ok(todo.includes('買菜') && !todo.includes('繳房租'));
+    assert.ok(/type="checkbox"/.test(todo));
+    assert.ok(rem.includes('繳房租') && !/type="checkbox"/.test(rem));
   });
 });

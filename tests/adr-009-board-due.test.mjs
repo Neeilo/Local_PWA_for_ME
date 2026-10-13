@@ -1,5 +1,5 @@
 /**
- * ADR-009 §三／§四 — 共用白板與儀表板到期區塊
+ * ADR-009 §三／§四 — 共用白板與到期門檻（ADR-018 起儀表板的「快到期了」分組由「最急兩件」取代）
  *
  * 這一批多了一項別的測試都沒有的東西：**同時載入前後端兩份原始碼，比對到期門檻
  * 是否一致**。門檻在 Apps Script 與瀏覽器各有一份實作（沒有辦法共用），所以改用
@@ -28,23 +28,20 @@ const writes = (e) => e.calls.filter(c => c.body && c.body.action);
 /* ========================================================================== */
 describe('⚠️ 前後端的到期門檻不可以各走各的', () => {
 
-  test('兩份原始碼裡的門檻數字必須一致', () => {
-    const back = loadCodeGs().read('DUE_THRESHOLDS').map(t => t.maxDays);
-    const front = env().read('DUE_THRESHOLDS_UI').map(t => t.max);
-
-    assert.deepEqual(front, back,
+  // ADR-018：首頁「快到期了」分組退場，改成「最急兩件」（已逾期或 3 天內）。
+  // 它跟後端推播的門檻（跨進 3 天內才推）講的是同一件事，所以仍然釘在一起
+  test('首頁「最急」的天數＝後端推播的 3 天門檻', () => {
+    const back = loadCodeGs().read('DUE_THRESHOLDS').find(t => t.key === 'd3').maxDays;
+    assert.equal(env().read('URGENT_DAYS'), back,
       '門檻在兩邊各有一份實作，沒有辦法共用——所以用這一項把它們釘在一起');
   });
 
-  test('分類結果也必須一致，不只是數字長得一樣', () => {
+  test('天數算法一致：前端 daysUntilUI 與後端 daysUntil_', () => {
     const back = loadCodeGs();
     const front = env();
-    const dates = ['2026-09-10', '2026-09-16', '2026-09-17', '2026-09-18',
-                   '2026-09-19', '2026-09-20', '2026-09-21', '2026-09-22', '2026-10-16'];
-
+    const dates = ['2026-09-10', '2026-09-16', '2026-09-17', '2026-09-19', '2026-09-20', '2026-10-16'];
     dates.forEach((d) => {
-      assert.equal(front.call('dueBucketUI', d, TODAY), back.call('dueBucket_', d, TODAY),
-        d + ' 的分類在前後端不一致');
+      assert.equal(front.call('daysUntilUI', d, TODAY), back.call('daysUntil_', d, TODAY), d + ' 的天數在前後端不一致');
     });
   });
 });
@@ -106,58 +103,3 @@ describe('共用白板', () => {
   });
 });
 
-/* ========================================================================== */
-describe('到期區塊', () => {
-
-  function tasks(list) {
-    return list.map((o, i) => Object.assign({ id: i + 1, txt: 't' + i, ts: i, line_id: ME }, o));
-  }
-
-  test('⚠️ 已逾期獨立一塊，而且排最前面', () => {
-    const e = env();
-    const g = e.call('dueGroups', tasks([
-      { due: '2026-09-22' },     // later
-      { due: '2026-09-10' },     // overdue
-      { due: '2026-09-17' }      // d1
-    ]), TODAY);
-
-    assert.deepEqual(g.map(x => x.key), ['overdue', 'd1', 'later'],
-      '最急的東西放最下面沒有道理');
-    assert.equal(g[0].label, '已逾期');
-  });
-
-  test('空的區塊不會佔版面', () => {
-    const e = env();
-    const g = e.call('dueGroups', tasks([{ due: '2026-09-17' }]), TODAY);
-    assert.deepEqual(g.map(x => x.key), ['d1']);
-  });
-
-  test('已完成、已刪除、沒到期日的都不列入', () => {
-    const e = env();
-    const g = e.call('dueGroups', tasks([
-      { due: '2026-09-17', done: true },
-      { due: '2026-09-17', del: true },
-      { due: '' },
-      { due: '2026-09-17' }
-    ]), TODAY);
-
-    assert.equal(g.length, 1);
-    assert.equal(g[0].items.length, 1);
-  });
-
-  test('四塊門檻切得對，第 6 天落在「更久以後」', () => {
-    const e = env();
-    const g = e.call('dueGroups', tasks([
-      { due: '2026-09-17' }, { due: '2026-09-19' },
-      { due: '2026-09-21' }, { due: '2026-09-22' }
-    ]), TODAY);
-
-    assert.deepEqual(g.map(x => x.key), ['d1', 'd3', 'd5', 'later']);
-  });
-
-  test('空清單不會爆', () => {
-    const e = env();
-    assert.deepEqual(e.call('dueGroups', [], TODAY), []);
-    assert.deepEqual(e.call('dueGroups', null, TODAY), []);
-  });
-});

@@ -640,6 +640,10 @@ function initSteps_() {
       if (k.reason) return { level: 'warn', text: k.reason === 'sheet_missing' ? '找不到 tasks 分頁，沒有歸類' : 'tasks 還沒有 kind 欄，沒有歸類' };
       return { level: 'ok', text: '歸為提醒 ' + k.reminder + ' 筆、待辦 ' + k.todo + ' 筆（已有分類的不動；歸錯的到 App 改）' };
     } },
+    { label: '給自己的一段話（ADR-018）', run: function () {
+      var r = ensureSelfNotesSheet_();
+      return { level: 'ok', text: r.created ? '新建 ' + SELF_NOTES_SHEET : SELF_NOTES_SHEET + ' 已存在' };
+    } },
     { label: 'ADR-013 記帳分類', run: function () {
       adr013 = installAdr013();
       var cols = adr013.columns || {};
@@ -1080,7 +1084,8 @@ function windowStartKey_() {
  * 只組發話者有功能權限的模組（ADR-012 D-3）：沒權限的那張表連讀都不讀，
  * 對應欄位是 null，提示詞那一段整段不出現。
  */
-var QUERY_SHEETS = ['expenses', 'tasks', 'reviews', 'moods'];
+// 複盤與心情已退場（ADR-018 C-3）：資料留著，「查/」不再讀
+var QUERY_SHEETS = ['expenses', 'tasks'];
 
 function buildQueryContext_(userId) {
   var since = windowStartKey_();
@@ -1103,9 +1108,7 @@ function buildQueryContext_(userId) {
       month: sumExpensesSince_(expenseRows, monthStartKey_(), cfg),
       window: sumExpensesSince_(expenseRows, since, cfg)
     } : null,
-    tasks: allowed.tasks ? collectTasks_(readSheet_('tasks'), since) : null,
-    reviews: allowed.reviews ? collectReviews_(readSheet_('reviews'), since) : null,
-    moods: allowed.moods ? summarizeMoods_(readSheet_('moods'), since) : null
+    tasks: allowed.tasks ? collectTasks_(readSheet_('tasks'), since) : null
   };
 }
 
@@ -1194,28 +1197,6 @@ function collectTasks_(rows, since) {
   return { open: open, done: done };
 }
 
-function collectReviews_(rows, since) {
-  return rows.filter(function (r) {
-    var date = toDateKey_(r.review_date);
-    return date && date >= since;
-  }).sort(function (a, b) {
-    return toDateKey_(b.review_date).localeCompare(toDateKey_(a.review_date));
-  });
-}
-
-/** moods → 平均與筆數。逐筆送沒有意義，趨勢才有 */
-function summarizeMoods_(rows, since) {
-  var sum = 0, n = 0;
-  rows.forEach(function (r) {
-    var date = toDateKey_(r.mood_date);
-    if (!date || date < since) return;
-    var level = Number(r.level);
-    if (!isFinite(level)) return;
-    sum += level; n += 1;
-  });
-  return { count: n, avg: n ? Math.round((sum / n) * 10) / 10 : 0 };
-}
-
 /* -------------------------------------------------------------------------- */
 /* Prompt                                                                      */
 /* -------------------------------------------------------------------------- */
@@ -1223,7 +1204,7 @@ function summarizeMoods_(rows, since) {
 function buildQueryPrompt_(ctx, question) {
   var lines = [];
   // 舊的呼叫端沒有 allowed：當成全開，提示詞與改版前一字不差
-  var allowed = ctx.allowed || { expenses: true, tasks: true, reviews: true, moods: true };
+  var allowed = ctx.allowed || { expenses: true, tasks: true };
   var visible = QUERY_SHEETS.filter(function (name) { return allowed[name]; })
     .map(function (name) { return FEATURE_LABEL[FEATURE_BY_SHEET[name]]; });
 
@@ -1265,15 +1246,12 @@ function buildQueryPrompt_(ctx, question) {
     lines.push('');
   }
 
-  // 逐筆的部分共用同一個上限：任務吃不完的額度才輪到複盤
+  // 逐筆的部分共用同一個上限
   var tasks = allowed.tasks ? ctx.tasks : { open: [], done: [] };
-  var allReviews = allowed.reviews ? ctx.reviews : [];
   var budget = QUERY_MAX_TOTAL_RECORDS;
   var openTasks = tasks.open.slice(0, budget);
   budget -= openTasks.length;
   var doneTasks = tasks.done.slice(0, Math.max(0, Math.min(budget, 5)));
-  budget -= doneTasks.length;
-  var reviews = allReviews.slice(0, Math.max(0, budget));
 
   if (allowed.tasks) {
     lines.push('【未完成任務】共 ' + tasks.open.length + ' 筆' +
@@ -1287,25 +1265,6 @@ function buildQueryPrompt_(ctx, question) {
   if (doneTasks.length) {
     lines.push('【近 ' + QUERY_WINDOW_DAYS + ' 天內已完成的任務】');
     lines.push(doneTasks.map(function (t) { return '・' + t.created + ' ' + t.text; }).join('\n'));
-    lines.push('');
-  }
-
-  if (allowed.reviews) {
-    lines.push('【近 ' + QUERY_WINDOW_DAYS + ' 天的複盤】共 ' + allReviews.length + ' 則' +
-      (allReviews.length > reviews.length ? '，以下列出最近 ' + reviews.length + ' 則' : ''));
-    lines.push(reviews.length
-      ? reviews.map(function (r) {
-          return '・' + toDateKey_(r.review_date) +
-            '｜做得好：' + truncate_(String(r.good || '—'), 60) +
-            '｜卡住：' + truncate_(String(r.stuck || '—'), 60) +
-            '｜最重要：' + truncate_(String(r.most_important || '—'), 60);
-        }).join('\n')
-      : '（期間內沒有複盤記錄）');
-    lines.push('');
-  }
-
-  if (allowed.moods && ctx.moods.count) {
-    lines.push('【心情】近 ' + QUERY_WINDOW_DAYS + ' 天記錄 ' + ctx.moods.count + ' 次，平均 ' + ctx.moods.avg + ' 分（1 最低、5 最高）');
     lines.push('');
   }
 

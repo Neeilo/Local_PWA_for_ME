@@ -170,20 +170,20 @@ describe('刪除變成「送得出去的刪除」', () => {
     assert.equal(e.read('state.tasks.length'), 1);
   });
 
-  test('四個模組的刪除都改成軟刪除', async () => {
+  // ADR-018：心情退場（介面移除、資料保留），App 上刪得到的剩三個模組
+  test('三個模組的刪除都是軟刪除', async () => {
     const e = env();
     e.raw('state = EMPTY_STATE()');
     e.raw('state.tasks    = [{id:1, txt:"t", ts:1, priority:"M", line_id:"' + ME + '"}]');
-    e.raw('state.moods    = [{id:2, level:3, note:"m", ts:1, line_id:"' + ME + '"}]');
     e.raw('state.notes    = [{id:3, txt:"n", ts:1, line_id:"' + ME + '"}]');
     e.raw('state.expenses = [{id:4, date:"2026-09-16", type:"expense", category:"其他", amount:1, note:"", ts:1, line_id:"' + ME + '"}]');
 
-    e.call('delTask', 1); e.call('delMood', 2); e.call('delNote', 3); e.call('delExpense', 4);
+    e.call('delTask', 1); e.call('delNote', 3); e.call('delExpense', 4);
     await drain(e);
 
     const w = writes(e);
-    assert.equal(w.length, 4);
-    assert.deepEqual(w.map(c => c.body.sheet), ['tasks', 'moods', 'notes', 'expenses']);
+    assert.equal(w.length, 3);
+    assert.deepEqual(w.map(c => c.body.sheet), ['tasks', 'notes', 'expenses']);
     w.forEach(c => assert.equal(c.body.record.del, 'TRUE', c.body.sheet + ' 沒有走軟刪除'));
   });
 });
