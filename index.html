@@ -2052,6 +2052,7 @@ let expenseConfig = null;   // { source, categories:[{name,color,active,aliases,
 let expenseConfigMissing = false;   // 連上雲端、讀得到記帳，回應卻沒帶分類設定
 let installmentPlans = [];          // 分期計畫（ADR-013 D-6），各期本身在 state.expenses（帶 plan_id）
 let planDraft = null;               // 「轉成分期」表單：{id, periods, down, card, schedule}
+let planAdjDraft = null;            // 「調整計畫」表單（ADR-018 E-2）：{plan_id, periods, per, card, preview, previewed}
 const MAX_DONUT_SEGMENTS = 6; // 超過的尾端併入「其他」，維持一眼可讀
 /* 設定裡沒有顏色（或還沒載入）的大類：用中性灰，不要借別人的顏色 */
 const CATEGORY_FALLBACK_COLOR = 'var(--muted-ink)';
@@ -2913,15 +2914,92 @@ function planRowsHtml(plans, empty){
   const label={active:'進行中', ended:'已結束'};
   return plans.map(p=>{
     const s=planSummary(p.plan_id);
+    const id=esc(p.plan_id);
+    // ADR-018 E-1：第 3／12 期・剩 9 期 NT$ …・卡片
+    const head=`第 ${s.due}／${esc(p.periods)} 期・剩 ${s.left} 期 NT$ ${fmtAmount(s.leftAmount)}${p.card?'・'+esc(p.card):''}`;
     return `<div class="sys-row">
-      <div class="who">${esc(p.category||'')}${p.subcategory?'＞'+esc(p.subcategory):''} NT$ ${fmtAmount(Number(p.total)||0)}<small>${esc(p.plan_id)}</small></div>
-      <div class="meta">${label[p.status]||esc(p.status)}・${esc(p.periods)} 期${p.card?'・'+esc(p.card):''}${p.note?'・'+esc(p.note):''}<br>
-        已到期 ${s.due} 期・剩 ${s.left} 期共 NT$ ${fmtAmount(s.leftAmount)}${s.end?'・結束日 '+esc(s.end):''}</div>
+      <div class="who">${esc(p.category||'')}${p.subcategory?'＞'+esc(p.subcategory):''} NT$ ${fmtAmount(Number(p.total)||0)}<small>${id}</small></div>
+      <div class="meta">${head}<br>${label[p.status]||esc(p.status)}${p.note?'・'+esc(p.note):''}${s.end?'・結束日 '+esc(s.end):''}</div>
       ${p.status==='active'?`<div class="plan-actions">
-        <button class="btn-ghost" onclick="endPlan('${esc(p.plan_id)}')">結束計畫</button>
-        <button class="btn-ghost danger" onclick="deletePlan('${esc(p.plan_id)}')">刪除計畫</button></div>`:''}
+        ${canAdjustPlan(p)?`<button class="btn-ghost" onclick="openPlanAdjust('${id}')">調整計畫</button>`:''}
+        <button class="btn-ghost" onclick="endPlan('${id}')">結束計畫</button>
+        <button class="btn-ghost danger" onclick="deletePlan('${id}')">刪除計畫</button></div>`:''}
+      ${planAdjDraft && planAdjDraft.plan_id===String(p.plan_id) ? planAdjustHtml(p, s) : ''}
     </div>`;
   }).join('');
+}
+
+/* ---------- 調整計畫（ADR-018 E-2） ----------
+   以今天為界：已到期的不動，未到期的照新的期數／每期金額重建。剩餘期數留白＝只改卡片。
+   預覽問雲端（dry_run）：拆期只有雲端一份算法。改了數字要重新預覽才能送，不替人猜。 */
+function canAdjustPlan(p){ return isAdmin() || String(p.line_id||'').trim()===String(myLineId||''); }
+function openPlanAdjust(planId){
+  const p=installmentPlans.find(x=>String(x.plan_id)===String(planId));
+  planAdjDraft = (planAdjDraft && planAdjDraft.plan_id===String(planId)) ? null
+    : {plan_id:String(planId), periods:'', per:'', card:p&&p.card?String(p.card):'', preview:null, previewed:''};
+  rerenderPlans();
+}
+function rerenderPlans(){
+  renderPlansView();
+  if(typeof sysTab!=='undefined' && sysTab==='plans') renderSysCard();
+}
+function planAdjustHtml(p, s){
+  const d=planAdjDraft;
+  const pv=d.preview;
+  const sched=pv && pv.schedule ? pv.schedule.map(r=>`<span>${esc(planSeqLabel(r.seq))}</span><span>${esc(r.date)}</span><span class="amt">${fmtAmount(r.amount)}</span>`).join('') : '';
+  return `<div class="plan-box">
+    <div class="field-label">調整計畫（今天以前的 ${s.due} 期不動）</div>
+    <div class="row">
+      <input type="number" id="adjPeriods" inputmode="numeric" min="1" step="1" placeholder="剩餘期數（目前 ${s.left}）" value="${esc(d.periods)}">
+      <input type="number" id="adjPer" inputmode="decimal" min="1" step="1" placeholder="每期金額（留白＝均分）" value="${esc(d.per)}">
+    </div>
+    <div class="row"><input type="text" id="adjCard" placeholder="卡片" value="${esc(d.card)}"></div>
+    <div class="plan-stat">剩餘期數留白＝只改卡片，各期不動。</div>
+    ${pv?`<div class="plan-stat">剩餘總額 NT$ ${fmtAmount(pv.remaining_total)}・計畫總額 NT$ ${fmtAmount(pv.paid+pv.remaining_total)}</div>
+      ${pv.overwritten?`<div class="sys-warn">⚠️ 有 ${pv.overwritten} 期手動改過，會被覆蓋</div>`:''}
+      <div class="plan-sched">${sched}</div>`:''}
+    <div class="plan-actions">
+      <button class="btn-ghost" onclick="openPlanAdjust('${esc(p.plan_id)}')">取消</button>
+      <button class="btn-ghost" onclick="previewPlanAdjust()">預覽</button>
+      ${pv?`<button class="btn" onclick="confirmPlanAdjust()">確認調整</button>`:''}
+    </div>
+  </div>`;
+}
+function planAdjustRequest(){
+  const val=id=>String((document.getElementById(id)||{}).value||'').trim();
+  planAdjDraft.periods=val('adjPeriods'); planAdjDraft.per=val('adjPer'); planAdjDraft.card=val('adjCard');
+  const req={plan_id:planAdjDraft.plan_id, card:planAdjDraft.card};
+  if(planAdjDraft.periods!==''){
+    req.remaining_periods=Number(planAdjDraft.periods);
+    req.per_amount=planAdjDraft.per===''?'':Number(planAdjDraft.per);
+  }
+  return req;
+}
+async function previewPlanAdjust(){
+  const req=planAdjustRequest();
+  if(!('remaining_periods' in req)){ toast('只改卡片的話直接按「確認」就好'); planAdjDraft.preview={card_only:true}; planAdjDraft.previewed=JSON.stringify(req); rerenderPlans(); return; }
+  let r=null;
+  try{ r=await cloudPost(Object.assign({action:'planAdjust', dry_run:true, trigger:'manual'}, req)); }catch(e){ r=null; }
+  if(!r){ toast('連不上雲端，沒辦法預覽'); return; }
+  if(!r.success){ toast(planErrorText(r)); planAdjDraft.preview=null; rerenderPlans(); return; }
+  planAdjDraft.preview=r; planAdjDraft.previewed=JSON.stringify(req); rerenderPlans();
+}
+async function confirmPlanAdjust(){
+  const req=planAdjustRequest();
+  const cardOnly=!('remaining_periods' in req);
+  // 重排各期一定要先看過預覽、而且之後沒改過數字；只改卡片各期不動，不用預覽
+  if(!cardOnly && JSON.stringify(req)!==planAdjDraft.previewed){
+    planAdjDraft.preview=null; rerenderPlans();
+    toast('數字改過了，請再按一次「預覽」確認'); return;
+  }
+  let r=null;
+  try{ r=await cloudPost(Object.assign({action:'planAdjust', trigger:'write'}, req)); }catch(e){ r=null; }
+  if(!r){ alert('沒有收到雲端回應（可能是連線中斷）。重新整理看看結果，需要的話再按一次（重複按同一份是安全的）。'); return; }
+  if(!r.success){ toast(planErrorText(r)); return; }
+  planAdjDraft=null;
+  toast(r.card_only ? (r.unchanged?'卡片沒有變':'已改卡片') : r.unchanged ? '跟現在一樣，沒有變動' : '已調整：未到期 '+r.deleted+' 期 → '+r.created+' 期');
+  rerenderPlans();
+  syncFromCloud();
 }
 
 /* 導覽：唯讀，雲端用寫 _guide 的同一份函式現算 */
@@ -4015,12 +4093,13 @@ function readPlanForm(){
   planDraft.card=document.getElementById('planCard').value.trim();
 }
 const PLAN_ERRORS = {
-  invalid_periods:'期數要是 2 以上的整數', invalid_down_payment:'頭期款要小於總額',
+  invalid_periods:'期數不對（轉分期要 2 期以上；調整要 1～120 期）', invalid_down_payment:'頭期款要小於總額',
   amount_too_small:'金額不夠分這麼多期', already_planned:'這筆已經轉過分期了',
   not_an_expense:'收入不能分期', expense_not_found:'雲端找不到這筆（可能已被刪除），請重新整理',
   columns_missing:'雲端的記帳表還沒補分期欄位，請管理者在 LINE 傳「初始化」',
   plan_not_found:'找不到這個分期計畫，請重新整理', plan_not_active:'這個計畫已經結束了',
-  plan_already_deleted:'這個計畫已經刪除了', busy:'雲端正在處理另一個分期，請稍後再試', forbidden:'你沒有記帳的權限'
+  plan_already_deleted:'這個計畫已經刪除了', busy:'雲端正在處理另一個分期，請稍後再試', forbidden:'你沒有權限（記帳權限，或調整別人建的計畫）',
+  invalid_per_amount:'每期金額要是 1 以上的數字', nothing_to_split:'沒有未到期的期數可以均分，請填每期金額'
 };
 function planErrorText(r){ return PLAN_ERRORS[r&&r.error] || ('雲端回報錯誤：'+((r&&r.error)||'未知')); }
 function planRequest(){
