@@ -22,8 +22,8 @@ var GUIDE_CATEGORIES = ['資料', '系統', '功能模組'];
  */
 function guideRegistry_() {
   return [
-    { sheet: 'tasks', category: '資料', purpose: '任務（含到期日、週期、提醒旗標；origin_chat＝在哪個群組交代的，提醒推回那裡）',
-      writers: 'PWA、LINE「任務/」與到期日按鈕、到期檢查（只寫 notified）；origin_chat 只有 LINE 寫', readers: 'PWA、「查/」、到期檢查',
+    { sheet: 'tasks', category: '資料', purpose: '待辦與提醒（kind＝todo／reminder，空白當待辦；含到期日、週期、提醒旗標；origin_chat＝在哪個群組交代的，提醒推回那裡）',
+      writers: 'PWA、LINE「任務/」「提醒/」與日期／重複按鈕、到期檢查（寫 notified；提醒翻頁改 due_date、過期 30 天的單次提醒設 del）；origin_chat 只有 LINE 寫', readers: 'PWA、「查/」、到期檢查',
       key: 'id', adr: '004、009、014' },
     { sheet: 'expenses', category: '資料', purpose: '收支記帳（大類＋細項＋對象）',
       writers: 'PWA、LINE「記帳/」「收入/」', readers: 'PWA、「查/」',

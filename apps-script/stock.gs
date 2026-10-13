@@ -832,7 +832,7 @@ function guardStockWatch_(caller, record) {
  * readMany／boot 附帶的股票資料（只給有 feat_stock、而且前端說「我在財務區」的請求，T4）。
  * 交易全家都看得到（有 feat_stock 就不套用「只看我的」，D-5）。報價失敗不影響其他資料。
  */
-function stockPayload_(caller, trigger) {
+function stockPayload_(caller, trigger, perf) {
   var trades = stockSheetRecords_(STOCK_TRADES_SHEET);
   var watch = stockSheetRecords_(STOCK_WATCH_SHEET);
   var tradeRows = withoutTombstones_(trades.rows || []);
@@ -851,7 +851,9 @@ function stockPayload_(caller, trigger) {
     .concat(cfg ? [normalizeSymbol_(cfg.rebalance_symbol || '00631L')] : []);
   var q = { quotes: {}, missing: [] };
   try {
-    q = quote_(symbols, { trigger: trigger, line_id: caller.line_id, device_id: caller.device ? caller.device.device_id : '' });
+    q = perfStage_(perf, 'stock.quote', function () {
+      return quote_(symbols, { trigger: trigger, line_id: caller.line_id, device_id: caller.device ? caller.device.device_id : '' });
+    });
   } catch (err) {
     console.log('報價失敗（其他資料照常回）：' + err);
   }
@@ -880,10 +882,10 @@ function stockPayload_(caller, trigger) {
   return out;
 }
 
-function withStock_(out, caller, body) {
+function withStock_(out, caller, body, perf) {
   if (!body || body.stock !== true || !canUse_(caller.user, 'feat_stock')) return out;
   try {
-    out.stock = stockPayload_(caller, body.trigger);
+    out.stock = perfStage_(perf, 'stock', function () { return stockPayload_(caller, body.trigger, perf); });
   } catch (err) {
     console.log('股票資料讀取失敗：' + err);
     out.stock = { error: 'stock_failed' };

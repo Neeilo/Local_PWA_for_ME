@@ -142,11 +142,11 @@ describe('LINE 效能紀錄', () => {
     assert.ok(!s.server.some((g) => /^line/.test(g.action)));
   });
 
-  test('舊的 performance 表沒有 reply_ms 欄：自動補在最右邊', () => {
+  test('舊的 performance 表沒有 reply_ms 欄：自動補在最右邊（ADR-018 的 stages 接在它後面）', () => {
     const e = env();
     e.sheets.performance = new FakeSheet('performance', [['id', 'ts', 'action', 'trigger', 'client_ms', 'server_ms', 'auth_ms', 'open_ms', 'read_ms', 'sheets', 'rows', 'device_id', 'line_id']]);
     say(e, '記帳/120/外食');
-    assert.equal(e.sheets.performance.values[0].at(-1), 'reply_ms');
+    assert.deepEqual(e.sheets.performance.values[0].slice(-2), ['reply_ms', 'stages']);
     assert.ok(e.sheets.performance.toRecords()[0].reply_ms >= 0);
   });
 });

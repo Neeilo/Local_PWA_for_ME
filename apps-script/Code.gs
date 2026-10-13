@@ -417,7 +417,7 @@ function readManyFrom_(ss, user, sheets, perf) {
   (Array.isArray(sheets) ? sheets : []).forEach(function (name) {
     if (typeof name !== 'string' || data.hasOwnProperty(name) || denied.indexOf(name) !== -1) return;
     if (NO_PWA_READ.indexOf(name) !== -1 || isBackupSheet_(name) || !canUseSheet_(user, name)) { denied.push(name); return; }
-    var read = sheetRecords_(ss, name, perf);
+    var read = perfStage_(perf, 'sheets.' + name, function () { return sheetRecords_(ss, name, perf); });
     data[name] = read.error ? [] : withoutTombstones_(read.rows);
   });
   return { data: data, denied: denied };
@@ -436,8 +436,9 @@ function bootResponse_(caller, perf) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   perf.open_ms = Date.now() - opened;
 
-  var users = sheetRecords_(ss, LINE_USERS_SHEET, perf);
-  var many = readManyFrom_(ss, caller.user, BOOT_SHEETS, perf);
+  perfSet_(perf, 'open', perf.open_ms);
+  var users = perfStage_(perf, 'users', function () { return sheetRecords_(ss, LINE_USERS_SHEET, perf); });
+  var many = perfStage_(perf, 'sheets', function () { return readManyFrom_(ss, caller.user, BOOT_SHEETS, perf); });
   perf.sheets = [LINE_USERS_SHEET].concat(BOOT_SHEETS).join(',');
 
   var isAdmin = truthy_((caller.user || {}).is_admin);
@@ -454,13 +455,13 @@ function bootResponse_(caller, perf) {
     data: many.data,
     denied: many.denied
   };
-  if (many.data.tasks) out.group_names = taskGroupNames_(many.data.tasks);
+  if (many.data.tasks) out.group_names = perfStage_(perf, 'groups', function () { return taskGroupNames_(many.data.tasks); });
   if (isAdmin) {
-    out.perf_rows = perfRowCount_();
-    var alert = unauthAlert_();
+    out.perf_rows = perfStage_(perf, 'perf_rows', perfRowCount_);
+    var alert = perfStage_(perf, 'unauth_alert', unauthAlert_);
     if (alert) out.unauth_alert = alert;
   }
-  return withExpenseConfig_(out, caller.user, ss, BOOT_SHEETS);
+  return withExpenseConfig_(out, caller.user, ss, BOOT_SHEETS, perf);
 }
 
 /**
@@ -490,11 +491,11 @@ function taskGroupNames_(tasks) {
  * （2026-10-06 實機回報）。設定有 5 分鐘快取，多帶一份幾乎不花成本。
  * 用呼叫端開好的 ss：boot 只開一次試算表。
  */
-function withExpenseConfig_(out, user, ss, sheets) {
+function withExpenseConfig_(out, user, ss, sheets, perf) {
   if ((sheets || []).indexOf('expenses') !== -1 && canUseSheet_(user, 'expenses')) {
-    out.expense_config = expenseConfigPublic_(expenseConfig_(ss));
+    out.expense_config = perfStage_(perf, 'expense_config', function () { return expenseConfigPublic_(expenseConfig_(ss)); });
     // 分期計畫（D-6）跟著同一個條件走：列表上的「剩 M 期共 X 元」要用計畫的總額與狀態
-    out.installments = installmentPlans_(ss);
+    out.installments = perfStage_(perf, 'installments', function () { return installmentPlans_(ss); });
   }
   return out;
 }
@@ -513,8 +514,8 @@ function featureForbidden_(caller, action, sheetName) {
 // 外層只負責量時間與寫效能紀錄（ADR-012 T1）；分流在 routePwaSync_。
 function handlePwaSync_(e) {
   var started = Date.now();
-  const body = JSON.parse(e.postData.contents);
   var perf = {};
+  const body = perfStage_(perf, 'parse', function () { return JSON.parse(e.postData.contents); });
   var out = routePwaSync_(body, perf);
   recordPerf_(body, perf, Date.now() - started);
   // 沒通過驗證的請求不寫 performance（免得陌生人灌爆），改在快取裡累計，每小時彙總一列（ADR-014 D-15）
@@ -538,20 +539,22 @@ function routePwaSync_(body, perf) {
 
   // 身份一律由後端換出來，不信任 body 裡的 line_id（ADR-010 D-2）
   var callerStarted = Date.now();
-  const caller = pwaCaller_(body);
+  const caller = pwaCaller_(body, perf);
   perf.auth_ms = Date.now() - callerStarted;
+  perfSet_(perf, 'auth', perf.auth_ms);
   if (!caller.ok) { perf.unauth = caller.error; return jsonOut({ error: caller.error, reason: caller.error }); }
   perf.who = { line_id: caller.line_id, device_id: caller.device ? caller.device.device_id : '' };
 
-  if (body.action === 'boot') return jsonOut(withStock_(bootResponse_(caller, perf), caller, body));
+  if (body.action === 'boot') return perfJsonOut_(perf, withStock_(bootResponse_(caller, perf), caller, body, perf));
   if (body.action === 'readMany') {
     perf.sheets = Array.isArray(body.sheets) ? body.sheets.filter(function (x) { return typeof x === 'string'; }).join(',') : '';
     var openedMany = Date.now();
     var ssMany = SpreadsheetApp.getActiveSpreadsheet();
     perf.open_ms = Date.now() - openedMany;
-    var many = readManyFrom_(ssMany, caller.user, body.sheets, perf);
-    return jsonOut(withStock_(withExpenseConfig_(many, caller.user, ssMany, Array.isArray(body.sheets) ? body.sheets : []),
-      caller, body));
+    perfSet_(perf, 'open', perf.open_ms);
+    var many = perfStage_(perf, 'sheets', function () { return readManyFrom_(ssMany, caller.user, body.sheets, perf); });
+    return perfJsonOut_(perf, withStock_(withExpenseConfig_(many, caller.user, ssMany, Array.isArray(body.sheets) ? body.sheets : [], perf),
+      caller, body, perf));
   }
   if (body.action === 'read') return jsonOut(readSheetResponse_(body.sheet, perf, caller.user));
   if (body.action === 'listDevices') return jsonOut(listDevices_(caller, body.line_id));
@@ -602,7 +605,8 @@ function routePwaSync_(body, perf) {
     const headers = sheetHeaders_(sheet);
     // key_field 可以是字串或陣列：line_users 用 'line_id'，reviews 用
     // ['review_date','line_id']（那張表沒有 id 欄，ADR-009 §一.5）
-    var record = body.sheet === TASKS_SHEET ? keepOriginChat_(sheet, headers, body.record || {}) : (body.record || {});
+    var record = body.sheet === TASKS_SHEET ? guardReminderDone_(keepOriginChat_(sheet, headers, body.record || {}), caller)
+      : (body.record || {});
     var keyField = body.key_field;
     // 股票（ADR-015 D-8／D-9）：持有者、誰能改、賣超、自選上限都由後端決定
     if (body.sheet === STOCK_TRADES_SHEET || body.sheet === STOCK_WATCH_SHEET || body.sheet === STOCK_RULES_SHEET) {
@@ -639,6 +643,8 @@ function routePwaSync_(body, perf) {
   if (body.action === 'completeRecurring') {
     const headers = sheetHeaders_(sheet);
     const rec = keepOriginChat_(sheet, headers, body.record || {});
+    // ADR-018 A-2：提醒沒有「完成」，週期跟著時間走（9 點排程翻頁）。前端被拒會退回一般 upsert，那裡也會擋
+    if (isReminder_(rec)) return jsonOut({ error: 'reminder_not_completable' });
     const next = nextDueDate_(rec.due_date, rec.recur_interval, rec.recur_unit,
                               keyValue_(body.today) || keyValue_(new Date()));
 
@@ -913,7 +919,8 @@ function tombstoneRows_(sheet, headers, keyField) {
  */
 var ADR009_COLUMNS = {
   // origin_chat：ADR-014 D-17（群組建立的任務記下群組 ID，到期提醒推回那個群組）
-  tasks:    ['del', 'archive', 'board', 'due_date', 'recur_interval', 'recur_unit', 'notified', 'origin_chat'],
+  // kind：ADR-018 A-2（todo／reminder；空白＝待辦，由「初始化」歸類）
+  tasks:    ['del', 'archive', 'board', 'due_date', 'recur_interval', 'recur_unit', 'notified', 'origin_chat', 'kind'],
   expenses: ['del', 'archive', 'board'],
   notes:    ['del', 'archive', 'board'],
   reviews:  ['del', 'archive'],
@@ -976,6 +983,37 @@ function ensureAdr009Columns() {
 }
 
 /**
+ * 待辦／提醒歸類（ADR-018 A-2，「初始化」的一步）：kind 空白的列，有 recur_interval → reminder、
+ * 其餘 → todo。已經有值的不碰（人在 App 改過的不會被改回來），可重複執行。
+ * 已刪的列也補值（免得哪天還原回來是空白），但不算進回報的筆數。
+ * 一次寫回整欄：一列一列寫，舊資料多的時候會逾時。
+ */
+function classifyTaskKinds_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TASKS_SHEET);
+  if (!sheet) return { reason: 'sheet_missing', reminder: 0, todo: 0 };
+  var headers = sheetHeaders_(sheet);
+  var col = headers.indexOf('kind');
+  if (col === -1) return { reason: 'no_kind_column', reminder: 0, todo: 0 };
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { reminder: 0, todo: 0 };
+  var values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+  var out = { reminder: 0, todo: 0 };
+  var changed = false;
+  var kinds = values.map(function (row) {
+    var rec = {};
+    headers.forEach(function (h, i) { rec[h] = row[i]; });
+    var cur = keyValue_(rec.kind);
+    if (cur || !keyValue_(rec.id)) return [row[col]];
+    var kind = keyValue_(rec.recur_interval) ? 'reminder' : 'todo';
+    changed = true;
+    if (!isTombstone_(rec)) out[kind]++;
+    return [kind];
+  });
+  if (changed) sheet.getRange(2, col + 1, kinds.length, 1).setValues(kinds);
+  return out;
+}
+
+/**
  * tasks.origin_chat 只有 LINE 寫得進去（ADR-014 D-17）：PWA 送上來的值一律不信，
  * 改用雲端那一列現有的值（新任務＝空白）。
  *
@@ -987,13 +1025,36 @@ function ensureAdr009Columns() {
 function keepOriginChat_(sheet, headers, record) {
   var out = Object.assign({}, record);
   var col = headers.indexOf('origin_chat') + 1;
+  var kindCol = headers.indexOf('kind') + 1;
   var idCol = headers.indexOf('id') + 1;
-  if (!col) { delete out.origin_chat; return out; }
-  out.origin_chat = '';
+  var keepKind = kindCol && (record || {}).kind === undefined;
+  if (!col) delete out.origin_chat; else out.origin_chat = '';
   var id = keyValue_(record && record.id);
-  if (!idCol || !id) return out;
+  if (!idCol || !id || (!col && !keepKind)) return out;
   var rows = findRowsByKey_(sheet, [idCol], id);
-  if (rows.length) out.origin_chat = keyValue_(sheet.getRange(rows[0], col, 1, 1).getValues()[0][0]);
+  if (!rows.length) return out;
+  var line = sheet.getRange(rows[0], 1, 1, headers.length).getValues()[0];
+  if (col) out.origin_chat = keyValue_(line[col - 1]);
+  // ADR-018：舊版 App 不知道 kind，送上來的 record 沒有這個鍵——沿用雲端的值，提醒才不會被洗成待辦。
+  // 有帶就照帶的（App 可以把待辦改成提醒）。同一次讀列，不多讀
+  if (keepKind) out.kind = keyValue_(line[kindCol - 1]);
+  return out;
+}
+
+/** ADR-018 A-2：這一列是不是提醒。空白、todo、其他值都當待辦 */
+function isReminder_(record) {
+  return keyValue_((record || {}).kind) === 'reminder';
+}
+
+/**
+ * 提醒不能標完成（ADR-018 A-2，前後端都擋）。不回錯誤：前端的待送佇列遇到錯誤會一直重送，
+ * 一筆被擋的寫入會卡住後面所有的寫入。改成把完成改回空白、其他欄照寫，並留一列 logs（不可靜默）。
+ */
+function guardReminderDone_(record, caller) {
+  if (!isReminder_(record) || !truthy_(record.is_completed)) return record;
+  var out = Object.assign({}, record, { is_completed: '' });
+  logTransaction_('任務', '失敗', 'PWA upsert → ' + TASKS_SHEET + ' id=' + keyValue_(record.id),
+    '提醒不能標完成，完成已改回空白（其他欄照寫）', 'ADR-018 A-2', '', caller.line_id);
   return out;
 }
 
@@ -1257,6 +1318,30 @@ function todayKeyFrom_(arg) {
 }
 
 /**
+ * 提醒翻頁（ADR-018 A-3）。純函式：回要動哪些列、怎麼動，不碰 Sheet。
+ *  - 週期提醒、due_date < 今天 → roll：跳到下一個 ≥ 今天的日期（nextDueDate_，月底沿用既有算法；
+ *    Neil 2026-10-13 接受 1/31→2/28→3/28 的漂移）
+ *  - 單次提醒、過期 ≥ 30 天 → archive（設 del，走既有的封存寄信流程）；未滿 30 天不動，前端放「已過」
+ * 待辦不在這裡：待辦的週期跟著完成走（ADR-009）。
+ */
+var REMINDER_ARCHIVE_DAYS = 30;
+function reminderRollPlan_(records, todayKey) {
+  var out = [];
+  (records || []).forEach(function (r) {
+    if (!isReminder_(r) || isTombstone_(r)) return;
+    var days = daysUntil_(r.due_date, todayKey);
+    if (days === null || days >= 0) return;
+    if (keyValue_(r.recur_interval) || keyValue_(r.recur_unit)) {
+      var next = nextDueDate_(r.due_date, r.recur_interval, r.recur_unit, todayKey);
+      if (next) out.push({ record: r, action: 'roll', due: next });
+      return;
+    }
+    if (days <= -REMINDER_ARCHIVE_DAYS) out.push({ record: r, action: 'archive' });
+  });
+  return out;
+}
+
+/**
  * 每天跑一次的到期檢查。由 installAdr009Triggers() 建立的觸發器呼叫。
  *
  * 推成功才標記 notified：推失敗就標記，等於這筆從此再也不會提醒，而使用者
@@ -1326,7 +1411,25 @@ function checkDueReminders(todayKey) {
     });
 
     if (failed) notes.unshift('有 ' + failed + ' 筆推播失敗，未標記 notified，明天會再試');
-    logCleanup_('到期檢查 ' + today, '通知 ' + sent + ' 筆（符合門檻 ' + due.length + ' 筆）', notes.join('｜'));
+
+    // ADR-018 A-3：同一輪，推播之後再翻頁。這一期該推卻推失敗的不翻：翻了那一期就安靜地被跳過了
+    var rolled = 0, archived = 0;
+    reminderRollPlan_(records, today).forEach(function (p) {
+      var rec = p.record;
+      if (p.action === 'roll') {
+        if (dueRemindersToNotify_([rec], today).length) return;
+        rec.due_date = p.due;
+        rec.notified = '';
+        rolled++;
+      } else {
+        rec.del = 'TRUE';
+        archived++;
+      }
+      upsertRow_(sheet, headers, rec, TASKS_SHEET, 'id');
+    });
+
+    logCleanup_('到期檢查 ' + today, '通知 ' + sent + ' 筆（符合門檻 ' + due.length + ' 筆）；提醒翻頁 ' + rolled +
+      ' 筆、封存 ' + archived + ' 筆', notes.join('｜'));
     console.log('到期檢查完成：通知 ' + sent + ' / ' + due.length + ' 筆');
     return { notified: sent, matched: due.length };
   } catch (err) {
@@ -1610,25 +1713,25 @@ function deviceDenied_(reason, dev, what, detail) {
  *
  * now 只給測試用（比照 checkDueReminders）：綁死系統時鐘的測試會跟著真實日期漂。
  */
-function authDevice_(rawToken, what, now) {
+function authDevice_(rawToken, what, now, perf) {
   var nowMs = now || Date.now();
   var token = String(rawToken == null ? '' : rawToken).trim();
   if (!token) return deviceDenied_('no_token', null, what);
 
-  var found = findDeviceByHash_(tokenHash_(token));
+  var found = perfStage_(perf, 'auth.device', function () { return findDeviceByHash_(tokenHash_(token)); });
   if (!found.ok) return deviceDenied_('device_store_unavailable', null, what, found.error);
   var dev = found.device;
   if (!dev) return deviceDenied_('unknown_token', null, what);
   if (String(dev.revoked_at == null ? '' : dev.revoked_at).trim()) return deviceDenied_('revoked', dev, what);
   if (deviceIdle_(dev, nowMs)) return deviceDenied_('token_expired', dev, what);
 
-  var gate = writeGate_(dev.line_id, what || 'PWA session');
+  var gate = perfStage_(perf, 'auth.gate', function () { return writeGate_(dev.line_id, what || 'PWA session'); });
   if (!gate.allowed) {
     return { ok: false, reason: personReason_(gate.error), device: publicDevice_(dev),
              line_id: String(dev.line_id || '').trim() };
   }
 
-  touchDevice_(dev, nowMs);
+  perfStage_(perf, 'auth.touch', function () { touchDevice_(dev, nowMs); });
   return { ok: true, reason: '', line_id: String(dev.line_id).trim(), user: gate.user, device: publicDevice_(dev) };
 }
 
@@ -1639,9 +1742,9 @@ function authDevice_(rawToken, what, now) {
  * 密鑰只證明「這是我們家的 App」，而它就寫在公開的 index.html 裡；line_id 是自稱的，
  * 而名單可以被讀走——兩樣湊起來誰都能冒充誰。
  */
-function pwaCaller_(body) {
+function pwaCaller_(body, perf) {
   var what = 'PWA ' + (body.action || '?') + ' → ' + (body.sheet || '?');
-  var auth = authDevice_(body.token, what);
+  var auth = authDevice_(body.token, what, undefined, perf);
   if (!auth.ok) return { ok: false, error: auth.reason };
   return { ok: true, line_id: auth.line_id, user: auth.user, device: auth.device };
 }
@@ -2186,7 +2289,7 @@ function authorizeArchiveMail() {
  * 並行的五個請求，appendRow 才不會互相蓋掉。
  */
 var PERFORMANCE_HEADERS = ['id', 'ts', 'action', 'trigger', 'client_ms', 'server_ms', 'auth_ms', 'open_ms', 'read_ms',
-  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms'];
+  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms', 'stages'];
 
 /** 觸發情境。不在清單裡的一律不記——欄位裡只會出現這幾個字 */
 var PERF_TRIGGERS = ['cold', 'foreground', 'poll', 'manual', 'write', 'line', 'schedule', 'zone', 'hourly'];
@@ -2243,7 +2346,8 @@ function recordPerf_(body, perf, serverMs) {
       rows.push({
         action: String(body.action || ''), trigger: trigger, server_ms: serverMs,
         auth_ms: perf.auth_ms, open_ms: perf.open_ms, read_ms: perf.read_ms,
-        sheets: perf.sheets || (typeof body.sheet === 'string' ? body.sheet : ''), rows: perf.rows
+        sheets: perf.sheets || (typeof body.sheet === 'string' ? body.sheet : ''), rows: perf.rows,
+        stages: perfStagesText_(perf.stages)
       });
     }
     rows = rows.concat(clientPerfRows_(body.perf));
@@ -2267,16 +2371,49 @@ function recordPerf_(body, perf, serverMs) {
 }
 
 /**
- * 表頭；舊表沒有 reply_ms（2026-10-06 加的，LINE 用）就補在最右邊。
+ * 表頭；舊表沒有 reply_ms（2026-10-06 加的，LINE 用）、stages（ADR-018 PR-0）就依序補在最右邊。
  * 本來每次寫紀錄就要讀一次表頭，這裡沒有多讀，只有缺欄的那一次多寫一格。
  */
+var PERF_LATE_HEADERS = ['reply_ms', 'stages'];
 function perfHeaders_(sheet) {
   var headers = sheetHeaders_(sheet);
-  if (headers.length && headers.indexOf('reply_ms') === -1) {
-    sheet.getRange(1, headers.length + 1, 1, 1).setValues([['reply_ms']]);
-    headers.push('reply_ms');
-  }
+  if (!headers.length) return headers;
+  PERF_LATE_HEADERS.forEach(function (h) {
+    if (headers.indexOf(h) !== -1) return;
+    sheet.getRange(1, headers.length + 1, 1, 1).setValues([[h]]);
+    headers.push(h);
+  });
   return headers;
+}
+
+/* ---------- 開機分段計時（ADR-018 PR-0／D-4） ----------
+   boot cold 的 server_ms 有約 2.9 秒不在 auth／open／read 裡。每一段都記毫秒，寫進 stages 欄
+   （JSON：{"auth":1554,"auth.device":30,…}）。名字有「.」的是子段，時間已經算在上一層裡，
+   摘要算「未歸屬」時只扣頂層。perf 是 undefined（LINE、排程、測試直接呼叫）就只執行不計時。 */
+function perfStage_(perf, name, fn) {
+  var t = Date.now();
+  try {
+    return fn();
+  } finally {
+    if (perf) {
+      var s = perf.stages = perf.stages || {};
+      s[name] = (s[name] || 0) + (Date.now() - t);
+    }
+  }
+}
+
+/** 已經另外量好的段（auth_ms、open_ms）直接記，不重量一次 */
+function perfSet_(perf, name, ms) {
+  if (perf) (perf.stages = perf.stages || {})[name] = ms;
+}
+
+function perfStagesText_(stages) {
+  return stages && Object.keys(stages).length ? JSON.stringify(stages) : '';
+}
+
+/** 序列化也是使用者在等的時間（boot 的回應有整包資料），量 JSON.stringify 那一段 */
+function perfJsonOut_(perf, obj) {
+  return perfStage_(perf, 'json', function () { return jsonOut(obj); });
 }
 
 /**
@@ -2456,6 +2593,24 @@ function perfReadRows_() {
 }
 
 /**
+ * 一列的 stages（ADR-018 PR-0）收進分組：各段的毫秒，與「未歸屬」＝server_ms − 頂層加總。
+ * 改版前的列沒有 stages，整列略過——不能把它當成「全部未歸屬」。
+ */
+function perfCollectStages_(g, raw, serverMs) {
+  var st = null;
+  try { st = raw ? JSON.parse(String(raw)) : null; } catch (err) { st = null; }
+  if (!st || typeof st !== 'object') return;
+  var top = 0;
+  Object.keys(st).forEach(function (name) {
+    var v = perfNum_(st[name]);
+    if (v === null) return;
+    (g.stages[name] = g.stages[name] || []).push(v);
+    if (name.indexOf('.') === -1) top += v;
+  });
+  g.other.push(Math.max(serverMs - top, 0));
+}
+
+/**
  * perfSummary（管理員）：近 7 天的摘要，雲端算好再送，不傳原始列。
  *  - client：手機感受到的時間，依 trigger 分組（開 App、回前景、輪詢、手動刷新、寫入）
  *  - server：雲端內部時間，依 action 分組，附各分段佔比（%）
@@ -2494,12 +2649,13 @@ function perfSummary_(caller, now) {
     }
     if (s !== null) {
       var sk = String(r.action || '');
-      var g = server[sk] = server[sk] || { ms: [], total: 0, auth: 0, open: 0, read: 0 };
+      var g = server[sk] = server[sk] || { ms: [], total: 0, auth: 0, open: 0, read: 0, stages: {}, other: [] };
       g.ms.push(s);
       g.total += s;
       g.auth += perfNum_(r.auth_ms) || 0;
       g.open += perfNum_(r.open_ms) || 0;
       g.read += perfNum_(r.read_ms) || 0;
+      perfCollectStages_(g, r.stages, s);
     }
   });
 
@@ -2517,8 +2673,17 @@ function perfSummary_(caller, now) {
     server: Object.keys(server).map(function (k) {
       var g = server[k];
       var ms = g.ms.sort(asc);
-      return { action: k, count: ms.length, p50: perfPercentile_(ms, 0.5), p90: perfPercentile_(ms, 0.9),
+      var row = { action: k, count: ms.length, p50: perfPercentile_(ms, 0.5), p90: perfPercentile_(ms, 0.9),
         auth_pct: pct(g.auth, g.total), open_pct: pct(g.open, g.total), read_pct: pct(g.read, g.total) };
+      if (g.other.length) {
+        row.staged = g.other.length;
+        row.other_p50 = perfPercentile_(g.other.sort(asc), 0.5);
+        row.stages = Object.keys(g.stages).map(function (name) {
+          var v = g.stages[name].sort(asc);
+          return { name: name, p50: perfPercentile_(v, 0.5), count: v.length };
+        }).sort(function (a, b) { return b.p50 - a.p50; });
+      }
+      return row;
     }),
     line: Object.keys(line).map(function (k) {
       var g = line[k];

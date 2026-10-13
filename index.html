@@ -216,6 +216,10 @@
   .task .txt{flex:1; word-break:break-word;}
   .task.done .txt{color:var(--muted); text-decoration:line-through;}
   .task .txt.editable{cursor:pointer;}
+  .task.reminder .meta{font-size:12px; color:var(--muted); margin-top:2px;}
+  .prio-pick[hidden]{display:none;}
+  #newTaskRecur:not([hidden]){display:contents;}   /* 只是開關用的外殼，排版照原本的 due-row */
+  #reminderPastCard summary{cursor:pointer; list-style:none;}
   .task-edit{padding:4px 4px 12px; border-bottom:1px solid var(--line);}
   .task-edit .row{margin-top:8px;}
   .task-edit .row .btn, .task-edit .row .btn-outline{flex:1;}
@@ -988,9 +992,14 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
 
   <!-- 任務 -->
   <section class="view" id="view-tasks">
+    <!-- ADR-018 A-2：同一張 tasks 表、兩種東西。分段同時決定下面列哪一種、上面的表單新增哪一種 -->
+    <div class="seg" id="taskSeg">
+      <button data-val="todo" class="sel" onclick="pickTaskSeg('todo')">✅ 待辦</button>
+      <button data-val="reminder" onclick="pickTaskSeg('reminder')">🔔 提醒</button>
+    </div>
     <div class="card">
       <div class="row">
-        <input type="text" id="taskInput" placeholder="新增一個任務…" enterkeyhint="done">
+        <input type="text" id="taskInput" placeholder="新增一個待辦…" enterkeyhint="done">
         <button class="btn" onclick="addTask()">加入</button>
       </div>
       <div class="prio-pick" id="newTaskPrio">
@@ -1001,10 +1010,12 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       </div>
       <!-- 到期日與週期都是選填（ADR-009 §四）。摺起來是刻意的：大多數任務沒有
            到期日，把這三個欄位一直攤在那裡會讓「隨手記一件事」這個主要用途變重。 -->
-      <details class="due-pick">
-        <summary>到期日與週期（選填）</summary>
+      <!-- 重複只給提醒（ADR-018）：待辦的週期跟著完成走，新增時不再提供；舊的週期待辦照常可在編輯裡改 -->
+      <details class="due-pick" id="newTaskDuePick">
+        <summary id="newTaskDueLabel">到期日（選填）</summary>
         <div class="due-row">
-          <input type="date" id="newTaskDue" aria-label="到期日">
+          <input type="date" id="newTaskDue" aria-label="日期">
+          <span id="newTaskRecur" hidden>
           <span class="lbl">每</span>
           <input type="number" id="newTaskRecurN" min="1" step="1" placeholder="—" aria-label="週期數字">
           <select id="newTaskRecurUnit" aria-label="週期單位">
@@ -1014,17 +1025,31 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
             <option value="月">月</option>
             <option value="年">年</option>
           </select>
+          </span>
         </div>
       </details>
     </div>
-    <div class="card">
-      <h2>進行中</h2>
-      <div class="scope-bar" id="scopeTasks" hidden></div>
-      <div id="taskListOpen"></div>
+    <div class="scope-bar" id="scopeTasks" hidden></div>
+    <div id="taskTodoCards">
+      <div class="card">
+        <h2>進行中</h2>
+        <div id="taskListOpen"></div>
+      </div>
+      <div class="card">
+        <h2>已完成</h2>
+        <div id="taskListDone"></div>
+      </div>
     </div>
-    <div class="card">
-      <h2>已完成</h2>
-      <div id="taskListDone"></div>
+    <div id="taskReminderCards" hidden>
+      <div class="card">
+        <h2>提醒</h2>
+        <div id="reminderList"></div>
+      </div>
+      <!-- 單次提醒過期：收進這裡，30 天後由 9 點排程封存（A-3） -->
+      <details class="card" id="reminderPastCard" hidden>
+        <summary><h2 style="display:inline">已過（<span id="reminderPastCount">0</span>）</h2></summary>
+        <div id="reminderPast"></div>
+      </details>
     </div>
   </section>
 
@@ -2084,6 +2109,7 @@ let newTaskPriority = DEFAULT_PRIORITY;
 /* 正在編輯到期日的那一筆（ADR-014 T4）。一次只開一筆。
    taskEditDraft：打到一半的值——輪詢會重畫任務列，不留著的話打到一半就被洗回原值 */
 let editingTaskId = null;
+let taskSeg = 'todo';                 // ADR-018：任務頁現在看的是待辦還是提醒（也決定新增哪一種）
 let taskEditDraft = null;
 let expType = 'expense';
 let expCategory = null;
@@ -2285,7 +2311,7 @@ function taskToCloud(t){
           priority:t.priority||DEFAULT_PRIORITY, line_id:t.line_id||'', del:t.del?'TRUE':'',
           board:t.board?'TRUE':'', due_date:t.due||'',
           recur_interval:t.recurN||'', recur_unit:t.recurUnit||'', notified:t.notified?'TRUE':'',
-          origin_chat:t.origin_chat||''};
+          origin_chat:t.origin_chat||'', kind:t.kind||''};
 }
 function taskFromCloud(r){
   const p=String(r.priority||'').toUpperCase();
@@ -2298,7 +2324,9 @@ function taskFromCloud(r){
           notified:truthy(r.notified),
           // 群組建立的任務記著群組 ID（ADR-014 D-17）。App 不顯示也不改，原樣帶回去；
           // 雲端另外守著（keepOriginChat_），舊版 App 沒帶也洗不掉
-          origin_chat:String(r.origin_chat||'').trim()};
+          origin_chat:String(r.origin_chat||'').trim(),
+          // ADR-018：todo／reminder。空白（還沒跑初始化）原樣留著當待辦，不替雲端決定
+          kind:String(r.kind||'').trim()};
 }
 /* ⚠️ 雲端的 upsert 是整列覆寫：這裡沒帶的欄位會被寫成空白。ADR-013 的四欄
    （細項、對象、分期）一定要原樣帶回去，不然在 App 改一下金額，LINE 記的細項就不見了。 */
@@ -2603,6 +2631,23 @@ function perfAlertNeeded(){ return isAdmin() && perfRows>PERF_ALERT_ROWS; }
 
 function fmtMs(ms){ if(ms==null) return '—'; return ms<1000 ? Math.round(ms)+' ms' : (ms/1000).toFixed(1)+' 秒'; }
 
+/** 開機分段（ADR-018 PR-0）：各段的一般耗時，子段（含「.」）接在上一層後面、前面加 └ */
+const PERF_STAGE_LABEL={parse:'解析', auth:'驗證', device:'裝置', gate:'名單檢查', touch:'寫使用時間', open:'開表',
+  users:'名單', sheets:'讀表', groups:'群組名', perf_rows:'效能筆數', unauth_alert:'未驗證警示',
+  expense_config:'分類設定', installments:'分期', stock:'股票', quote:'報價', json:'打包回應'};
+function perfStagesRow(g){
+  if(!g.stages || !g.stages.length) return '';
+  const label=(n)=>PERF_STAGE_LABEL[n]||n;
+  const parts=[];
+  g.stages.filter(x=>x.name.indexOf('.')===-1).forEach(top=>{
+    parts.push(esc(label(top.name))+' '+fmtMs(top.p50));
+    g.stages.filter(x=>x.name.indexOf(top.name+'.')===0)
+      .forEach(c=>parts.push('└ '+esc(label(c.name.slice(top.name.length+1)))+' '+fmtMs(c.p50)));
+  });
+  parts.push('未歸屬 '+fmtMs(g.other_p50));
+  return `<tr><td colspan="5" class="perf-sub">分段（一般，${g.staged} 筆）：${parts.join('・')}</td></tr>`;
+}
+
 /** 摘要畫成表格。p90 這個詞不上畫面，寫成「慢的時候」 */
 function perfSummaryHtml(r){
   if(!r || !r.success) return '<p class="perf-sub">讀不到效能紀錄，稍後再試。</p>';
@@ -2611,7 +2656,7 @@ function perfSummaryHtml(r){
       <td>${g.count}</td><td>${fmtMs(g.p50)}</td><td>${fmtMs(g.p90)}</td></tr>`).join('');
   const server=(r.server||[]).map(g=>`<tr><td>${esc(g.action)}</td>
       <td>${g.count}</td><td>${fmtMs(g.p50)}</td><td>${fmtMs(g.p90)}</td>
-      <td>${g.auth_pct}／${g.open_pct}／${g.read_pct}%</td></tr>`).join('');
+      <td>${g.auth_pct}／${g.open_pct}／${g.read_pct}%</td></tr>`+perfStagesRow(g)).join('');
   const LINE_LABEL={lineMessage:'打字（記帳、查詢…）', linePostback:'按按鈕'};
   const line=(r.line||[]).map(g=>`<tr><td>${esc(LINE_LABEL[g.action]||g.action)}</td>
       <td>${g.count}</td><td>${fmtMs(g.reply_p50)}</td><td>${fmtMs(g.reply_p90)}</td></tr>`).join('');
@@ -3505,23 +3550,46 @@ function addTask(){
   const inp=document.getElementById('taskInput');
   const txt=inp.value.trim();
   if(!txt) return;
+  const reminder=taskSeg==='reminder';
   const due=(document.getElementById('newTaskDue')||{}).value||'';
-  const recurN=(document.getElementById('newTaskRecurN')||{}).value||'';
-  const recurUnit=(document.getElementById('newTaskRecurUnit')||{}).value||'';
+  // 重複只給提醒（ADR-018）：待辦模式下欄位藏著，殘值一律不送
+  const recurN=reminder?((document.getElementById('newTaskRecurN')||{}).value||''):'';
+  const recurUnit=reminder?((document.getElementById('newTaskRecurUnit')||{}).value||''):'';
+  if(reminder && !due){ toast('提醒要有日期'); return; }
   // 只填了週期沒填到期日，週期無從算起——說清楚而不是安靜忽略
   if(recurUnit && !due){ toast('週期任務要先有到期日'); return; }
 
   const t={id:Date.now(),txt,done:false,ts:Date.now(),priority:newTaskPriority,line_id:myLineId||'',
-           due, recurN:recurUnit?(recurN||'1'):'', recurUnit:recurUnit||''};
+           due, recurN:recurUnit?(recurN||'1'):'', recurUnit:recurUnit||'', kind:reminder?'reminder':'todo'};
   state.tasks.unshift(t);
   inp.value='';
   ['newTaskDue','newTaskRecurN'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
   const us=document.getElementById('newTaskRecurUnit'); if(us) us.value='';
-  pushTask(t); renderTasks(); toast('已加入任務');
+  pushTask(t); renderTasks(); toast(reminder?'已加入提醒':'已加入任務');
+}
+function isReminder(t){ return !!t && t.kind==='reminder'; }
+/* 分段（ADR-018 A-2）：導覽「🔔 提醒」也走這裡直開提醒分段 */
+function pickTaskSeg(seg){
+  taskSeg = seg==='reminder' ? 'reminder' : 'todo';
+  const reminder=taskSeg==='reminder';
+  document.querySelectorAll('#taskSeg button').forEach(b=>b.classList.toggle('sel', b.dataset.val===taskSeg));
+  setHidden('taskTodoCards', reminder);
+  setHidden('taskReminderCards', !reminder);
+  setHidden('newTaskRecur', !reminder);
+  setHidden('newTaskPrio', reminder);
+  const inp=document.getElementById('taskInput');
+  if(inp) inp.placeholder = reminder ? '新增一個提醒…' : '新增一個待辦…';
+  const lbl=document.getElementById('newTaskDueLabel');
+  if(lbl) lbl.textContent = reminder ? '日期與重複（日期必填）' : '到期日（選填）';
+  // 提醒一定要有日期：直接攤開，不讓人送出才發現
+  const pick=document.getElementById('newTaskDuePick');
+  if(pick && reminder) pick.open=true;
+  renderTasks();
 }
 function toggleTask(id){
   const t=state.tasks.find(t=>t.id===id);
   if(!t) return;
+  if(isReminder(t)) return;            // 提醒沒有「完成」（ADR-018 A-2），後端也擋
   t.done=!t.done;
   renderTasks();
 
@@ -3578,9 +3646,13 @@ function saveTaskEdit(clear){
   const due=clear?'':val('editTaskDue');
   const recurUnit=clear?'':val('editTaskRecurUnit');
   const recurN=clear?'':val('editTaskRecurN');
+  // 類型可以改（ADR-018：初始化歸錯的到 App 改）。沒選就維持原樣
+  const kind=val('editTaskKind')||t.kind||'';
+  if(kind==='reminder' && !due){ toast('提醒要有日期'); return; }
   if(recurUnit && !due){ toast('週期任務要先有到期日'); return; }
   if(due!==(t.due||'')) t.notified=false;
   t.due=due; t.recurUnit=recurUnit; t.recurN=recurUnit?(recurN||'1'):'';
+  if(kind!==(t.kind||'')){ t.kind=kind; if(kind==='reminder') t.done=false; }
   editingTaskId=null; taskEditDraft=null;
   pushTask(t); renderTasks();
   toast(due?'到期日：'+due:'已清除到期日');
@@ -3588,8 +3660,13 @@ function saveTaskEdit(clear){
 function taskEditHtml(t){
   const units=['','天','週','月','年'];
   const d=Object.assign({due:t.due||'', recurN:String(t.recurN||''), recurUnit:t.recurUnit||''}, taskEditDraft||{});
+  const kind=d.kind!==undefined ? d.kind : (t.kind==='reminder'?'reminder':'todo');
   return `<div class="task-edit">
     <div class="due-row">
+      <select id="editTaskKind" aria-label="類型" onchange="noteTaskEdit('kind',this.value)">
+        <option value="todo" ${kind==='todo'?'selected':''}>✅ 待辦</option>
+        <option value="reminder" ${kind==='reminder'?'selected':''}>🔔 提醒</option>
+      </select>
       <input type="date" id="editTaskDue" value="${esc(d.due)}" aria-label="到期日" oninput="noteTaskEdit('due',this.value)">
       <span class="lbl">每</span>
       <input type="number" id="editTaskRecurN" min="1" step="1" placeholder="—" value="${esc(d.recurN)}" aria-label="週期數字" oninput="noteTaskEdit('recurN',this.value)">
@@ -3608,9 +3685,50 @@ function byPriority(a,b){
   const d=PRIORITY_RANK[a.priority||DEFAULT_PRIORITY]-PRIORITY_RANK[b.priority||DEFAULT_PRIORITY];
   return d!==0 ? d : a.ts-b.ts;
 }
+/* 提醒的日期說明（ADR-018 A-2）：下次 10/21（還剩 8 天）・每月。過期的寫「N 天前」 */
+function reminderRecurLabel(t){
+  if(!t.recurUnit) return '';
+  const n=Number(t.recurN)||1;
+  return n===1 ? '每'+t.recurUnit : '每 '+n+' '+t.recurUnit;
+}
+function reminderWhen(t, today){
+  if(!t.due) return '沒有日期';
+  const days=Math.round((new Date(t.due+'T12:00:00')-new Date(today+'T12:00:00'))/86400000);
+  const md=Number(t.due.slice(5,7))+'/'+Number(t.due.slice(8,10));
+  return days===0 ? '今天 '+md : days>0 ? '下次 '+md+'（還剩 '+days+' 天）' : md+'（'+(-days)+' 天前）';
+}
+function reminderHtml(t, today){
+  const meta=[reminderWhen(t, today), reminderRecurLabel(t)].filter(Boolean).join('・');
+  return `
+    <div class="task reminder">
+      <span class="lbl" aria-hidden="true">🔔</span>
+      <div class="txt editable" role="button" tabindex="0" onclick="openTaskEdit(${t.id})" title="點一下改日期與重複">${esc(t.txt)}${t.origin_chat?` <span class="tag" title="在 LINE 群組建立：提醒推回這個群組">👥 ${esc(groupNames[t.origin_chat]||'群組')}</span>`:''}
+        <div class="meta">${esc(meta)}</div></div>
+      <button class="pin ${t.board?'on':''}" onclick="toggleBoard('tasks',${t.id})"
+        aria-label="釘到白板" title="釘到共用白板">📌</button>
+      <button class="del" onclick="delTask(${t.id})" aria-label="刪除">✕</button>
+    </div>${editingTaskId===t.id?taskEditHtml(t):''}`;
+}
+function renderReminders(){
+  const today=todayKey();
+  const all=state.tasks.filter(t=>isReminder(t) && inScope(t))
+    .sort((a,b)=>(a.due||'9999')<(b.due||'9999')?-1:(a.due||'9999')>(b.due||'9999')?1:a.ts-b.ts);
+  // 單次提醒過期 → 已過；週期提醒過期是排程還沒翻（隔天 9 點），留在清單
+  const past=all.filter(t=>t.due && t.due<today && !t.recurUnit).reverse();
+  const live=all.filter(t=>!past.includes(t));
+  const list=document.getElementById('reminderList');
+  if(list) list.innerHTML = live.length ? live.map(t=>reminderHtml(t, today)).join('')
+    : '<div class="empty-hint">沒有提醒。在上面新增，或在 LINE 傳「提醒/內容」</div>';
+  const box=document.getElementById('reminderPast');
+  if(box) box.innerHTML = past.map(t=>reminderHtml(t, today)).join('');
+  const cnt=document.getElementById('reminderPastCount');
+  if(cnt) cnt.textContent=String(past.length);
+  setHidden('reminderPastCard', !past.length);
+}
 function renderTasks(){
-  const open=state.tasks.filter(t=>!t.done && inScope(t)).sort(byPriority);
-  const done=state.tasks.filter(t=>t.done && inScope(t));
+  renderReminders();
+  const open=state.tasks.filter(t=>!isReminder(t) && !t.done && inScope(t)).sort(byPriority);
+  const done=state.tasks.filter(t=>!isReminder(t) && t.done && inScope(t));
   const html=t=>{
     const p=t.priority||DEFAULT_PRIORITY;
     return `
@@ -4254,7 +4372,7 @@ function toggleDonutCat(cat){
   renderDashExpense();
 }
 function renderDashTasks(){
-  const top=state.tasks.filter(t=>!t.done && inScope(t)).sort(byPriority).slice(0,3);
+  const top=state.tasks.filter(t=>!isReminder(t) && !t.done && inScope(t)).sort(byPriority).slice(0,3);
   const el=document.getElementById('dashTasks');
   if(!top.length){ el.innerHTML='<div class="empty-hint">目前沒有進行中的任務 🎉</div>'; return; }
   el.innerHTML=top.map(t=>{
