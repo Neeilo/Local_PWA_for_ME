@@ -665,6 +665,7 @@ function routePwaSync_(body, perf) {
   if (body.action === 'planCreate') return jsonOut(planCreate_(caller, body));
   if (body.action === 'planDelete') return jsonOut(planDelete_(caller, body.plan_id));
   if (body.action === 'planEnd') return jsonOut(planEnd_(caller, body.plan_id, body.today));
+  if (body.action === 'planAdjust') return jsonOut(planAdjust_(caller, body));
   if (body.action === 'pushPreview') return jsonOut(pushPreview_(caller, body));
   if (body.action === 'pushSend') return jsonOut(pushSend_(caller, body));
   if (body.action === 'stockConfigSet') return jsonOut(stockConfigSet_(caller, body.key, body.value));
@@ -3224,8 +3225,9 @@ function installAdr013() {
 /* 保留方向（不做）：① 改計畫同步到各期 ② 分期↔信用卡連動                        */
 /* ========================================================================== */
 
+// per_amount（ADR-018 E-2）：目前每期應付多少，「調整計畫」靠它判斷哪幾期被手動改過；舊表由初始化補在最右邊
 var INSTALLMENTS_HEADERS = ['plan_id', 'source_expense_id', 'total', 'down_payment', 'periods', 'first_date',
-  'category', 'subcategory', 'targets', 'note', 'card', 'line_id', 'status', 'created_at', 'ended_at'];
+  'category', 'subcategory', 'targets', 'note', 'card', 'line_id', 'status', 'created_at', 'ended_at', 'per_amount'];
 var PLAN_PERIODS_MAX = 120;              // 十年。超過的不是分期，是打錯字
 var PLAN_LOCK_MS = 10000;
 var PLAN_CARD_MAX = 40;
@@ -3247,6 +3249,7 @@ function ensureInstallmentsSheet_(ss) {
     return sheet;
   }
   if (sheet.getLastRow() === 0) sheet.appendRow(INSTALLMENTS_HEADERS);
+  else ensureColumnsOnSheet_(sheet, INSTALLMENTS_HEADERS);       // 舊表補 per_amount（ADR-018），既有欄位不動
   return sheet;
 }
 
@@ -3381,7 +3384,7 @@ function planCreate_(caller, body) {
       return ({ plan_id: planId, source_expense_id: id, total: total, down_payment: down || '', periods: periods,
         first_date: monthFirstAfter_(dateKey, 1), category: src.category, subcategory: src.subcategory,
         targets: src.targets, note: src.note, card: card, line_id: caller.line_id, status: 'active',
-        created_at: now, ended_at: '' })[h] ?? '';
+        created_at: now, ended_at: '', per_amount: Math.floor((total - down) / periods) })[h] ?? '';
     }));
     ex.sheet.getRange(ex.sheet.getLastRow() + 1, 1, rows.length, ex.headers.length).setValues(rows);
     // 原本那筆：軟刪除並記下 plan_id——planDelete 靠它找回來恢復
@@ -3487,6 +3490,195 @@ function planEnd_(caller, planId, today) {
     setDeviceFields_(plan.sheet, plan.headers, plan.row, { status: 'ended', ended_at: new Date().toISOString() });
     planLog_('成功', '結束分期 ' + id, '刪除 ' + removed + ' 期未到期，保留 ' + kept + ' 期', '今天=' + todayKey, caller.line_id);
     return { success: true, removed: removed, kept: kept };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+/* ========================================================================== */
+/* ADR-018 E — 分期調整（ADR-013 D-8 保留方向 ① 啟用）                          */
+/*                                                                            */
+/* 以「今天」為界：已到期（expense_date ≤ 今天）的各期一個字都不動；未到期的軟刪除、 */
+/* 依新的剩餘期數／每期金額重建。卡片單獨改也走這裡（剩餘期數留白＝不重建各期）。  */
+/* 預覽（dry_run）與寫入共用 planAdjustPlan_：預覽說多少、存進去就是多少。        */
+/* ========================================================================== */
+
+/** 一個數字是不是「正整數期數」；空白回 null（＝沒填） */
+function planPeriodsArg_(v) {
+  if (v === '' || v == null) return null;
+  var n = Number(v);
+  return n >= 1 && n <= PLAN_PERIODS_MAX && Math.floor(n) === n ? n : NaN;
+}
+
+/**
+ * 這個計畫的各期「應該」是多少（判斷手動改過用）。純函式。
+ * 有 per_amount：除了最後一個編號，各期都該是 per_amount；最後一個編號是零頭，
+ * 只要 ≥ per_amount 且多出來的不到期數就算正常（均分的零頭最多 periods−1 元）。
+ * 沒有 per_amount（ADR-018 之前建的）：用原計畫反推 floor((總額−頭期)÷期數)。
+ */
+function planExpectedPer_(plan) {
+  var per = Number(plan.per_amount);
+  if (plan.per_amount !== '' && plan.per_amount != null && isFinite(per) && per > 0) return per;
+  var total = Number(plan.total) || 0, down = Number(plan.down_payment) || 0, periods = Number(plan.periods) || 0;
+  return periods > 0 ? Math.floor((total - down) / periods) : 0;
+}
+
+function planSeqNum_(seq) {
+  var m = /^(\d+)\s*[\/／]/.exec(keyValue_(seq));
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * 調整計畫的純計算（E-2）。rows＝這個計畫還活著的各期 { date, amount, seq }；today＝YYYY-MM-DD。
+ *  - 已到期（date ≤ today）保留；其餘是要被取代的「未到期」
+ *  - perAmount 有填：每期都是它，剩餘＝perAmount × remaining（Neil 2026-10-13）
+ *    沒填：原本未到期各期的實際金額加總，均分（取整、零頭放最後）
+ *  - 新各期：today 的下個月起每月 1 號；plan_seq 接著已到期的最大編號
+ *  - overwritten：未到期裡金額跟應付不同的期數（會被覆蓋，預覽要講）
+ * 回 { error } 或 { schedule, remaining_total, paid, periods_total, per_amount, overwritten }
+ */
+function planAdjustPlan_(plan, rows, remaining, perAmount, today) {
+  var kept = rows.filter(function (r) { return r.date <= today; });
+  var future = rows.filter(function (r) { return r.date > today; });
+  var paid = kept.reduce(function (s, r) { return s + (Number(r.amount) || 0); }, 0);
+  var keptNums = kept.map(function (r) { return planSeqNum_(r.seq); }).filter(function (n) { return n !== null; });
+  var lastKept = keptNums.length ? Math.max.apply(null, keptNums) : 0;
+
+  var remainingTotal;
+  if (perAmount !== null) {
+    remainingTotal = Math.round(perAmount * remaining * 100) / 100;
+  } else {
+    remainingTotal = future.reduce(function (s, r) { return s + (Number(r.amount) || 0); }, 0);
+    if (!(remainingTotal > 0)) return { error: 'nothing_to_split' };
+    if (remainingTotal < remaining) return { error: 'amount_too_small' };   // 每期至少 1 元
+  }
+  var each = perAmount !== null ? perAmount : Math.floor(remainingTotal / remaining);
+  var periodsTotal = lastKept + remaining;
+  var schedule = [];
+  for (var i = 1; i <= remaining; i++) {
+    var amount = i < remaining ? each : Math.round((remainingTotal - each * (remaining - 1)) * 100) / 100;
+    schedule.push({ seq: (lastKept + i) + PLAN_SEQ_SEP + periodsTotal, date: monthFirstAfter_(today, i), amount: amount });
+  }
+
+  var expected = planExpectedPer_(plan);
+  var futureNums = future.map(function (r) { return planSeqNum_(r.seq); }).filter(function (n) { return n !== null; });
+  var lastFuture = futureNums.length ? Math.max.apply(null, futureNums) : null;
+  var overwritten = future.filter(function (r) {
+    var a = Number(r.amount);
+    if (a === expected) return false;
+    // 最後一期是零頭：比應付多、但多不到期數，算正常
+    return !(planSeqNum_(r.seq) === lastFuture && a > expected && a - expected < Math.max(Number(plan.periods) || 0, futureNums.length));
+  }).length;
+
+  return { schedule: schedule, remaining_total: remainingTotal, paid: paid, periods_total: periodsTotal,
+           per_amount: each, overwritten: overwritten, replaced: future.length };
+}
+
+/** 只有管理者或計畫建立者能調（還要有記帳權限） */
+function planAdjustForbidden_(caller, plan) {
+  var forbidden = planForbidden_(caller, 'planAdjust');
+  if (forbidden) return forbidden;
+  if (truthy_((caller.user || {}).is_admin) || keyValue_(plan.line_id) === caller.line_id) return null;
+  planLog_('失敗', '調整分期 ' + keyValue_(plan.plan_id), '不是管理者也不是建立者，拒絕', '', caller.line_id);
+  return { error: 'forbidden' };
+}
+
+/**
+ * planAdjust → { success, ... }。body：plan_id、remaining_periods（留白＝只改卡片）、per_amount（留白＝均分）、
+ * card（undefined＝不改）、dry_run、today（只給測試用，比照 planEnd）。
+ * 重複送出同一份：新各期跟現在未到期的完全一樣（日期、金額、編號）而且卡片沒變 → unchanged，什麼都不寫。
+ */
+function planAdjust_(caller, body) {
+  var todayKey = keyValue_(body.today) || keyValue_(new Date());
+  var remaining = planPeriodsArg_(body.remaining_periods);
+  if (remaining !== null && isNaN(remaining)) return { error: 'invalid_periods', max: PLAN_PERIODS_MAX };
+  var perAmount = body.per_amount === '' || body.per_amount == null ? null : Number(body.per_amount);
+  if (perAmount !== null && !(isFinite(perAmount) && perAmount >= 1)) return { error: 'invalid_per_amount' };
+  var cardGiven = body.card !== undefined && body.card !== null;
+  var card = cardGiven ? String(body.card).replace(/[\r\n\t]+/g, ' ').trim().slice(0, PLAN_CARD_MAX) : null;
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(PLAN_LOCK_MS)) return { error: 'busy' };
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var found = findPlan_(ss, body.plan_id);
+    if (found.error) return found;
+    var forbidden = planAdjustForbidden_(caller, found.record);
+    if (forbidden) return forbidden;
+    if (String(found.record.status || '').trim() !== 'active') return { error: 'plan_not_active' };
+    var id = keyValue_(body.plan_id);
+    var cardChanged = cardGiven && card !== String(found.record.card == null ? '' : found.record.card).trim();
+
+    // 只改卡片：各期一列都不動
+    if (remaining === null) {
+      if (!cardGiven) return { error: 'invalid_periods', max: PLAN_PERIODS_MAX };
+      if (body.dry_run === true) return { success: true, dry_run: true, card_only: true };
+      if (cardChanged) {
+        setDeviceFields_(found.sheet, found.headers, found.row, { card: card });
+        planLog_('成功', '調整分期 ' + id, '卡片 → ' + (card || '（空白）'), '', caller.line_id);
+      }
+      return { success: true, card_only: true, unchanged: !cardChanged };
+    }
+
+    var ex = planExpenses_(ss);
+    if (ex.error) return ex;
+    var liveRows = planPeriods_(ex, id).filter(function (r) { return !isTombstone_(r.record); });
+    var rows = liveRows.map(function (r) {
+      return { date: keyValue_(r.record.expense_date), amount: r.record.amount, seq: keyValue_(r.record.plan_seq), row: r };
+    });
+    var calc = planAdjustPlan_(found.record, rows, remaining, perAmount, todayKey);
+    if (calc.error) return calc;
+    var out = { success: true, schedule: calc.schedule, remaining_total: calc.remaining_total, paid: calc.paid,
+                overwritten: calc.overwritten, periods_total: calc.periods_total };
+    if (body.dry_run === true) { out.dry_run = true; return out; }
+
+    var future = rows.filter(function (r) { return r.date > todayKey; });
+    var same = future.length === calc.schedule.length && calc.schedule.every(function (s, i) {
+      var f = future[i];
+      return f && f.date === s.date && Number(f.amount) === s.amount && f.seq === s.seq;
+    });
+    if (same && !cardChanged) { out.unchanged = true; return out; }
+
+    // 各期的欄位從計畫的一列照抄（分類、細項、對象、備註、歸屬）；沒有活著的期就用原本那筆
+    var template = liveRows.length ? liveRows[0].record : null;
+    if (!template) {
+      var srcId = keyValue_(found.record.source_expense_id);
+      ex.rows.some(function (r) { if (keyValue_(r.record.id) === srcId) { template = r.record; return true; } return false; });
+    }
+    if (!template) return { error: 'expense_not_found' };
+
+    future.forEach(function (f) { setDeviceFields_(ex.sheet, ex.headers, f.row.row, { del: 'TRUE' }); });
+    var now = new Date().toISOString();
+    var base = Date.now();
+    var newRows = calc.schedule.map(function (s, i) {
+      var rec = {};
+      ex.headers.forEach(function (h) { rec[h] = template[h] == null ? '' : template[h]; });
+      rec.id = String(base + i);
+      rec.expense_date = s.date;
+      rec.amount = s.amount;
+      rec.plan_id = id;
+      rec.plan_seq = s.seq;
+      rec.created_at = now;
+      rec[DEL_FIELD] = '';
+      if ('board' in rec) rec.board = '';
+      return ex.headers.map(function (h) { return rec[h]; });
+    });
+    ex.sheet.getRange(ex.sheet.getLastRow() + 1, 1, newRows.length, ex.headers.length).setValues(newRows);
+
+    ensureColumnsOnSheet_(found.sheet, ['per_amount']);
+    var patch = { total: Math.round((calc.paid + calc.remaining_total) * 100) / 100, periods: calc.periods_total,
+                  per_amount: calc.per_amount };
+    if (cardGiven) patch.card = card;
+    setDeviceFields_(found.sheet, sheetHeaders_(found.sheet), found.row, patch);
+
+    planLog_('成功', '調整分期 ' + id,
+      '未到期 ' + future.length + ' 期 → ' + calc.schedule.length + ' 期，剩餘 ' + calc.remaining_total +
+      (calc.overwritten ? '（覆蓋了 ' + calc.overwritten + ' 期手動改過的）' : ''),
+      '今天=' + todayKey + '｜總額 ' + patch.total + '｜每期 ' + calc.per_amount + (cardGiven ? '｜卡片 ' + card : ''), caller.line_id);
+    out.deleted = future.length;
+    out.created = calc.schedule.length;
+    return out;
   } finally {
     lock.releaseLock();
   }

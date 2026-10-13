@@ -244,7 +244,8 @@ describe('前端卡片', () => {
       '{plan_id:"P2", status:"ended", total:6000, periods:3, category:"教育"}]');
     await e.callRaw('openSysTab', 'plans');
     assert.equal(sent.length, 0);
-    assert.match(els.sysBody.innerHTML, /進行中・12 期・國泰/);
+    // ADR-018 E-1：第 N／M 期・剩 K 期 NT$ …・卡片（狀態移到第二行）
+    assert.match(els.sysBody.innerHTML, /第 0／12 期・剩 0 期 NT\$ 0・國泰<br>進行中/);
     assert.match(els.sysBody.innerHTML, /已結束/);
     assert.equal((els.sysBody.innerHTML.match(/結束計畫/g) || []).length, 1);
   });
