@@ -1119,7 +1119,8 @@ describe('代號開頭的 0 不能被 Sheet 吃掉', () => {
     const e = env({ autoNumber: true, sheets: { stock_daily: daily, stock_watch: watch }, net: { calls: { all: [] }, UrlFetchApp } });
     e.call('installStock_');
     watch.values.push(['0056', '', 10, 'TRUE', NEIL, '']);
-    e.call('fetchStockDaily');
+    // 固定在 10/8（週四）台北 15:10 盤後：不帶時間就用真的時鐘，只有平日 14～19 點跑才會過（2026-10-13 修）
+    e.call('fetchStockDaily', new Date(Date.UTC(2026, 9, 8, 7, 10, 0)));
     assert.equal(e.sheets.stock_daily.toRecords()[0].symbol, '0056');
   });
 
