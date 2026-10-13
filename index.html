@@ -2603,6 +2603,23 @@ function perfAlertNeeded(){ return isAdmin() && perfRows>PERF_ALERT_ROWS; }
 
 function fmtMs(ms){ if(ms==null) return '—'; return ms<1000 ? Math.round(ms)+' ms' : (ms/1000).toFixed(1)+' 秒'; }
 
+/** 開機分段（ADR-018 PR-0）：各段的一般耗時，子段（含「.」）接在上一層後面、前面加 └ */
+const PERF_STAGE_LABEL={parse:'解析', auth:'驗證', device:'裝置', gate:'名單檢查', touch:'寫使用時間', open:'開表',
+  users:'名單', sheets:'讀表', groups:'群組名', perf_rows:'效能筆數', unauth_alert:'未驗證警示',
+  expense_config:'分類設定', installments:'分期', stock:'股票', quote:'報價', json:'打包回應'};
+function perfStagesRow(g){
+  if(!g.stages || !g.stages.length) return '';
+  const label=(n)=>PERF_STAGE_LABEL[n]||n;
+  const parts=[];
+  g.stages.filter(x=>x.name.indexOf('.')===-1).forEach(top=>{
+    parts.push(esc(label(top.name))+' '+fmtMs(top.p50));
+    g.stages.filter(x=>x.name.indexOf(top.name+'.')===0)
+      .forEach(c=>parts.push('└ '+esc(label(c.name.slice(top.name.length+1)))+' '+fmtMs(c.p50)));
+  });
+  parts.push('未歸屬 '+fmtMs(g.other_p50));
+  return `<tr><td colspan="5" class="perf-sub">分段（一般，${g.staged} 筆）：${parts.join('・')}</td></tr>`;
+}
+
 /** 摘要畫成表格。p90 這個詞不上畫面，寫成「慢的時候」 */
 function perfSummaryHtml(r){
   if(!r || !r.success) return '<p class="perf-sub">讀不到效能紀錄，稍後再試。</p>';
@@ -2611,7 +2628,7 @@ function perfSummaryHtml(r){
       <td>${g.count}</td><td>${fmtMs(g.p50)}</td><td>${fmtMs(g.p90)}</td></tr>`).join('');
   const server=(r.server||[]).map(g=>`<tr><td>${esc(g.action)}</td>
       <td>${g.count}</td><td>${fmtMs(g.p50)}</td><td>${fmtMs(g.p90)}</td>
-      <td>${g.auth_pct}／${g.open_pct}／${g.read_pct}%</td></tr>`).join('');
+      <td>${g.auth_pct}／${g.open_pct}／${g.read_pct}%</td></tr>`+perfStagesRow(g)).join('');
   const LINE_LABEL={lineMessage:'打字（記帳、查詢…）', linePostback:'按按鈕'};
   const line=(r.line||[]).map(g=>`<tr><td>${esc(LINE_LABEL[g.action]||g.action)}</td>
       <td>${g.count}</td><td>${fmtMs(g.reply_p50)}</td><td>${fmtMs(g.reply_p90)}</td></tr>`).join('');

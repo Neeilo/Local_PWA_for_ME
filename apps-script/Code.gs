@@ -417,7 +417,7 @@ function readManyFrom_(ss, user, sheets, perf) {
   (Array.isArray(sheets) ? sheets : []).forEach(function (name) {
     if (typeof name !== 'string' || data.hasOwnProperty(name) || denied.indexOf(name) !== -1) return;
     if (NO_PWA_READ.indexOf(name) !== -1 || isBackupSheet_(name) || !canUseSheet_(user, name)) { denied.push(name); return; }
-    var read = sheetRecords_(ss, name, perf);
+    var read = perfStage_(perf, 'sheets.' + name, function () { return sheetRecords_(ss, name, perf); });
     data[name] = read.error ? [] : withoutTombstones_(read.rows);
   });
   return { data: data, denied: denied };
@@ -436,8 +436,9 @@ function bootResponse_(caller, perf) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   perf.open_ms = Date.now() - opened;
 
-  var users = sheetRecords_(ss, LINE_USERS_SHEET, perf);
-  var many = readManyFrom_(ss, caller.user, BOOT_SHEETS, perf);
+  perfSet_(perf, 'open', perf.open_ms);
+  var users = perfStage_(perf, 'users', function () { return sheetRecords_(ss, LINE_USERS_SHEET, perf); });
+  var many = perfStage_(perf, 'sheets', function () { return readManyFrom_(ss, caller.user, BOOT_SHEETS, perf); });
   perf.sheets = [LINE_USERS_SHEET].concat(BOOT_SHEETS).join(',');
 
   var isAdmin = truthy_((caller.user || {}).is_admin);
@@ -454,13 +455,13 @@ function bootResponse_(caller, perf) {
     data: many.data,
     denied: many.denied
   };
-  if (many.data.tasks) out.group_names = taskGroupNames_(many.data.tasks);
+  if (many.data.tasks) out.group_names = perfStage_(perf, 'groups', function () { return taskGroupNames_(many.data.tasks); });
   if (isAdmin) {
-    out.perf_rows = perfRowCount_();
-    var alert = unauthAlert_();
+    out.perf_rows = perfStage_(perf, 'perf_rows', perfRowCount_);
+    var alert = perfStage_(perf, 'unauth_alert', unauthAlert_);
     if (alert) out.unauth_alert = alert;
   }
-  return withExpenseConfig_(out, caller.user, ss, BOOT_SHEETS);
+  return withExpenseConfig_(out, caller.user, ss, BOOT_SHEETS, perf);
 }
 
 /**
@@ -490,11 +491,11 @@ function taskGroupNames_(tasks) {
  * （2026-10-06 實機回報）。設定有 5 分鐘快取，多帶一份幾乎不花成本。
  * 用呼叫端開好的 ss：boot 只開一次試算表。
  */
-function withExpenseConfig_(out, user, ss, sheets) {
+function withExpenseConfig_(out, user, ss, sheets, perf) {
   if ((sheets || []).indexOf('expenses') !== -1 && canUseSheet_(user, 'expenses')) {
-    out.expense_config = expenseConfigPublic_(expenseConfig_(ss));
+    out.expense_config = perfStage_(perf, 'expense_config', function () { return expenseConfigPublic_(expenseConfig_(ss)); });
     // 分期計畫（D-6）跟著同一個條件走：列表上的「剩 M 期共 X 元」要用計畫的總額與狀態
-    out.installments = installmentPlans_(ss);
+    out.installments = perfStage_(perf, 'installments', function () { return installmentPlans_(ss); });
   }
   return out;
 }
@@ -513,8 +514,8 @@ function featureForbidden_(caller, action, sheetName) {
 // 外層只負責量時間與寫效能紀錄（ADR-012 T1）；分流在 routePwaSync_。
 function handlePwaSync_(e) {
   var started = Date.now();
-  const body = JSON.parse(e.postData.contents);
   var perf = {};
+  const body = perfStage_(perf, 'parse', function () { return JSON.parse(e.postData.contents); });
   var out = routePwaSync_(body, perf);
   recordPerf_(body, perf, Date.now() - started);
   // 沒通過驗證的請求不寫 performance（免得陌生人灌爆），改在快取裡累計，每小時彙總一列（ADR-014 D-15）
@@ -538,20 +539,22 @@ function routePwaSync_(body, perf) {
 
   // 身份一律由後端換出來，不信任 body 裡的 line_id（ADR-010 D-2）
   var callerStarted = Date.now();
-  const caller = pwaCaller_(body);
+  const caller = pwaCaller_(body, perf);
   perf.auth_ms = Date.now() - callerStarted;
+  perfSet_(perf, 'auth', perf.auth_ms);
   if (!caller.ok) { perf.unauth = caller.error; return jsonOut({ error: caller.error, reason: caller.error }); }
   perf.who = { line_id: caller.line_id, device_id: caller.device ? caller.device.device_id : '' };
 
-  if (body.action === 'boot') return jsonOut(withStock_(bootResponse_(caller, perf), caller, body));
+  if (body.action === 'boot') return perfJsonOut_(perf, withStock_(bootResponse_(caller, perf), caller, body, perf));
   if (body.action === 'readMany') {
     perf.sheets = Array.isArray(body.sheets) ? body.sheets.filter(function (x) { return typeof x === 'string'; }).join(',') : '';
     var openedMany = Date.now();
     var ssMany = SpreadsheetApp.getActiveSpreadsheet();
     perf.open_ms = Date.now() - openedMany;
-    var many = readManyFrom_(ssMany, caller.user, body.sheets, perf);
-    return jsonOut(withStock_(withExpenseConfig_(many, caller.user, ssMany, Array.isArray(body.sheets) ? body.sheets : []),
-      caller, body));
+    perfSet_(perf, 'open', perf.open_ms);
+    var many = perfStage_(perf, 'sheets', function () { return readManyFrom_(ssMany, caller.user, body.sheets, perf); });
+    return perfJsonOut_(perf, withStock_(withExpenseConfig_(many, caller.user, ssMany, Array.isArray(body.sheets) ? body.sheets : [], perf),
+      caller, body, perf));
   }
   if (body.action === 'read') return jsonOut(readSheetResponse_(body.sheet, perf, caller.user));
   if (body.action === 'listDevices') return jsonOut(listDevices_(caller, body.line_id));
@@ -1610,25 +1613,25 @@ function deviceDenied_(reason, dev, what, detail) {
  *
  * now 只給測試用（比照 checkDueReminders）：綁死系統時鐘的測試會跟著真實日期漂。
  */
-function authDevice_(rawToken, what, now) {
+function authDevice_(rawToken, what, now, perf) {
   var nowMs = now || Date.now();
   var token = String(rawToken == null ? '' : rawToken).trim();
   if (!token) return deviceDenied_('no_token', null, what);
 
-  var found = findDeviceByHash_(tokenHash_(token));
+  var found = perfStage_(perf, 'auth.device', function () { return findDeviceByHash_(tokenHash_(token)); });
   if (!found.ok) return deviceDenied_('device_store_unavailable', null, what, found.error);
   var dev = found.device;
   if (!dev) return deviceDenied_('unknown_token', null, what);
   if (String(dev.revoked_at == null ? '' : dev.revoked_at).trim()) return deviceDenied_('revoked', dev, what);
   if (deviceIdle_(dev, nowMs)) return deviceDenied_('token_expired', dev, what);
 
-  var gate = writeGate_(dev.line_id, what || 'PWA session');
+  var gate = perfStage_(perf, 'auth.gate', function () { return writeGate_(dev.line_id, what || 'PWA session'); });
   if (!gate.allowed) {
     return { ok: false, reason: personReason_(gate.error), device: publicDevice_(dev),
              line_id: String(dev.line_id || '').trim() };
   }
 
-  touchDevice_(dev, nowMs);
+  perfStage_(perf, 'auth.touch', function () { touchDevice_(dev, nowMs); });
   return { ok: true, reason: '', line_id: String(dev.line_id).trim(), user: gate.user, device: publicDevice_(dev) };
 }
 
@@ -1639,9 +1642,9 @@ function authDevice_(rawToken, what, now) {
  * 密鑰只證明「這是我們家的 App」，而它就寫在公開的 index.html 裡；line_id 是自稱的，
  * 而名單可以被讀走——兩樣湊起來誰都能冒充誰。
  */
-function pwaCaller_(body) {
+function pwaCaller_(body, perf) {
   var what = 'PWA ' + (body.action || '?') + ' → ' + (body.sheet || '?');
-  var auth = authDevice_(body.token, what);
+  var auth = authDevice_(body.token, what, undefined, perf);
   if (!auth.ok) return { ok: false, error: auth.reason };
   return { ok: true, line_id: auth.line_id, user: auth.user, device: auth.device };
 }
@@ -2186,7 +2189,7 @@ function authorizeArchiveMail() {
  * 並行的五個請求，appendRow 才不會互相蓋掉。
  */
 var PERFORMANCE_HEADERS = ['id', 'ts', 'action', 'trigger', 'client_ms', 'server_ms', 'auth_ms', 'open_ms', 'read_ms',
-  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms'];
+  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms', 'stages'];
 
 /** 觸發情境。不在清單裡的一律不記——欄位裡只會出現這幾個字 */
 var PERF_TRIGGERS = ['cold', 'foreground', 'poll', 'manual', 'write', 'line', 'schedule', 'zone', 'hourly'];
@@ -2243,7 +2246,8 @@ function recordPerf_(body, perf, serverMs) {
       rows.push({
         action: String(body.action || ''), trigger: trigger, server_ms: serverMs,
         auth_ms: perf.auth_ms, open_ms: perf.open_ms, read_ms: perf.read_ms,
-        sheets: perf.sheets || (typeof body.sheet === 'string' ? body.sheet : ''), rows: perf.rows
+        sheets: perf.sheets || (typeof body.sheet === 'string' ? body.sheet : ''), rows: perf.rows,
+        stages: perfStagesText_(perf.stages)
       });
     }
     rows = rows.concat(clientPerfRows_(body.perf));
@@ -2267,16 +2271,49 @@ function recordPerf_(body, perf, serverMs) {
 }
 
 /**
- * 表頭；舊表沒有 reply_ms（2026-10-06 加的，LINE 用）就補在最右邊。
+ * 表頭；舊表沒有 reply_ms（2026-10-06 加的，LINE 用）、stages（ADR-018 PR-0）就依序補在最右邊。
  * 本來每次寫紀錄就要讀一次表頭，這裡沒有多讀，只有缺欄的那一次多寫一格。
  */
+var PERF_LATE_HEADERS = ['reply_ms', 'stages'];
 function perfHeaders_(sheet) {
   var headers = sheetHeaders_(sheet);
-  if (headers.length && headers.indexOf('reply_ms') === -1) {
-    sheet.getRange(1, headers.length + 1, 1, 1).setValues([['reply_ms']]);
-    headers.push('reply_ms');
-  }
+  if (!headers.length) return headers;
+  PERF_LATE_HEADERS.forEach(function (h) {
+    if (headers.indexOf(h) !== -1) return;
+    sheet.getRange(1, headers.length + 1, 1, 1).setValues([[h]]);
+    headers.push(h);
+  });
   return headers;
+}
+
+/* ---------- 開機分段計時（ADR-018 PR-0／D-4） ----------
+   boot cold 的 server_ms 有約 2.9 秒不在 auth／open／read 裡。每一段都記毫秒，寫進 stages 欄
+   （JSON：{"auth":1554,"auth.device":30,…}）。名字有「.」的是子段，時間已經算在上一層裡，
+   摘要算「未歸屬」時只扣頂層。perf 是 undefined（LINE、排程、測試直接呼叫）就只執行不計時。 */
+function perfStage_(perf, name, fn) {
+  var t = Date.now();
+  try {
+    return fn();
+  } finally {
+    if (perf) {
+      var s = perf.stages = perf.stages || {};
+      s[name] = (s[name] || 0) + (Date.now() - t);
+    }
+  }
+}
+
+/** 已經另外量好的段（auth_ms、open_ms）直接記，不重量一次 */
+function perfSet_(perf, name, ms) {
+  if (perf) (perf.stages = perf.stages || {})[name] = ms;
+}
+
+function perfStagesText_(stages) {
+  return stages && Object.keys(stages).length ? JSON.stringify(stages) : '';
+}
+
+/** 序列化也是使用者在等的時間（boot 的回應有整包資料），量 JSON.stringify 那一段 */
+function perfJsonOut_(perf, obj) {
+  return perfStage_(perf, 'json', function () { return jsonOut(obj); });
 }
 
 /**
@@ -2456,6 +2493,24 @@ function perfReadRows_() {
 }
 
 /**
+ * 一列的 stages（ADR-018 PR-0）收進分組：各段的毫秒，與「未歸屬」＝server_ms − 頂層加總。
+ * 改版前的列沒有 stages，整列略過——不能把它當成「全部未歸屬」。
+ */
+function perfCollectStages_(g, raw, serverMs) {
+  var st = null;
+  try { st = raw ? JSON.parse(String(raw)) : null; } catch (err) { st = null; }
+  if (!st || typeof st !== 'object') return;
+  var top = 0;
+  Object.keys(st).forEach(function (name) {
+    var v = perfNum_(st[name]);
+    if (v === null) return;
+    (g.stages[name] = g.stages[name] || []).push(v);
+    if (name.indexOf('.') === -1) top += v;
+  });
+  g.other.push(Math.max(serverMs - top, 0));
+}
+
+/**
  * perfSummary（管理員）：近 7 天的摘要，雲端算好再送，不傳原始列。
  *  - client：手機感受到的時間，依 trigger 分組（開 App、回前景、輪詢、手動刷新、寫入）
  *  - server：雲端內部時間，依 action 分組，附各分段佔比（%）
@@ -2494,12 +2549,13 @@ function perfSummary_(caller, now) {
     }
     if (s !== null) {
       var sk = String(r.action || '');
-      var g = server[sk] = server[sk] || { ms: [], total: 0, auth: 0, open: 0, read: 0 };
+      var g = server[sk] = server[sk] || { ms: [], total: 0, auth: 0, open: 0, read: 0, stages: {}, other: [] };
       g.ms.push(s);
       g.total += s;
       g.auth += perfNum_(r.auth_ms) || 0;
       g.open += perfNum_(r.open_ms) || 0;
       g.read += perfNum_(r.read_ms) || 0;
+      perfCollectStages_(g, r.stages, s);
     }
   });
 
@@ -2517,8 +2573,17 @@ function perfSummary_(caller, now) {
     server: Object.keys(server).map(function (k) {
       var g = server[k];
       var ms = g.ms.sort(asc);
-      return { action: k, count: ms.length, p50: perfPercentile_(ms, 0.5), p90: perfPercentile_(ms, 0.9),
+      var row = { action: k, count: ms.length, p50: perfPercentile_(ms, 0.5), p90: perfPercentile_(ms, 0.9),
         auth_pct: pct(g.auth, g.total), open_pct: pct(g.open, g.total), read_pct: pct(g.read, g.total) };
+      if (g.other.length) {
+        row.staged = g.other.length;
+        row.other_p50 = perfPercentile_(g.other.sort(asc), 0.5);
+        row.stages = Object.keys(g.stages).map(function (name) {
+          var v = g.stages[name].sort(asc);
+          return { name: name, p50: perfPercentile_(v, 0.5), count: v.length };
+        }).sort(function (a, b) { return b.p50 - a.p50; });
+      }
+      return row;
     }),
     line: Object.keys(line).map(function (k) {
       var g = line[k];
