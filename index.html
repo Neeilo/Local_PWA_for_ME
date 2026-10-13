@@ -168,15 +168,6 @@
   }
   .eyebrow{font-size:12px; letter-spacing:.12em; color:var(--muted); text-transform:uppercase;}
   h1{margin:2px 0 0; font-size:26px; font-weight:700; letter-spacing:-0.02em;}
-  .pulse{display:flex; gap:5px; margin-top:12px; align-items:flex-end; height:22px;}
-  .pulse span{width:100%; max-width:18px; border-radius:3px; background:var(--line); flex:1;}
-  .pulse .l1{background:var(--m1); height:30%;}
-  .pulse .l2{background:var(--m2); height:45%;}
-  .pulse .l3{background:var(--m3); height:60%;}
-  .pulse .l4{background:var(--m4); height:80%;}
-  .pulse .l5{background:var(--m5); height:100%;}
-  .pulse .empty{height:20%; opacity:.5;}
-  .pulse-label{font-size:11px; color:var(--muted); margin-top:6px;}
 
   main{padding:8px 16px 16px;}
   .view{display:none;}
@@ -228,37 +219,11 @@
   .empty-hint{color:var(--muted); font-size:14px; text-align:center; padding:16px 0;}
 
   /* 心情 */
-  .moods{display:flex; gap:6px; justify-content:space-between; margin-bottom:10px;}
-  .mood-btn{
-    flex:1; background:var(--field); border:1px solid var(--line); border-radius:12px;
-    font-size:24px; padding:10px 0;
-  }
-  .mood-btn.sel{border-color:var(--accent); background:var(--accent-soft);}
-  .mood-item{display:flex; gap:10px; padding:10px 4px; border-bottom:1px solid var(--line); align-items:flex-start;}
-  .mood-item:last-child{border-bottom:none;}
-  .mood-emoji{font-size:20px; flex:none;}
-  .mood-meta{font-size:12px; color:var(--muted);}
 
   /* 日誌 / 複盤 */
   .field-label{font-size:13px; font-weight:600; margin:10px 0 4px; color:var(--ink);}
   .field-label:first-child{margin-top:0;}
-  .review-item{padding:10px 4px; border-bottom:1px solid var(--line);}
-  .review-item:last-child{border-bottom:none;}
-  .review-date{font-weight:600; font-size:14px; color:var(--accent);}
-  .review-body{font-size:14px; color:var(--ink); white-space:pre-wrap; margin-top:4px;}
-  .saved-tag{font-size:12px; color:var(--accent); margin-left:8px;}
 
-  /* Daily Compass 卡片 */
-  .compass-card{
-    background:var(--compass-soft); border:1.5px solid #C4D4EA;
-    border-radius:14px; padding:14px; margin-bottom:12px;
-  }
-  .compass-card .compass-label{
-    font-size:13px; font-weight:700; color:var(--compass);
-    letter-spacing:.04em; margin-bottom:6px; display:flex; align-items:center; gap:6px;
-  }
-  .compass-card textarea{background:var(--card);}
-  .compass-card textarea:focus{outline-color:var(--compass);}
 
   /* 雜記 */
   .note-item{padding:10px 4px; border-bottom:1px solid var(--line);}
@@ -629,12 +594,8 @@
 .pane-scroll::-webkit-scrollbar{ display:none; }
 .pane{ flex:0 0 100%; scroll-snap-align:start; min-height:132px; }
 .pane h2{ margin-top:0; }
-.pane-hint{ font-size:11px; opacity:.45; text-align:center; margin-bottom:4px; }
 .board-item{ display:flex; align-items:center; gap:8px; padding:5px 0; font-size:14px; }
 .board-item .tag{ font-size:11px; opacity:.6; flex:0 0 auto; }
-.due-group{ margin-bottom:10px; }
-.due-group .head{ font-size:12px; opacity:.7; margin-bottom:3px; }
-.due-group.overdue .head{ color:#d24; opacity:1; font-weight:600; }
 .pin{ background:none; border:none; cursor:pointer; opacity:.35; font-size:14px; padding:0 2px; }
 .pin.on{ opacity:1; }
 .due-pick{ margin-top:8px; font-size:13px; }
@@ -666,14 +627,13 @@
 /* 明寫，否則 display:inline-block 會蓋掉 [hidden]，沒有待同步時也剩一顆空膠囊 */
 .sync-badge[hidden]{display:none;}
 /* PART D — literals the source hard-codes → tokens */
-input[type=text],input[type=number],input[type=date],textarea,select,.mood-btn,.type-btn,.prio-opt,.cat-btn,.seg button,.month-bar button{background:var(--field);}
+input[type=text],input[type=number],input[type=date],textarea,select,.type-btn,.prio-opt,.cat-btn,.seg button,.month-bar button{background:var(--field);}
 .btn{color:var(--on-accent);}
 nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shadow-home);}
-.prio-opt.sel,.cat-btn.sel,.compass-card textarea{background:var(--card);}
+.prio-opt.sel,.cat-btn.sel{background:var(--card);}
 .edit-banner{border-color:var(--peach);}
 .me-card.offline,.id-gate .gate-err,.adm-grid button.danger.on{background:var(--danger-soft);}
 .exp-cat{background:var(--bg);}
-[data-theme="dark"] .compass-card{border-color:#34496b;}
 [data-theme="dark"] .edit-banner{border-color:#5a3a20;}
 [data-theme="dark"] .adm-pending{background:#33260f; color:#f0c070;}
 [data-theme="dark"] .toast{color:var(--bg);}
@@ -682,7 +642,6 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
 
 /* PART D (cont.) — same dark overrides for 自動 mode */
 @media (prefers-color-scheme: dark){
-  :root:not([data-theme]) .compass-card{border-color:#34496b;}
   :root:not([data-theme]) .edit-banner{border-color:#5a3a20;}
   :root:not([data-theme]) .adm-pending{background:#33260f; color:#f0c070;}
   :root:not([data-theme]) .toast{color:var(--bg);}
@@ -713,11 +672,56 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
   :root[data-zone-dir]::view-transition-old(zone-card){animation:zone-fade-out .12s ease both;}
   .view.active{animation:none;}
 }
-.dash-plan{display:flex; justify-content:space-between; gap:8px; font-size:14px; padding:4px 0;}
-.dash-plan b{font-variant-numeric:tabular-nums;}
-.dash-review{font-size:14px; white-space:pre-wrap; color:var(--ink);}
-.dash-note{font-size:14px; padding:6px 0; border-bottom:1px solid var(--line);}
-.dash-note:last-child{border-bottom:none;}
+/* 首頁三層（ADR-018 C-1）。顏色一律走晴曦 token，亮暗主題自動跟著換 */
+.today-card{border-radius:18px; padding:18px; display:flex; flex-direction:column; gap:14px;}
+.today-card[hidden]{display:none;}
+.today-head h2{margin:0; font-size:20px;}
+.self-note{display:flex; flex-direction:column; gap:2px; text-align:left; width:100%;
+  background:var(--compass-soft); border:none; border-radius:12px; padding:12px 14px; color:var(--ink); font-family:inherit;}
+.self-note[hidden],.self-note-edit[hidden]{display:none;}
+.self-note .lbl{font-size:12px; font-weight:600; color:var(--compass);}
+.self-note .txt{font-size:16px; line-height:1.4; white-space:pre-wrap; overflow-wrap:anywhere;}
+.self-note .txt.placeholder{color:var(--muted);}
+.self-note-edit textarea{min-height:72px;}
+.self-note-edit .row{margin-top:8px;}
+.today-tiles{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px;}
+.today-tiles.two{grid-template-columns:repeat(2,minmax(0,1fr));}
+.today-tiles:empty{display:none;}
+.today-tile{display:flex; flex-direction:column; gap:2px; text-align:left; background:var(--field);
+  border:1px solid var(--line); border-radius:12px; padding:10px; color:var(--ink); font-family:inherit;}
+.today-tile b{font-size:24px; line-height:1.2; font-variant-numeric:tabular-nums;}
+.today-tile b.hot{color:var(--danger);}
+.today-tile span{font-size:12px; color:var(--muted);}
+.urgent-row{display:flex; align-items:center; gap:10px; width:100%; padding:10px 2px; background:none; border:none;
+  border-top:1px solid var(--line); color:var(--ink); font-family:inherit; text-align:left;}
+.urgent-row .dot{width:8px; height:8px; border-radius:50%; flex:none; background:var(--compass);}
+.urgent-row .dot.prio-H{background:var(--p-h);} .urgent-row .dot.prio-M{background:var(--p-m);} .urgent-row .dot.prio-L{background:var(--p-l);}
+.urgent-row .txt{flex:1; font-size:15px; min-width:0; overflow-wrap:anywhere;}
+.urgent-row .when{font-size:12px; color:var(--muted); flex:none;}
+.urgent-row .when.hot{color:var(--danger); font-weight:600;}
+.urgent-empty{font-size:14px; color:var(--muted); padding:10px 2px; border-top:1px solid var(--line);}
+.urgent-more{display:block; width:100%; background:none; border:none; border-top:1px solid var(--line);
+  color:var(--accent); font-size:13px; font-weight:600; padding:10px 0 0; font-family:inherit;}
+.zone-tiles{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:12px;}
+.zone-tiles[hidden],.tile[hidden]{display:none;}
+.tile{display:flex; flex-direction:column; gap:4px; min-height:76px; min-width:0; text-align:left;
+  background:var(--card); border:1px solid var(--line); border-radius:14px; padding:12px 14px; color:var(--ink); font-family:inherit;}
+.tile.wide{grid-column:span 2;}
+#dashExpenseCard{flex-direction:row; align-items:center; gap:14px;}
+#dashExpenseCard .t-body{display:flex; flex-direction:column; gap:2px; flex:1; min-width:0;}
+#zoneProductivity .tile:only-of-type,#zoneProductivity .tile[hidden]+.tile{grid-column:span 2;}
+.t-label{font-size:13px; font-weight:600; color:var(--muted);}
+.t-main{display:block; font-size:15px; font-weight:600;}
+.t-sub{display:block; font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.t-big{display:block; font-size:32px; font-weight:700; letter-spacing:-0.02em; line-height:1.1; font-variant-numeric:tabular-nums;}
+.t-big .cur{font-size:16px; font-weight:600; color:var(--muted); margin-right:4px;}
+.mini-donut{flex:none;}
+.deep-card .deep-seg{background:var(--field); border:1px solid var(--line); border-radius:10px; padding:3px; gap:6px;}
+.deep-card .deep-seg button{flex:1; border:none; background:transparent; height:32px; font-size:13px;}
+.deep-card .deep-seg button.sel{background:var(--accent-soft); color:var(--accent); font-weight:700;}
+.pane-dots{display:flex; justify-content:center; gap:6px; margin-top:8px;}
+.pane-dots i{width:6px; height:6px; border-radius:3px; background:var(--line);}
+.pane-dots i.on{width:18px; background:var(--accent);}
 
 /* ---------- ADR-014：右上角大頭貼與設定頁（D-9、D-10） ---------- */
 .avatar-btn{
@@ -767,58 +771,53 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
   <button class="refresh-btn" id="refreshBtn" onclick="manualRefresh()" title="重新整理">↻</button>
   <!-- 設定頁入口（ADR-014 D-9）：名字首字；管理員有待辦時右上角小紅點（取代首頁的「效能紀錄該清了」卡） -->
   <button class="avatar-btn" id="avatarBtn" onclick="openSettings()" aria-label="設定"><span id="avatarChar">·</span><i class="avatar-dot" id="avatarDot" hidden></i></button>
-  <div class="pulse" id="pulse"></div>
-  <div class="pulse-label" id="pulseLabel">近 14 天心情脈搏</div>
 </header>
 
 <main>
   <!-- 首頁（ADR-014 D-5）：主題卡在上（切區只翻這一塊）、共用帶在下（兩區一模一樣）。
        管理工具與個人設定全部搬到右上角大頭貼的設定頁（D-9、D-10）。 -->
   <section class="view active" id="view-home">
-    <div class="zone-card" id="zoneCard">
-      <!-- 💰 財務 -->
-      <div id="zoneFinance">
-        <!-- 本月支出（feat_expense 關掉時整張卡收起，見 renderZoneCard） -->
-        <div class="card" id="dashExpenseCard">
-          <h2>本月支出</h2>
-          <div class="scope-bar" id="scopeHome" hidden></div>
-          <div id="dashExpense"></div>
-          <button class="dash-link" onclick="goView('expenses')">前往記帳 →</button>
-        </div>
-        <div class="card" id="dashPlanCard">
-          <h2>分期</h2>
-          <div id="dashPlans"></div>
-          <button class="dash-link" onclick="goView('plans')">全部分期 →</button>
-        </div>
-        <!-- 股票（ADR-015 T8）：自選小卡給有 feat_stock 的人；再平衡只給管理者＋有持股＋有現金。
-             自選在上、再平衡在下（Neil 2026-10-08） -->
-        <div class="card" id="dashStockCard" hidden>
-          <h2>📈 自選股</h2>
-          <div id="dashStocks"></div>
-        </div>
-        <div class="card" id="dashRebalCard" hidden>
-          <h2 id="dashRebalTitle">⚖️ 再平衡</h2>
-          <div id="dashRebal"></div>
+    <!-- 首頁三層（ADR-018 C-1）：回答「今天有什麼需要我」。
+         ① 今天（兩區共用，切區不重畫）② 區狀態磚（只看不做，點了就去那一頁）③ 深入（待辦｜提醒｜白板）。
+         管理工具與個人設定在右上角大頭貼的設定頁（ADR-014 D-9、D-10）。 -->
+    <div class="card today-card" id="todayCard">
+      <div class="today-head"><h2>今天</h2></div>
+      <!-- 給自己的一段話（C-4）：寫了就一直留著，點一下就地編輯；只有自己看得到 -->
+      <button class="self-note" id="selfNote" onclick="editSelfNote()" aria-label="給自己的一段話，點一下編輯">
+        <span class="lbl">給自己的一段話 · 點一下編輯</span>
+        <span class="txt" id="selfNoteText"></span>
+      </button>
+      <div class="self-note-edit" id="selfNoteEdit" hidden>
+        <textarea id="selfNoteInput" maxlength="300" rows="3" placeholder="想提醒自己的話，寫了就一直留著"></textarea>
+        <div class="row">
+          <button class="btn" onclick="saveSelfNote()">儲存</button>
+          <button class="btn-outline" onclick="closeSelfNote()">取消</button>
         </div>
       </div>
-      <!-- ✅ 生產力 -->
-      <div id="zoneProductivity" hidden>
-        <!-- 今日日誌＋心情：feat_review／feat_mood 各管自己那一塊，兩個都關才收整張 -->
-        <div class="card" id="dashReviewCard">
-          <h2>今天</h2>
-          <div class="moods" id="dashMoodBtns"></div>
-          <div id="dashReview"></div>
-          <button class="dash-link" onclick="goView('review')">寫日誌 →</button>
-        </div>
-        <div class="card" id="dashNotesCard">
-          <h2>最近雜記</h2>
-          <div id="dashNotes"></div>
-          <button class="dash-link" onclick="goView('notes')">全部雜記 →</button>
-        </div>
-      </div>
+      <div class="today-tiles" id="todayTiles"></div>
+      <div class="urgent" id="urgentList"></div>
     </div>
 
-    <!-- ────── 共用帶（兩區一模一樣、不動）────── -->
+    <!-- 區狀態磚（C-5）：依區只露一組。切區只翻這一塊（view-transition 掛在 #zoneCard，ADR-014 D-5）；
+         「今天」層在外面，切區不動 -->
+    <div class="zone-card" id="zoneCard">
+    <div class="zone-tiles" id="zoneFinance">
+      <button class="tile wide" id="dashExpenseCard" onclick="openExpenseDonut()">
+        <span class="t-body"><span class="t-label">本月支出</span><span id="dashExpense"></span></span>
+        <span id="dashExpenseDonut"></span>
+      </button>
+      <button class="tile" id="dashPlanCard" onclick="goView('plans')"><span class="t-label">分期</span><span id="dashPlans"></span></button>
+      <!-- 再平衡只給管理者＋有持股＋有現金（ADR-015 D-10） -->
+      <button class="tile" id="dashRebalCard" onclick="goView('stocks')" hidden><span class="t-label" id="dashRebalTitle">再平衡</span><span id="dashRebal"></span></button>
+      <div class="tile wide" id="dashStockCard" hidden><span class="t-label">自選股</span><div id="dashStocks"></div></div>
+    </div>
+    <div class="zone-tiles" id="zoneProductivity" hidden>
+      <!-- 郵件磚只給管理者＋feat_gmail（ADR-016 D-7）；沒有的人雜記磚撐滿一列 -->
+      <button class="tile" id="dashMailTile" onclick="goView('mail')" hidden><span class="t-label">郵件</span><span id="dashMail"></span></button>
+      <button class="tile" id="dashNotesCard" onclick="goView('notes')"><span class="t-label">雜記</span><span id="dashNotes"></span></button>
+    </div>
+    </div>
+
     <!-- Email（2026-10-01）：還沒填的人在這裡看到這張卡，填完消失；之後到設定頁改（D-11）。
          存在 line_users.email，家人之間看得到；管理者的 email 用來收封存備份信。 -->
     <div class="card" id="emailCard" hidden>
@@ -828,28 +827,15 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       <div style="margin-top:10px"><button class="btn" onclick="saveMyEmail()">儲存</button></div>
     </div>
 
-    <!-- 未完成任務前 3 筆（feat_tasks 關掉時整張卡收起）。兩區內容相同，不依區過濾（D-6） -->
-    <div class="card" id="dashTasksCard">
-      <h2>接下來要做的</h2>
-      <div id="dashTasks"></div>
-      <button class="dash-link" onclick="goView('tasks')">全部任務 →</button>
-    </div>
-
-    <!-- 白板與到期區塊共用同一張卡片，橫向滑動切換（ADR-009 §三）。
-         不用 Tab 點擊是刻意的：手機上滑一下比瞄準一個小標籤容易，而這張卡片
-         只有兩個視圖，滑動的方向感本身就說明了「還有另一邊」。 -->
-    <div class="card" id="dashBoardCard">
-      <div class="pane-hint" id="paneHint">← 左右滑動切換 →</div>
-      <div class="pane-scroll" id="paneScroll">
-        <section class="pane">
-          <h2>共用白板</h2>
-          <div id="boardList"></div>
-        </section>
-        <section class="pane">
-          <h2>快到期了</h2>
-          <div id="dueList"></div>
-        </section>
+    <!-- 深入（C-1 ③）：原本的滑動卡改成「待辦｜提醒｜白板」三頁，可點分段、也可左右滑，兩者同步 -->
+    <div class="card deep-card" id="dashBoardCard">
+      <div class="seg deep-seg" id="deepSeg" role="tablist" aria-label="切換清單"></div>
+      <div class="pane-scroll" id="paneScroll" onscroll="syncDeepSeg()">
+        <section class="pane" aria-label="待辦"><div id="deepTodo"></div></section>
+        <section class="pane" aria-label="提醒"><div id="deepReminder"></div></section>
+        <section class="pane" aria-label="白板"><div id="boardList"></div></section>
       </div>
+      <div class="pane-dots" id="paneDots" aria-hidden="true"><i></i><i></i><i></i></div>
     </div>
   </section>
 
@@ -971,6 +957,12 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       <div id="expPlanBox"></div>
     </div>
 
+    <!-- 本月雙環圖＋圖例（ADR-015 T9）。ADR-018 起從首頁搬來：首頁磚點了直接捲到這張 -->
+    <div class="card" id="expDonutCard">
+      <h2>本月支出</h2>
+      <div id="expDonut"></div>
+    </div>
+
     <div class="card">
       <div class="month-bar">
         <button onclick="shiftMonth(-1)" aria-label="上個月">‹</button>
@@ -1050,47 +1042,6 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
         <summary><h2 style="display:inline">已過（<span id="reminderPastCount">0</span>）</h2></summary>
         <div id="reminderPast"></div>
       </details>
-    </div>
-  </section>
-
-  <!-- 日誌（升級版複盤） -->
-  <section class="view" id="view-review">
-    <!-- 心情併進日誌頁（ADR-014 D-7）：上方心情、下方每日複盤。feat_mood／feat_review 各自控制自己那一塊 -->
-    <div class="card" id="moodBlock">
-      <h2>現在的心情</h2>
-      <div class="moods" id="moodBtns"></div>
-      <input type="text" id="moodNote" placeholder="想補充一句嗎？（可留空）">
-      <div style="margin-top:10px"><button class="btn" onclick="addMood()">記錄心情</button></div>
-    </div>
-
-    <div id="reviewBlock">
-    <!-- Daily Compass：今日刻意選擇 -->
-    <div class="compass-card">
-      <div class="compass-label">🧭 今日指南針<span id="compassSaved" style="font-weight:400;font-size:12px;margin-left:6px;"></span></div>
-      <textarea id="rvCompass" placeholder="今天你做了哪一個符合未來自己的選擇？哪怕只是一個小決定。" style="min-height:72px;"></textarea>
-    </div>
-
-    <!-- 當日複盤 -->
-    <div class="card">
-      <h2 id="reviewTitle">今日複盤<span class="saved-tag" id="reviewSaved"></span></h2>
-      <div class="field-label">✅ 今天做得好的</div>
-      <textarea id="rvGood" placeholder="哪件事值得記一筆？"></textarea>
-      <div class="field-label">🪨 卡住的地方</div>
-      <textarea id="rvStuck" placeholder="今天哪裡卡關、為什麼？"></textarea>
-      <div class="field-label">🎯 明天最重要的一件事</div>
-      <textarea id="rvNext" placeholder="只選一件，明天優先做它"></textarea>
-      <div style="margin-top:12px"><button class="btn" onclick="saveReview()">儲存今日日誌</button></div>
-    </div>
-    <div class="card">
-      <h2>過去的日誌</h2>
-      <div class="scope-bar" id="scopeReview" hidden></div>
-      <div id="reviewList"></div>
-    </div>
-    </div>
-
-    <div class="card" id="moodListCard">
-      <h2>心情紀錄</h2>
-      <div id="moodList"></div>
     </div>
   </section>
 
@@ -1245,8 +1196,7 @@ const FEATURE_ITEMS = [
   { view:'expenses', icon:'💰', label:'記帳' },
   { view:'notes',    icon:'📎', label:'雜記' },
   { view:'tasks',    icon:'☑️', label:'任務' },
-  { view:'review',   icon:'🌙', label:'日誌' },
-  { view:'mood',     icon:'💚', label:'心情' },
+  // 日誌（feat_review）與心情（feat_mood）已退場（ADR-018 C-3）：設定頁不再顯示，欄位與資料留在雲端
   { view:'stocks',   icon:'📈', label:'股票' },
   { view:'mail',     icon:'📬', label:'郵件' }
 ];
@@ -1260,10 +1210,10 @@ const ZONE_KEY='personal-os-zone';
 const ZONE_HINT_KEY='personal-os-zone-hint';
 const ZONES={
   finance:      { label:'財務',   nav:['expenses','plans','home','tasks','stocks'] },
-  productivity: { label:'生產力', nav:['notes','review','home','tasks','mail'] }
+  productivity: { label:'生產力', nav:['notes','mail','home','tasks','reminders'] }
 };
 const VIEW_NAV={ expenses:['💰','記帳'], plans:['🧾','分期'], tasks:['☑️','任務'],
-                 notes:['📎','雜記'], review:['🌙','日誌'], stocks:['📈','股票'], mail:['📬','郵件'] };
+                 notes:['📎','雜記'], stocks:['📈','股票'], mail:['📬','郵件'], reminders:['🔔','提醒'] };
 /* 舊版「導覽配置」留在手機裡的設定。不讀、不遷移，開機時刪掉 */
 const LEGACY_NAV_KEYS=['personal-os-nav-placement','personal-os-nav-slot'];
 let zone='finance';
@@ -1293,13 +1243,14 @@ const LINE_USERS_SHEET = 'line_users';
 /* 分頁 ↔ 功能欄。首頁刻意不在表上：它是進 App 的第一頁，關掉沒意義（D-1）。 */
 const FEATURE_BY_VIEW = {
   expenses:'feat_expense', notes:'feat_notes', tasks:'feat_tasks',
-  review:'feat_review', mood:'feat_mood', stocks:'feat_stock', mail:'feat_gmail'
+  stocks:'feat_stock', mail:'feat_gmail'
 };
 // 標籤直接沿用 FEATURE_ITEMS，避免同一個名字在兩個地方各寫一次、改了一邊忘了另一邊
 const FEATURE_KEYS = FEATURE_ITEMS.map(function(it){ return FEATURE_BY_VIEW[it.view]; });
 /* 導覽頁 ↔ 雲端分頁。雲端回的 denied 是分頁名（ADR-012 D-4） */
-const SHEET_BY_VIEW = { expenses:'expenses', notes:'notes', tasks:'tasks', review:'reviews', mood:'moods' };
-const DATA_SHEETS = ['tasks','reviews','moods','notes','expenses'];
+const SHEET_BY_VIEW = { expenses:'expenses', notes:'notes', tasks:'tasks' };
+/* 開機與輪詢讀的表。reviews／moods 已退場（ADR-018 C-3）：雲端不再送，這裡也不再收 */
+const DATA_SHEETS = ['tasks','notes','expenses'];
 /* 雲端明說「沒權限」的分頁。跟讀取失敗是兩件事：這裡的會被清空、待送的會被丟掉 */
 let cloudDenied=[];
 const FEATURE_LABEL = {};
@@ -1495,6 +1446,9 @@ async function runBoot(trigger){
   perfRows = typeof j.perf_rows==='number' ? j.perf_rows : 0;   // 只有管理員會拿到
   unauthAlert = j.unauth_alert || null;                           // 同上：最近 24 小時有沒有一小時 bad_token 暴增
   if(j.group_names && typeof j.group_names==='object') groupNames=j.group_names;
+  // 首頁「今天」層（ADR-018）：自己的一段話只在開機帶（輪詢不帶，它只有自己會改）；郵件摘要只給管理者＋feat_gmail
+  if(typeof j.self_note==='string' && !selfNoteEditing) selfNote=j.self_note;
+  mailSummary = j.mail_summary && typeof j.mail_summary==='object' ? j.mail_summary : null;
   if(gateMode) closeAuthGate();
   roster=j.line_users.filter(u=>rosterId(u));
   rosterStatus = activeUsers().length ? 'ok' : 'empty';
@@ -1857,7 +1811,7 @@ function setScope(mine){
 function renderScopeBars(){
   // 名單上只有一個人時，「只看我的」跟「全部」永遠是同一件事——不擺沒有作用的開關
   const show = !!myLineId && activeUsers().length>1;
-  ['scopeHome','scopeExpenses','scopeTasks','scopeReview','scopeNotes'].forEach(function(id){
+  ['scopeExpenses','scopeTasks','scopeNotes'].forEach(function(id){
     const el=document.getElementById(id);
     if(!el) return;
     el.hidden=!show;
@@ -2530,23 +2484,12 @@ function applyCloudData(data, denied, extras){
 
   // 整張換掉。後端已經濾掉 del=true 的列，所以「別人刪掉的」在這裡自然消失
   state.tasks    = c.tasks.map(taskFromCloud);
-  state.moods    = c.moods.map(moodFromCloud);
   state.notes    = c.notes.map(noteFromCloud);
   state.expenses = c.expenses.filter(r=>r.id).map(expenseFromCloud);
-  state.reviews  = {};
-  c.reviews.forEach(row=>{
-    if(!row.review_date) return;
-    const owner=String(row.line_id||'').trim();
-    // compass 只活在本機（它不上雲端），所以覆蓋時要從本機那一份補回來
-    const k=reviewKey(localDateKey(row.review_date), owner);   // 鍵要是純日期，見 localDateKey
-    state.reviews[k]={compass:compassOf(k), good:row.good||'', stuck:row.stuck||'',
-                      next:row.most_important||'', line_id:owner, ts:Date.now()};
-  });
 
   applyPendingOverlay();
 
   state.tasks.sort((a,b)=>b.ts-a.ts);
-  state.moods.sort((a,b)=>b.ts-a.ts);
   state.notes.sort((a,b)=>b.ts-a.ts);
   sortExpenses();
 
@@ -3385,6 +3328,9 @@ function renderDashStocks(){
   const allowed=featureAllowed('stocks');
   const rb=allowed ? rebalHtml() : '';
   setHidden('dashRebalCard', !rb);
+  // 再平衡只有管理者有（D-10）：沒有它的時候，分期磚撐滿一列，不留半格空白
+  const plan=document.getElementById('dashPlanCard');
+  if(plan && plan.classList && plan.classList.toggle) plan.classList.toggle('wide', !rb);
   const r=document.getElementById('dashRebal'); if(r) r.innerHTML=rb;
   const watch=allowed ? ((stockData||{}).watch||[]) : [];
   setHidden('dashStockCard', !allowed || !watch.length);
@@ -3398,11 +3344,12 @@ function renderDashStocks(){
 }
 
 /* ---------- 導覽 ---------- */
-const TITLES={home:'首頁',expenses:'記帳',plans:'分期',tasks:'任務',review:'日誌',notes:'雜記',stocks:'股票',mail:'郵件'};
-/* 分頁能不能進。日誌頁也放心情：兩個功能有一個開就進得去（D-7）。股票看 feat_stock（ADR-015） */
+const TITLES={home:'首頁',expenses:'記帳',plans:'分期',tasks:'任務',notes:'雜記',stocks:'股票',mail:'郵件'};
+/* 分頁能不能進。股票看 feat_stock（ADR-015）。「提醒」不是一頁，是任務頁的一段（ADR-018 C-6） */
 function viewAllowed(name){
+  if(!TITLES[name] && name!=='reminders') return false;          // 退場或不存在的頁（例如 ADR-018 的日誌）
   if(name==='plans') return featureAllowed('expenses');     // 分期就是記帳的一部分（各期是 expenses 的列）
-  if(name==='review') return featureAllowed('review') || featureAllowed('mood');
+  if(name==='reminders') return featureAllowed('tasks');
   if(name==='mail') return featureAllowed('mail') && isAdmin();   // 雲端也一樣：非管理者就算被勾了也讀不到（ADR-016 D-7）
   return featureAllowed(name);
 }
@@ -3415,26 +3362,28 @@ function switchView(name){
   if(!TITLES[name] || !viewAllowed(name)){ toast('這個功能還沒對你開放'); return; }
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.getElementById('view-'+name).classList.add('active');
-  document.getElementById('viewTitle').textContent=TITLES[name];
-  syncPulse(name);
+  document.getElementById('viewTitle').textContent= name==='home' ? homeGreeting() : TITLES[name];
   if(name==='home') renderDashboard();
-  if(name==='expenses') renderExpenseView();
+  if(name==='expenses'){ renderExpenseView(); renderExpenseDonut(); }
   if(name==='plans') renderPlansView();
-  if(name==='review'){ loadTodayReview(); renderReviewView(); }
   if(name==='stocks') renderStocksView();
   if(name==='mail') openMailView();
   window.scrollTo(0,0);
   renderNav();
 }
-/* 心情脈搏隸屬心情：只在放心情的日誌頁出現（開機停在首頁時也要藏，見 applyZone） */
-function syncPulse(name){
-  const show = featureAllowed('mood') && name==='review';
-  const p=document.getElementById('pulse'), l=document.getElementById('pulseLabel');
-  if(p) p.style.display=show?'flex':'none';
-  if(l) l.style.display=show?'block':'none';
+/* 首頁的標題（ADR-018 設計稿）：早安／午安／晚安，加上自己的名字（還不知道是誰就只打招呼） */
+function homeGreeting(){
+  const h=new Date().getHours();
+  const hi = h<11 ? '早安' : h<18 ? '午安' : '晚安';
+  const me = myLineId ? nameOfLineId(myLineId) : '';
+  return me && me!==myLineId ? hi+'，'+me : hi;
 }
-/* 首頁卡片上的捷徑與導覽按鈕共用 */
-function goView(name){ switchView(name); }
+/* 首頁卡片上的捷徑與導覽按鈕共用。「提醒」直開任務頁的提醒分段 */
+function goView(name){
+  if(name==='reminders'){ openTasksSeg('reminder'); return; }
+  if(name==='tasks' && taskSeg!=='todo') pickTaskSeg('todo');
+  switchView(name);
+}
 
 /* ---------- 兩區：導覽、首頁鈕、切換（ADR-014 D-1～D-8） ---------- */
 function loadZone(){
@@ -3442,10 +3391,10 @@ function loadZone(){
   try{ z=localStorage.getItem(ZONE_KEY); }catch(e){}
   return ZONES[z] ? z : 'finance';
 }
-/* 這一區對這個人有沒有東西：財務看記帳；生產力看雜記、日誌、心情。任務是共用的，不算 */
+/* 這一區對這個人有沒有東西：財務看記帳；生產力看雜記、郵件。任務與提醒是共用的，不算 */
 function zoneHasFeatures(z){
   return z==='finance' ? featureAllowed('expenses')
-    : (featureAllowed('notes') || featureAllowed('review') || featureAllowed('mood'));
+    : (featureAllowed('notes') || viewAllowed('mail'));
 }
 function availableZones(){ return Object.keys(ZONES).filter(zoneHasFeatures); }
 /* 只有一區有功能的人不顯示「⇄」，固定在那區（D-7） */
@@ -3475,7 +3424,10 @@ function renderNav(){
         onclick="homeTap()" aria-label="首頁"><span class="ico">🧭</span><span class="zone-name" id="homeLabel">${homeLabel()}</span></button>`;
     }
     if(!v || !viewAllowed(v)) return '<span class="nav-slot" aria-hidden="true"></span>';
-    return `<button data-view="${v}" class="${cur===v?'active':''}" onclick="goView('${v}')"><span class="ico">${VIEW_NAV[v][0]}</span>${VIEW_NAV[v][1]}</button>`;
+    // 任務頁看的是提醒分段時，亮「🔔 提醒」那格（這一區有放的話），不亮任務
+    const onRem = cur==='tasks' && taskSeg==='reminder' && ZONES[z].nav.includes('reminders');
+    const active = v==='reminders' ? onRem : v==='tasks' ? (cur==='tasks' && !onRem) : cur===v;
+    return `<button data-view="${v}" class="${active?'active':''}" onclick="goView('${v}')"><span class="ico">${VIEW_NAV[v][0]}</span>${VIEW_NAV[v][1]}</button>`;
   }).join('');
 }
 /* 捲動時只改首頁鈕的小字，不重畫整列 */
@@ -3522,7 +3474,6 @@ function setZone(z){
 function applyZone(){
   renderNav();
   renderZoneCard();
-  syncPulse(currentView());
   if(!viewAllowed(currentView())) goView('home');
   maybeZoneHint();
 }
@@ -3585,6 +3536,7 @@ function pickTaskSeg(seg){
   const pick=document.getElementById('newTaskDuePick');
   if(pick && reminder) pick.open=true;
   renderTasks();
+  renderNav();                         // 導覽的「🔔 提醒」跟著亮
 }
 function toggleTask(id){
   const t=state.tasks.find(t=>t.id===id);
@@ -3746,110 +3698,6 @@ function renderTasks(){
     open.length?open.map(html).join(''):'<div class="empty-hint">目前沒有進行中的任務 🎉</div>';
   document.getElementById('taskListDone').innerHTML=
     done.length?done.map(html).join(''):'<div class="empty-hint">完成任務後會出現在這裡</div>';
-}
-
-/* ---------- 日誌（升級版複盤） ---------- */
-function loadTodayReview(){
-  const r=state.reviews[myReviewKey()];
-  const compass=(r&&r.compass)||compassOf(myReviewKey());
-  document.getElementById('rvCompass').value = compass;
-  document.getElementById('rvGood').value   = r?r.good||'':'';
-  document.getElementById('rvStuck').value  = r?r.stuck||'':'';
-  document.getElementById('rvNext').value   = r?r.next||'':'';
-  document.getElementById('reviewSaved').textContent   = r?'已儲存 ✓':'';
-  document.getElementById('compassSaved').textContent  = compass?'✓':'';
-}
-function saveReview(){
-  const compass= document.getElementById('rvCompass').value.trim();
-  const good   = document.getElementById('rvGood').value.trim();
-  const stuck  = document.getElementById('rvStuck').value.trim();
-  const next   = document.getElementById('rvNext').value.trim();
-  if(!compass&&!good&&!stuck&&!next){toast('先寫點什麼吧 ✍️'); return;}
-  const k=myReviewKey();
-  saveCompass(k, compass);
-  state.reviews[k]={compass,good,stuck,next,line_id:(state.reviews[k]||{}).line_id||myLineId||'',ts:Date.now()};
-  pushReview(k); renderReviews(); loadTodayReview(); toast('今日日誌已儲存');
-}
-function renderReviews(){
-  // 只濾掉「自己今天那筆」——它正在上面的表單裡編輯，列出來會像有兩份。
-  // 別人今天的複盤照常出現，那是他寫完的東西，不是我正在編的草稿。
-  // 鍵是「日期|寫的人」，日期在前，所以字串排序仍然等於日期排序。
-  const mine=myReviewKey();
-  const keys=Object.keys(state.reviews).sort().reverse()
-    .filter(k=>k!==mine && inScope(state.reviews[k]));
-  const el=document.getElementById('reviewList');
-  if(!keys.length){el.innerHTML='<div class="empty-hint">過去的日誌會累積在這裡</div>'; return;}
-  el.innerHTML=keys.slice(0,30).map(k=>{
-    const r=state.reviews[k];
-    const owner=String(r.line_id||'').trim()||reviewOwnerOf(k);
-    // 自己的不標名字：整個清單都掛上「你」只是雜訊
-    const by=(owner&&owner!==myLineId) ? ' · '+esc(nameOfLineId(owner)) : '';
-    const parts=[];
-    if(r.compass) parts.push('🧭 '+esc(r.compass));
-    if(r.good)    parts.push('✅ '+esc(r.good));
-    if(r.stuck)   parts.push('🪨 '+esc(r.stuck));
-    if(r.next)    parts.push('🎯 '+esc(r.next));
-    return `<div class="review-item"><div class="review-date">${esc(reviewDateOf(k))}${by}</div><div class="review-body">${parts.join('\n')}</div></div>`;
-  }).join('');
-}
-
-/* 日誌頁的兩塊（D-7）：feat_mood 管上面的心情，feat_review 管下面的複盤 */
-function renderReviewView(){
-  setHidden('moodBlock', !featureAllowed('mood'));
-  setHidden('moodListCard', !featureAllowed('mood'));
-  setHidden('reviewBlock', !featureAllowed('review'));
-}
-
-/* ---------- 心情 ---------- */
-function renderMoodBtns(){
-  document.getElementById('moodBtns').innerHTML=MOOD_EMOJI.map((e,i)=>
-    `<button class="mood-btn ${selectedMood===i+1?'sel':''}" onclick="pickMood(${i+1})">${e}</button>`).join('');
-}
-function pickMood(l){selectedMood=l; renderMoodBtns();}
-function addMood(){
-  if(!selectedMood){toast('先選一個心情吧'); return;}
-  const note=document.getElementById('moodNote').value.trim();
-  const m={id:Date.now(),level:selectedMood,note,ts:Date.now(),line_id:myLineId||''};
-  state.moods.unshift(m);
-  document.getElementById('moodNote').value='';
-  selectedMood=null;
-  pushMood(m); renderMoodBtns(); renderMoods(); renderPulse(); toast('心情已記錄');
-}
-function delMood(id){
-  const m=state.moods.find(x=>x.id===id);
-  if(!m) return;
-  m.del=true;
-  pushMood(m);
-  state.moods=state.moods.filter(x=>x.id!==id);
-  renderMoods(); renderPulse();
-}
-function renderMoods(){
-  const el=document.getElementById('moodList');
-  const list=state.moods.filter(inScope);
-  if(!list.length){el.innerHTML='<div class="empty-hint">還沒有心情紀錄</div>'; return;}
-  el.innerHTML=list.slice(0,50).map(m=>`
-    <div class="mood-item">
-      <div class="mood-emoji">${MOOD_EMOJI[m.level-1]}</div>
-      <div style="flex:1">
-        ${m.note?`<div>${esc(m.note)}</div>`:''}
-        <div class="mood-meta">${fmtTime(m.ts)}</div>
-      </div>
-      <button class="del" onclick="delMood(${m.id})" aria-label="刪除">✕</button>
-    </div>`).join('');
-}
-function renderPulse(){
-  const byDay={};
-  state.moods.forEach(m=>{
-    const k=todayKey(new Date(m.ts));
-    if(!byDay[k]) byDay[k]=m.level;
-  });
-  let html='';
-  for(let i=13;i>=0;i--){
-    const d=new Date(); d.setDate(d.getDate()-i);
-    const lv=byDay[todayKey(d)];
-    html+=`<span class="${lv?'l'+lv:'empty'}"></span>`;
-  }
-  document.getElementById('pulse').innerHTML=html;
 }
 
 /* ---------- 雜記 ---------- */
@@ -4336,11 +4184,13 @@ function donutSVG(rows,total,outer){
     <text class="donut-center-sub" x="70" y="84" text-anchor="middle">TWD 本月支出</text>
   </svg>`;
 }
-function renderDashExpense(){
+/* 完整的雙環圖與圖例（ADR-015 T9）。ADR-018 起住在記帳頁（首頁只放大數字＋迷你雙環，點了過來看） */
+function renderExpenseDonut(){
+  const el=document.getElementById('expDonut');
+  if(!el) return;
   const mk=monthKey();
   const total=monthTotal(mk,'expense');
   const rows=categoryBreakdown(mk);
-  const el=document.getElementById('dashExpense');
   if(!total){
     el.innerHTML=`<div class="dash-hero"><span class="cur">NT$</span>0</div>
       <div class="dash-sub">${fmtMonth(mk)}　還沒有支出紀錄</div>`;
@@ -4369,43 +4219,60 @@ function renderDashExpense(){
 }
 function toggleDonutCat(cat){
   donutOpen = donutOpen===cat ? null : cat;
-  renderDashExpense();
+  renderExpenseDonut();
 }
-function renderDashTasks(){
-  const top=state.tasks.filter(t=>!isReminder(t) && !t.done && inScope(t)).sort(byPriority).slice(0,3);
-  const el=document.getElementById('dashTasks');
-  if(!top.length){ el.innerHTML='<div class="empty-hint">目前沒有進行中的任務 🎉</div>'; return; }
-  el.innerHTML=top.map(t=>{
-    const p=t.priority||DEFAULT_PRIORITY;
-    return `<div class="dash-task">
-      <input type="checkbox" onchange="toggleTaskFromHome(${t.id})" aria-label="完成">
-      <span class="prio-dot prio-${p}" title="優先度：${PRIORITY_LABEL[p]}"></span>
-      <div class="txt">${esc(t.txt)}</div>
-    </div>`;
+/* 首頁的本月支出磚：大數字＋迷你雙環（只有內圈大類，不能點；點整塊去記帳頁看完整的） */
+function miniDonutSVG(rows,total){
+  const R=22, SW=10, C=2*Math.PI*R;
+  let start=0;
+  const arcs=rows.map(r=>{
+    const len=r.amount/total*C;
+    const out=`<circle cx="32" cy="32" r="${R}" fill="none" style="stroke:${catColor(r.cat)}" stroke-width="${SW}"
+      stroke-dasharray="${len.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-start).toFixed(2)}" transform="rotate(-90 32 32)"></circle>`;
+    start+=len;
+    return out;
   }).join('');
+  return `<svg class="mini-donut" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="本月各類支出佔比">
+    <circle cx="32" cy="32" r="${R}" fill="none" style="stroke:var(--line)" stroke-width="${SW}"></circle>${arcs}</svg>`;
 }
-function toggleTaskFromHome(id){
-  toggleTask(id);
-  renderDashTasks();
+function renderDashExpense(){
+  const mk=monthKey();
+  const total=monthTotal(mk,'expense');
+  const el=document.getElementById('dashExpense');
+  if(el) el.innerHTML=`<span class="t-big"><span class="cur">NT$</span>${fmtAmount(total)}</span>
+    <span class="t-sub">${total?'點開看雙環圖與明細':fmtMonth(mk)+'　還沒有支出紀錄'}</span>`;
+  const d=document.getElementById('dashExpenseDonut');
+  if(d) d.innerHTML = total ? miniDonutSVG(categoryBreakdown(mk), total) : '';
 }
-/* 儀表板的卡片也要跟著功能矩陣走。
-   少了這一段，功能被關掉的人首頁還是看得到那張卡，點「前往記帳 →」卻被
-   switchView 擋下來——看起來就像壞了。雲端已經不給那個模組的資料
-   （ADR-012 D-3），畫面也該藏得徹底，不要漏掉首頁這一塊。
+/* 首頁磚點了要去的地方。本月支出 → 記帳頁的雙環圖那一張（不是表單） */
+function openExpenseDonut(){
+  goView('expenses');
+  const el=document.getElementById('expDonutCard');
+  if(el && el.scrollIntoView) el.scrollIntoView({block:'start'});
+}
 
-   只處理記帳與任務兩張；其餘模組的儀表板 UI 待重新設計。 */
-/* 雲端讀到過一次才算數。在那之前首頁三張卡畫骨架——「還沒有支出紀錄」這類空狀態
+/* ---------- 首頁三層（ADR-018 C-1～C-6） ---------- */
+/* 雲端讀到過一次才算數。在那之前首頁畫骨架——「還沒有支出紀錄」這類空狀態
    只在「真的讀到了、而且是空的」時出現（ADR-012 D-5），不然開機那幾秒會先騙人一次。
    沒有配對（先在本機用）的人不等雲端，照常畫本機的東西——不然會永遠卡在骨架 */
 let firstLoadDone=false;
+let selfNote='';              // 給自己的一段話：boot 帶回自己那一列（只有本人讀得到，C-4）
+let selfNoteEditing=false;
+let mailSummary=null;         // 郵件磚＋新帳單（只有管理者＋feat_gmail 會帶，ADR-016 D-7）
+let deepPane=0;               // 深入那張卡現在停在第幾頁（0 待辦、1 提醒、2 白板）
+const URGENT_DAYS=3;          // 「最急」的門檻：已逾期或 3 天內（C-2）
+
 function renderDashboard(){
+  // 開機時名字是之後才知道的：首頁每次重畫都順手更新打招呼
+  const title=document.getElementById('viewTitle');
+  if(title && currentView()==='home') title.textContent=homeGreeting();
   renderZoneCard();
-  toggleDashCard('dashTasksCard','tasks');
+  renderToday();
   if(!firstLoadDone && deviceToken){ renderSkeletons(); return; }
-  renderDashExpense(); renderDashPlans(); renderDashStocks(); renderDashReview(); renderDashNotes();
-  renderDashTasks(); renderBoard(); renderDue();
+  renderDashExpense(); renderDashPlans(); renderDashStocks(); renderDashNotes(); renderDashMail();
+  renderDeep();
 }
-/* 主題卡（D-5）：依區只露一半，各卡照舊依 feat_* 收起。只動 hidden，內容由 renderDashboard 畫 */
+/* 區狀態磚（C-5）：依區只露一組，各磚照舊依 feat_* 收起。只動 hidden，內容由 renderDashboard 畫 */
 function renderZoneCard(){
   const z=effectiveZone();
   setHidden('zoneFinance', z!=='finance');
@@ -4413,12 +4280,118 @@ function renderZoneCard(){
   toggleDashCard('dashExpenseCard','expenses');
   setHidden('dashPlanCard', !viewAllowed('plans'));
   if(!featureAllowed('stocks')){ setHidden('dashRebalCard', true); setHidden('dashStockCard', true); }   // 內容由 renderDashStocks 畫
-  setHidden('dashReviewCard', !featureAllowed('review') && !featureAllowed('mood'));
-  setHidden('dashMoodBtns', !featureAllowed('mood'));
-  setHidden('dashReview', !featureAllowed('review'));
   toggleDashCard('dashNotesCard','notes');
+  setHidden('dashMailTile', !viewAllowed('mail') || !mailSummary);
+  setHidden('dashBoardCard', !featureAllowed('tasks'));
 }
 function setHidden(id, h){ const el=document.getElementById(id); if(el) el.hidden=!!h; }
+
+/**
+ * 最急兩件（C-2）。純函式：todos／reminders 是 App 的任務列（kind 已分好），today 是 YYYY-MM-DD。
+ *  - 上榜：沒完成、有日期、已逾期或 URGENT_DAYS 天內。沒有日期的待辦不上榜
+ *  - 排序：逾期（越久越前）→ 剩餘天數 → 同一天待辦先於提醒 → 優先度
+ *  - 帳單不計入（Neil 2026-10-13：帳單沒有「已繳」可勾，逾期會一直掛著）
+ * 回 { top: 前兩件, more: 其餘幾件, total }
+ */
+function urgentItems(todos, reminders, today){
+  const pick=(list, kind)=>(list||[]).filter(t=>!t.done && !t.del && t.due).map(t=>({
+    kind, item:t, days:daysUntilUI(t.due, today)
+  })).filter(x=>x.days!==null && x.days<=URGENT_DAYS);
+  const all=pick(todos,'todo').concat(pick(reminders,'reminder')).sort((a,b)=>
+    a.days-b.days
+    || (a.kind===b.kind ? 0 : a.kind==='todo' ? -1 : 1)
+    || PRIORITY_RANK[a.item.priority||DEFAULT_PRIORITY]-PRIORITY_RANK[b.item.priority||DEFAULT_PRIORITY]);
+  return { top:all.slice(0,2), more:Math.max(all.length-2,0), total:all.length };
+}
+/* 「今天」三個數字（C-2）：待辦到期（逾期＋今天）、3 天內提醒（含逾期）、新帳單（最近 3 天收到） */
+function todayCounts(todos, reminders, today, mail){
+  const dueIn=(t, max)=>{ const d=t.due && !t.done && !t.del ? daysUntilUI(t.due, today) : null; return d!==null && d<=max; };
+  return {
+    todo: (todos||[]).filter(t=>dueIn(t,0)).length,
+    reminder: (reminders||[]).filter(t=>dueIn(t,URGENT_DAYS)).length,
+    bills: mail ? (Number(mail.bills_3d)||0) : null
+  };
+}
+function urgentWhen(x){
+  if(x.days<0) return {text:(x.kind==='todo'?'逾期 ':'已過 ')+(-x.days)+' 天', hot:true};
+  if(x.days===0) return {text:x.kind==='todo'?'今天到期':'提醒 · 今天', hot:x.kind==='todo'};
+  return {text:(x.kind==='todo'?'待辦 · ':'提醒 · ')+'還剩 '+x.days+' 天', hot:false};
+}
+function homeTaskLists(){
+  const mine=state.tasks.filter(inScope);
+  return { todos:mine.filter(t=>!isReminder(t)), reminders:mine.filter(isReminder) };
+}
+/* 「今天」層兩區共用、切區不重畫（C-1）：只依資料畫，跟區無關 */
+function renderToday(){
+  renderSelfNote();
+  const tiles=document.getElementById('todayTiles'), list=document.getElementById('urgentList');
+  if(!tiles || !list) return;
+  if(!featureAllowed('tasks')){ tiles.innerHTML=''; list.innerHTML=''; return; }
+  if(!firstLoadDone && deviceToken){
+    tiles.innerHTML=''; list.innerHTML='<div class="skel" aria-label="讀取中"><i></i><i></i></div>'; return;
+  }
+  const today=todayKey();
+  const {todos, reminders}=homeTaskLists();
+  const n=todayCounts(todos, reminders, today, mailSummary);
+  const tile=(num, label, hot, go)=>`<button class="today-tile" onclick="${go}"><b class="${hot?'hot':''}">${num}</b><span>${label}</span></button>`;
+  tiles.innerHTML = tile(n.todo,'待辦到期',n.todo>0,"openTasksSeg('todo')")
+    + tile(n.reminder,'3 天內提醒',false,"openTasksSeg('reminder')")
+    + (n.bills===null ? '' : tile(n.bills,'新帳單',false,"goView('mail')"));
+  if(tiles.classList && tiles.classList.toggle) tiles.classList.toggle('two', n.bills===null);
+  const u=urgentItems(todos, reminders, today);
+  list.innerHTML = !u.total ? '<div class="urgent-empty">✓ 3 天內沒有急事</div>'
+    : u.top.map(x=>{
+        const w=urgentWhen(x);
+        return `<button class="urgent-row" onclick="openTasksSeg('${x.kind}')">
+          <span class="dot ${x.kind}${x.kind==='todo'?' prio-'+(x.item.priority||DEFAULT_PRIORITY):''}" aria-hidden="true"></span>
+          <span class="txt">${esc(x.item.txt)}</span>
+          <span class="when${w.hot?' hot':''}">${esc(w.text)}</span></button>`;
+      }).join('') + (u.more ? `<button class="urgent-more" onclick="openTasksSeg('todo')">還有 ${u.more} 件</button>` : '');
+}
+/* 導覽「🔔 提醒」與首頁的數字磚共用：直開任務頁的某一段 */
+function openTasksSeg(seg){
+  if(!viewAllowed('tasks')){ toast('這個功能還沒對你開放'); return; }
+  switchView('tasks');
+  pickTaskSeg(seg);
+}
+
+/* ---------- 給自己的一段話（C-4） ----------
+   一人一段、寫了就留著直到自己改；只顯示在首頁；雲端存在 self_notes，只有本人讀得到。
+   沒有配對（先在本機用）就沒有雲端可存，點了講清楚，不假裝存好了。 */
+function renderSelfNote(){
+  const t=document.getElementById('selfNoteText');
+  if(t){
+    t.textContent = selfNote || '想提醒自己的話，寫了就一直留著';
+    if(t.classList && t.classList.toggle) t.classList.toggle('placeholder', !selfNote);
+  }
+  setHidden('selfNote', selfNoteEditing);
+  setHidden('selfNoteEdit', !selfNoteEditing);
+}
+function editSelfNote(){
+  if(!deviceToken || localOnly){ toast('配對之後才能存到雲端'); return; }
+  selfNoteEditing=true;
+  const inp=document.getElementById('selfNoteInput');
+  if(inp) inp.value=selfNote;
+  renderSelfNote();
+  if(inp && inp.focus) inp.focus();
+}
+function closeSelfNote(){ selfNoteEditing=false; renderSelfNote(); }
+async function saveSelfNote(){
+  const inp=document.getElementById('selfNoteInput');
+  const text=String((inp||{}).value||'').trim();
+  let r=null;
+  try{ r=await cloudPost({action:'selfNoteSet', text, trigger:'write'}); }catch(e){ r=null; }
+  if(!r || !r.success){
+    // 不先改畫面：存不上去卻看起來改好了，是最難發現的那種失敗（Rule 12）
+    toast(r && r.error==='too_long' ? '⚠️ 太長了，最多 '+r.max+' 字' : '⚠️ 沒有存到雲端，請稍後再試');
+    return;
+  }
+  selfNote=r.text;
+  selfNoteEditing=false;
+  renderSelfNote();
+  toast('已儲存');
+}
+
 /* 分期：本月應付＝這個月的各期加總；剩餘＝今天之後還沒到期的各期加總（都在 state.expenses 裡） */
 function dashPlanFigures(){
   const mk=monthKey(), today=todayKey();
@@ -4434,45 +4407,83 @@ function renderDashPlans(){
   if(!el) return;
   const f=dashPlanFigures();
   el.innerHTML = !f.plans && !f.left
-    ? '<div class="empty-hint">沒有進行中的分期</div>'
-    : `<div class="dash-plan"><span>本月應付</span><b>NT$ ${fmtAmount(f.month)}</b></div>
-       <div class="dash-plan"><span>剩餘總額（${f.plans} 個計畫）</span><b>NT$ ${fmtAmount(f.left)}</b></div>`;
-}
-/* 今天：心情一點就記（不必開日誌頁），下面是今天的日誌摘要 */
-function renderDashReview(){
-  const btns=document.getElementById('dashMoodBtns');
-  if(btns){
-    const today=todayKey();
-    const mine=state.moods.find(m=>m.line_id===(myLineId||'') && todayKey(new Date(m.ts))===today);
-    btns.innerHTML=MOOD_EMOJI.map((e,i)=>
-      `<button class="mood-btn ${mine&&mine.level===i+1?'sel':''}" onclick="quickMood(${i+1})" aria-label="心情 ${i+1}">${e}</button>`).join('');
-  }
-  const el=document.getElementById('dashReview');
-  if(!el) return;
-  const r=state.reviews[myReviewKey()];
-  const parts=[];
-  if(r&&r.compass) parts.push('🧭 '+esc(r.compass));
-  if(r&&r.good)    parts.push('✅ '+esc(r.good));
-  if(r&&r.next)    parts.push('🎯 '+esc(r.next));
-  el.innerHTML = parts.length ? `<div class="dash-review">${parts.join('\n')}</div>`
-                              : '<div class="empty-hint">今天的日誌還沒寫</div>';
-}
-function quickMood(level){
-  const m={id:Date.now(), level, note:'', ts:Date.now(), line_id:myLineId||''};
-  state.moods.unshift(m);
-  pushMood(m); renderMoods(); renderPulse(); renderDashReview();
-  toast('心情已記錄 '+MOOD_EMOJI[level-1]);
+    ? '<span class="t-main">沒有進行中的</span>'
+    : `<span class="t-main">${f.plans} 筆進行中</span><span class="t-sub">本月應繳 NT$ ${fmtAmount(f.month)}</span>`;
 }
 function renderDashNotes(){
   const el=document.getElementById('dashNotes');
   if(!el) return;
-  const list=state.notes.filter(inScope).slice(0,2);
-  el.innerHTML = list.length ? list.map(n=>`<div class="dash-note">${esc(n.txt)}</div>`).join('')
-                             : '<div class="empty-hint">還沒有雜記</div>';
+  const list=state.notes.filter(inScope);
+  const weekAgo=Date.now()-7*86400000;
+  const week=list.filter(n=>(n.ts||0)>=weekAgo).length;
+  el.innerHTML = list.length
+    ? `<span class="t-main">本週 ${week} 則</span><span class="t-sub">最新：${esc(list[0].txt)}</span>`
+    : '<span class="t-main">還沒有雜記</span>';
+}
+function renderDashMail(){
+  const el=document.getElementById('dashMail');
+  if(!el || !mailSummary) return;
+  const m=mailSummary;
+  el.innerHTML=`<span class="t-main">今天 ${m.today} 封</span><span class="t-sub">帳單 ${m.bill} · 電子報 ${m.newsletter}${m.etag?' · eTag '+m.etag:''}</span>`;
+}
+
+/* ---------- 深入（C-1 ③）：待辦｜提醒｜白板 ----------
+   原本的滑動卡（白板＋快到期）改成三頁。分段可點、整塊也可左右滑；捲到哪一頁，分段就亮哪一個。
+   首頁的待辦可以直接打勾（提醒沒有勾，A-2）；要改要刪去任務頁。 */
+const DEEP_PANES=['待辦','提醒','白板'];
+function renderDeep(){
+  const {todos, reminders}=homeTaskLists();
+  const open=todos.filter(t=>!t.done).sort(byPriority);
+  const today=todayKey();
+  const rem=reminders.slice().sort((a,b)=>(a.due||'9999')<(b.due||'9999')?-1:(a.due||'9999')>(b.due||'9999')?1:0);
+  const counts=[open.length, rem.length, boardItems().length];
+  const seg=document.getElementById('deepSeg');
+  if(seg) seg.innerHTML=DEEP_PANES.map((l,i)=>
+    `<button role="tab" aria-selected="${i===deepPane}" class="${i===deepPane?'sel':''}" onclick="goDeep(${i})">${l} ${counts[i]}</button>`).join('');
+  const t=document.getElementById('deepTodo');
+  if(t) t.innerHTML = open.length ? open.slice(0,5).map(x=>{
+      const p=x.priority||DEFAULT_PRIORITY;
+      return `<div class="dash-task">
+        <input type="checkbox" onchange="toggleTaskFromHome(${x.id})" aria-label="完成">
+        <span class="prio-dot prio-${p}" title="優先度：${PRIORITY_LABEL[p]}"></span>
+        <div class="txt">${esc(x.txt)}</div></div>`;
+    }).join('') + (open.length>5?`<button class="dash-link" onclick="openTasksSeg('todo')">全部 ${open.length} 件 →</button>`:'')
+    : '<div class="empty-hint">目前沒有進行中的待辦 🎉</div>';
+  const r=document.getElementById('deepReminder');
+  if(r) r.innerHTML = rem.length ? rem.slice(0,5).map(x=>`<div class="dash-task">
+        <div class="txt">${esc(x.txt)}</div>
+        <span class="dash-sub">${esc([x.due?Number(x.due.slice(5,7))+'/'+Number(x.due.slice(8,10)):'', reminderRecurLabel(x)].filter(Boolean).join(' · '))}</span></div>`).join('')
+      + (rem.length>5?`<button class="dash-link" onclick="openTasksSeg('reminder')">全部 ${rem.length} 個 →</button>`:'')
+    : '<div class="empty-hint">沒有提醒</div>';
+  renderBoard();
+  renderDeepDots();
+}
+function renderDeepDots(){
+  const dots=document.getElementById('paneDots');
+  if(dots) dots.innerHTML=DEEP_PANES.map((_,i)=>`<i class="${i===deepPane?'on':''}"></i>`).join('');
+}
+function goDeep(i){
+  deepPane=i;
+  const sc=document.getElementById('paneScroll');
+  if(sc && sc.scrollTo) sc.scrollTo({left:i*sc.clientWidth, behavior:reducedMotion()?'auto':'smooth'});
+  renderDeep();
+}
+/* 左右滑的時候跟著亮分段。只在頁碼真的變了才重畫，捲動中不一直改 DOM */
+function syncDeepSeg(){
+  const sc=document.getElementById('paneScroll');
+  if(!sc || !sc.clientWidth) return;
+  const i=Math.max(0, Math.min(DEEP_PANES.length-1, Math.round(sc.scrollLeft/sc.clientWidth)));
+  if(i===deepPane) return;
+  deepPane=i;
+  document.querySelectorAll('#deepSeg button').forEach((b,j)=>{ b.classList.toggle('sel', j===i); b.setAttribute('aria-selected', String(j===i)); });
+  renderDeepDots();
+}
+function toggleTaskFromHome(id){
+  toggleTask(id);
+  renderDashboard();
 }
 function renderSkeletons(){
-  ['dashExpense','dashPlans','dashReview','dashNotes','dashTasks','boardList','dueList'].forEach(id=>{
-
+  ['dashExpense','dashPlans','dashNotes','dashMail','deepTodo','deepReminder','boardList'].forEach(id=>{
     const el=document.getElementById(id);
     if(el) el.innerHTML='<div class="skel" aria-label="讀取中"><i></i><i></i><i></i></div>';
   });
@@ -4551,23 +4562,8 @@ function renderBoard(){
     : '<div class="empty-hint">還沒有人釘東西上來。在任務、記帳或雜記列上按 📌</div>';
 }
 
-/* ---------- 到期區塊（ADR-009 §四） ----------
-   ⚠️ 門檻與後端的 DUE_THRESHOLDS 是同一組數字，卻各有一份實作——這正是本輪
-   一直在避免的事。這裡沒有辦法共用（後端在 Apps Script、前端在瀏覽器），所以
-   改用測試把兩邊釘在一起：tests 會同時載入兩份原始碼、比對這組門檻是否一致，
-   有人改了一邊沒改另一邊就會紅燈。
-
-   ⚠️ ADR 寫的是「1／3／5／7 天以上四個門檻」，但第 6 天沒有歸屬；這裡採唯一
-   能整除的讀法 ≤1／≤3／≤5／其餘。「已過期」ADR 沒寫，另立一塊放最前面——
-   把過期項目塞進「1 天內」會是假話。兩點都待 Neil 裁決。 */
-const DUE_THRESHOLDS_UI=[
-  {key:'d1',   max:1, label:'1 天內'},
-  {key:'d3',   max:3, label:'3 天內'},
-  {key:'d5',   max:5, label:'5 天內'}
-];
-const DUE_LATER_LABEL='更久以後';
-const DUE_OVERDUE_LABEL='已逾期';
-
+/* ---------- 到期天數 ----------
+   首頁「最急兩件」與數字磚用。ADR-018 起取代原本的「快到期了」分組（那一頁併進「深入」的待辦／提醒）。 */
 function daysUntilUI(dueKey, todayKey){
   const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dueKey||'').trim());
   if(!m) return null;
@@ -4580,43 +4576,6 @@ function daysUntilUI(dueKey, todayKey){
 }
 function todayKey1(){ return todayKey(); }
 
-function dueBucketUI(dueKey, todayKey){
-  const d=daysUntilUI(dueKey, todayKey);
-  if(d===null) return '';
-  if(d<0) return 'overdue';
-  for(const t of DUE_THRESHOLDS_UI){ if(d<=t.max) return t.key; }
-  return 'later';
-}
-
-/** 依到期遠近分組。已逾期排最前面——最急的東西放最下面沒有道理 */
-function dueGroups(tasks, todayKey){
-  const order=['overdue'].concat(DUE_THRESHOLDS_UI.map(t=>t.key)).concat(['later']);
-  const labels={overdue:DUE_OVERDUE_LABEL, later:DUE_LATER_LABEL};
-  DUE_THRESHOLDS_UI.forEach(t=>{ labels[t.key]=t.label; });
-
-  const groups={};
-  (tasks||[]).forEach(t=>{
-    if(t.done || t.del || !t.due) return;
-    const b=dueBucketUI(t.due, todayKey);
-    if(!b) return;
-    (groups[b]=groups[b]||[]).push(t);
-  });
-  return order.filter(k=>groups[k]&&groups[k].length)
-              .map(k=>({key:k, label:labels[k], items:groups[k]}));
-}
-
-function renderDue(){
-  const el=document.getElementById('dueList');
-  if(!el) return;
-  const groups=dueGroups(state.tasks, todayKey());
-  el.innerHTML = groups.length
-    ? groups.map(g=>`<div class="due-group ${g.key}">
-        <div class="head">${g.label}</div>
-        ${g.items.map(t=>`<div class="board-item"><span class="tag">${esc(t.due)}</span>
-          <span>${esc(t.txt)}</span></div>`).join('')}
-      </div>`).join('')
-    : '<div class="empty-hint">沒有設定到期日的任務。在任務頁新增時可以展開「到期日與週期」</div>';
-}
 function toggleDashCard(id, view){
   const el=document.getElementById(id);
   if(el) el.hidden=!featureAllowed(view);
@@ -4991,10 +4950,9 @@ function swReloadNeeded(now){
 }
 
 function renderAll(){
-  renderTasks(); renderReviews(); loadTodayReview();
-  renderMoodBtns(); renderMoods(); renderPulse();
+  renderTasks();
   renderNotes(); renderNoteTagRow();
-  renderExpenseView(); renderCatRow(); renderDashboard(); renderPlansView(); renderReviewView(); renderStocksView();
+  renderExpenseView(); renderExpenseDonut(); renderCatRow(); renderDashboard(); renderPlansView(); renderStocksView();
   if(sysTab==='plans') renderSysCard();   // 只有分期分頁跟著資料重畫；其他分頁有輸入框，輪詢重畫會吃掉打到一半的字
   renderMeCard();          // 認領數會隨資料增減，跟著列表一起刷新
 }

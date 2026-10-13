@@ -21,7 +21,8 @@ import { loadFrontend } from './fake-browser.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ME = 'Uneil';
 const TOKEN = 'tok-test-device';
-const DATA_SHEETS = ['tasks', 'reviews', 'moods', 'notes', 'expenses'];
+// ADR-018：reviews／moods 退場，開機與輪詢不再讀
+const DATA_SHEETS = ['tasks', 'notes', 'expenses'];
 
 const json = (v) => ({ json: () => Promise.resolve(v) });
 const BOOT_OK = (extra = {}) => Object.assign({
@@ -80,7 +81,7 @@ describe('請求帶 trigger', () => {
     assert.match(init, /startSession\('foreground'\)/);
   });
 
-  test('手動刷新：一個 readMany（五張表，不含名單）帶 manual，記一筆 pull/manual', async () => {
+  test('手動刷新：一個 readMany（三張表，不含名單）帶 manual，記一筆 pull/manual', async () => {
     const e = env();
     await e.callRaw('manualRefresh');
     await settle();

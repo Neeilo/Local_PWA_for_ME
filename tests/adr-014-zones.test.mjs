@@ -158,7 +158,8 @@ describe('T5 切區（D-8）', () => {
 /* ========================================================================== */
 describe('T5 導覽（D-4）', () => {
 
-  test('財務：記帳｜分期｜🧭｜任務｜（股票隱藏）；生產力：雜記｜日誌｜🧭｜任務｜—', () => {
+  // ADR-018 C-6：生產力＝雜記｜郵件｜🧭｜任務｜🔔 提醒（郵件只給管理者＋feat_gmail，這裡不是 → 空格）
+  test('財務：記帳｜分期｜🧭｜任務｜（股票隱藏）；生產力：雜記｜（郵件隱藏）｜🧭｜任務｜提醒', () => {
     const e = env();
     e.call('renderNav');
     const fin = e.els.nav.innerHTML;
@@ -167,7 +168,7 @@ describe('T5 導覽（D-4）', () => {
     const slots = (h) => h.split(/(?=<button|<span class="nav-slot")/).map((x) =>
       (x.match(/data-view="(\w+)"/) || [null, '·'])[1]);
     assert.deepEqual(slots(fin), ['expenses', 'plans', 'home', 'tasks', '·']);
-    assert.deepEqual(slots(pro), ['notes', 'review', 'home', 'tasks', '·']);
+    assert.deepEqual(slots(pro), ['notes', '·', 'home', 'tasks', 'reminders']);
     assert.doesNotMatch(fin, /股票/);
   });
 
@@ -179,7 +180,8 @@ describe('T5 導覽（D-4）', () => {
   });
 
   test('沒開的功能留空格，不往前補位（任務仍在第 4 格）', () => {
-    const e = env({ feats: Object.assign({}, ALL_FEATS, { feat_notes: '' }) });
+    // 生產力區要還有東西（郵件），才切得過去；雜記關掉 → 第 1 格留空
+    const e = env({ admin: true, feats: Object.assign({}, ALL_FEATS, { feat_notes: '', feat_gmail: 'TRUE' }) });
     e.call('setZone', 'productivity');
     const h = e.els.nav.innerHTML;
     assert.doesNotMatch(h, /data-view="notes"/);
@@ -196,22 +198,35 @@ describe('T5 導覽（D-4）', () => {
   });
 
   test('只有生產力功能的人：固定在生產力，就算手機記的是財務', () => {
-    const e = env({ feats: { feat_expense: '', feat_tasks: 'TRUE', feat_review: 'TRUE', feat_notes: '', feat_mood: '', feat_log: '' } });
+    const e = env({ feats: { feat_expense: '', feat_tasks: 'TRUE', feat_review: '', feat_notes: 'TRUE', feat_mood: '', feat_log: '' } });
     e.raw('zone = "finance"');
     assert.equal(e.call('effectiveZone'), 'productivity');
     e.call('renderNav');
     assert.equal(e.attrs['data-zone'], 'productivity');
   });
 
-  test('日誌頁也放心情：只開心情也進得去；兩個都關才藏整頁', () => {
-    const only = (f) => env({ feats: Object.assign({}, ALL_FEATS, f) });
-    assert.equal(only({ feat_review: '' }).call('viewAllowed', 'review'), true);
-    assert.equal(only({ feat_mood: '' }).call('viewAllowed', 'review'), true);
-    assert.equal(only({ feat_review: '', feat_mood: '' }).call('viewAllowed', 'review'), false);
-    const e = only({ feat_review: '' });
-    e.call('renderReviewView');
-    assert.equal(e.els.reviewBlock.hidden, true);
-    assert.equal(e.els.moodBlock.hidden, false);
+  // ADR-018 C-3：日誌、心情退場。就算名單上 feat_review／feat_mood 還是 TRUE，也沒有那一頁可去
+  test('日誌／心情退場：沒有那一頁；只開日誌、心情的人不會因此多出生產力區', () => {
+    const e = env();
+    assert.equal(e.call('viewAllowed', 'review'), false);
+    e.call('goView', 'review');
+    assert.equal(active(e), 'home');
+    const only = env({ feats: { feat_expense: 'TRUE', feat_tasks: 'TRUE', feat_review: 'TRUE', feat_notes: '', feat_mood: 'TRUE', feat_log: '' } });
+    assert.equal(only.call('canSwitchZone'), false);
+  });
+
+  test('🔔 提醒不是一頁：直開任務頁的提醒分段，導覽亮「提醒」不亮「任務」；跟著 feat_tasks', () => {
+    const e = env();
+    e.call('setZone', 'productivity');
+    e.call('goView', 'reminders');
+    assert.equal(active(e), 'tasks');
+    assert.equal(e.read('taskSeg'), 'reminder');
+    assert.match(e.els.nav.innerHTML, /data-view="reminders" class="active"/);
+    assert.doesNotMatch(e.els.nav.innerHTML, /data-view="tasks" class="active"/);
+    e.call('goView', 'tasks');
+    assert.equal(e.read('taskSeg'), 'todo', '點「任務」回到待辦分段');
+    assert.match(e.els.nav.innerHTML, /data-view="tasks" class="active"/);
+    assert.equal(env({ feats: Object.assign({}, ALL_FEATS, { feat_tasks: '' }) }).call('viewAllowed', 'reminders'), false);
   });
 
   test('分期頁跟著記帳權限；股票永遠進不去', () => {
@@ -231,14 +246,9 @@ describe('T5 導覽（D-4）', () => {
     assert.match(HTML, /LEGACY_NAV_KEYS\.forEach\(k=>\{ try\{ localStorage\.removeItem\(k\)/, '開機時清掉');
   });
 
-  test('心情脈搏只在日誌頁出現；開機停在首頁時也是藏起來的', () => {
-    const e = env();
-    e.call('applyZone');
-    assert.equal(e.els.pulse.style.display, 'none');
-    e.call('goView', 'review');
-    assert.equal(e.els.pulse.style.display, 'flex');
-    e.call('goView', 'tasks');
-    assert.equal(e.els.pulse.style.display, 'none');
+  test('心情脈搏隨心情退場：頁首不再有它', () => {
+    assert.doesNotMatch(HTML, /id="pulse"/);
+    assert.doesNotMatch(HTML, /function syncPulse/);
   });
 
   test('第一次有兩區可切 → 提示一次，之後不再提示', () => {
@@ -250,20 +260,22 @@ describe('T5 導覽（D-4）', () => {
 });
 
 /* ========================================================================== */
-describe('T6 首頁重組', () => {
+describe('T6 首頁重組（ADR-018 C-1 起：今天｜區狀態磚｜深入）', () => {
 
-  const zoneCardHtml = HTML.slice(HTML.indexOf('id="zoneCard"'), HTML.indexOf('<!-- ────── 共用帶'));
+  const zoneCardHtml = HTML.slice(HTML.indexOf('id="zoneCard"'), HTML.indexOf('id="emailCard"'));
 
-  test('任務、白板、Email 在共用帶（不在主題卡裡），兩區看到的是同一張', () => {
-    for (const id of ['dashTasksCard', 'dashBoardCard', 'emailCard']) {
+  test('今天層、深入卡、Email 不在 #zoneCard 裡：切區只翻區狀態磚，其他兩區一樣', () => {
+    for (const id of ['todayCard', 'dashBoardCard', 'emailCard']) {
       assert.doesNotMatch(zoneCardHtml, new RegExp('id="' + id + '"'), id);
       assert.match(HTML, new RegExp('id="' + id + '"'));
     }
+    assert.ok(HTML.indexOf('id="todayCard"') < HTML.indexOf('id="zoneCard"'), '今天層在最上面');
+    assert.ok(HTML.indexOf('id="zoneCard"') < HTML.indexOf('id="dashBoardCard"'), '深入在最下面');
   });
 
   test('首頁不再有身份卡、導覽配置、顯示設定、成員、效能、系統設定、效能提醒卡', () => {
     const home = HTML.slice(HTML.indexOf('id="view-home"'), HTML.indexOf('id="view-plans"'));
-    for (const id of ['meCard', 'perfAlert', 'placeRows', 'themeBtns', 'adminCard', 'perfCard', 'sysCard']) {
+    for (const id of ['meCard', 'perfAlert', 'placeRows', 'themeBtns', 'adminCard', 'perfCard', 'sysCard', 'dashTasksCard', 'dashReviewCard']) {
       assert.doesNotMatch(home, new RegExp('id="' + id + '"'), id);
     }
   });
@@ -285,23 +297,29 @@ describe('T6 首頁重組', () => {
     assert.equal(f.plans, 1);
   });
 
-  test('生產力主題卡：點心情就記一筆（送 moods），最近雜記只列 2 筆', () => {
+  test('生產力的雜記磚：本週幾則＋最新一則', () => {
     const e = env();
-    e.raw('state.notes = [{id:1,txt:"a",ts:3},{id:2,txt:"b",ts:2},{id:3,txt:"c",ts:1}]');
+    const now = Date.now();
+    e.raw('state.notes = ' + JSON.stringify([{ id: 1, txt: '最新的', ts: now }, { id: 2, txt: 'b', ts: now - 86400000 },
+      { id: 3, txt: '很久以前', ts: now - 30 * 86400000 }]));
     e.call('renderDashNotes');
-    assert.equal((e.els.dashNotes.innerHTML.match(/dash-note/g) || []).length, 2);
-    e.call('quickMood', 4);
-    const w = e.calls.filter((c) => c.body && c.body.sheet === 'moods');
-    assert.equal(w.length, 1);
-    assert.equal(w[0].body.record.level, 4);
+    assert.match(e.els.dashNotes.innerHTML, /本週 2 則/);
+    assert.match(e.els.dashNotes.innerHTML, /最新：最新的/);
   });
 
-  test('主題卡各塊依 feat_* 收起', () => {
-    const e = env({ feats: Object.assign({}, ALL_FEATS, { feat_mood: '', feat_notes: '' }) });
+  test('區狀態磚依 feat_* 收起；郵件磚只給管理者＋feat_gmail，而且雲端有送摘要才出現', () => {
+    const e = env({ feats: Object.assign({}, ALL_FEATS, { feat_notes: '' }) });
     e.call('renderZoneCard');
-    assert.equal(e.els.dashMoodBtns.hidden, true);
-    assert.equal(e.els.dashReview.hidden, false);
     assert.equal(e.els.dashNotesCard.hidden, true);
+    assert.equal(e.els.dashMailTile.hidden, true, '不是管理者');
+    const adm = env({ admin: true, feats: Object.assign({}, ALL_FEATS, { feat_gmail: 'TRUE' }) });
+    adm.call('renderZoneCard');
+    assert.equal(adm.els.dashMailTile.hidden, true, '還沒拿到摘要');
+    adm.raw('mailSummary = {today:4, bill:1, newsletter:3, etag:0, bills_3d:2}');
+    adm.call('renderZoneCard');
+    adm.call('renderDashMail');
+    assert.equal(adm.els.dashMailTile.hidden, false);
+    assert.match(adm.els.dashMail.innerHTML, /今天 4 封/);
   });
 
   test('分期頁只列進行中的計畫', () => {

@@ -45,6 +45,9 @@ var STOCK_GF_SHEET = '_stock_gf';
 var GMAIL_RULES_SHEET = 'gmail_rules';
 var GMAIL_LOG_SHEET = 'gmail_log';
 
+/** 給自己的一段話（ADR-018 C-4）。一人一列、只有本人讀得到——所以 PWA 一般讀寫都碰不到，只走 boot／selfNoteSet */
+var SELF_NOTES_SHEET = 'self_notes';
+
 /**
  * PWA 連一筆都不准寫的分頁（任何 action 都一樣，包括 upsert）。
  *
@@ -58,7 +61,8 @@ var GMAIL_LOG_SHEET = 'gmail_log';
  */
 var GUIDE_SHEET = '_guide';
 var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET,
-                    LINE_GROUPS_SHEET, STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET];
+                    LINE_GROUPS_SHEET, STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET,
+                    SELF_NOTES_SHEET];
 
 /**
  * PWA 連讀都不准讀的分頁（ADR-010 D-8）。
@@ -81,7 +85,8 @@ var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_
  * gmail_log（ADR-016 PR-A）：只有控制員排程寫。PR-B 做「📬 郵件」列表時才開給管理者讀。
  */
 var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET, LINE_GROUPS_SHEET,
-                   STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET];
+                   STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET,
+                   SELF_NOTES_SHEET];
 
 /**
  * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
@@ -423,8 +428,9 @@ function readManyFrom_(ss, user, sheets, perf) {
   return { data: data, denied: denied };
 }
 
-/** 開機時一起帶回的資料表（line_users 另外放，它不是「資料」，是名單） */
-var BOOT_SHEETS = ['tasks', 'reviews', 'moods', 'notes', 'expenses'];
+/** 開機時一起帶回的資料表（line_users 另外放，它不是「資料」，是名單）。
+ * 複盤與心情已退場（ADR-018 C-3）：資料留在表上，開機不再讀 */
+var BOOT_SHEETS = ['tasks', 'notes', 'expenses'];
 
 /**
  * boot（ADR-012 D-1／D-2）：一個請求帶回 session、名單、有權限的各表。
@@ -456,12 +462,101 @@ function bootResponse_(caller, perf) {
     denied: many.denied
   };
   if (many.data.tasks) out.group_names = perfStage_(perf, 'groups', function () { return taskGroupNames_(many.data.tasks); });
+  // 首頁「今天」層（ADR-018 C-2／C-4）：自己的一段話；郵件磚只給看得到郵件的人（管理者＋feat_gmail）
+  out.self_note = perfStage_(perf, 'self_note', function () { return selfNoteOf_(ss, caller.line_id); });
+  if (isAdmin && canUse_(caller.user, 'feat_gmail')) {
+    var mail = perfStage_(perf, 'mail', function () { return mailSummary_(ss, taipeiDateKey_(new Date())); });
+    if (mail) out.mail_summary = mail;
+  }
   if (isAdmin) {
     out.perf_rows = perfStage_(perf, 'perf_rows', perfRowCount_);
     var alert = perfStage_(perf, 'unauth_alert', unauthAlert_);
     if (alert) out.unauth_alert = alert;
   }
   return withExpenseConfig_(out, caller.user, ss, BOOT_SHEETS, perf);
+}
+
+/* ---------- 給自己的一段話（ADR-018 C-4） ----------
+   一人一列（line_id｜text｜updated_at）。寫了就一直留著，沒有歷史、沒有回顧。
+   只有本人讀得到：表在 NO_PWA_READ／NO_PWA_WRITE，boot 只帶發問者自己那一列，寫入只走 selfNoteSet。 */
+var SELF_NOTES_HEADERS = ['line_id', 'text', 'updated_at'];
+var SELF_NOTE_MAX = 300;
+
+function ensureSelfNotesSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SELF_NOTES_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(SELF_NOTES_SHEET);
+    sheet.appendRow(SELF_NOTES_HEADERS);
+    return { sheet: sheet, created: true };
+  }
+  if (sheet.getLastRow() === 0) sheet.appendRow(SELF_NOTES_HEADERS);
+  return { sheet: sheet, created: false };
+}
+
+/** 讀不到（還沒初始化、表壞了）回空字串：首頁那一行顯示提示，不擋開機 */
+function selfNoteOf_(ss, lineId) {
+  try {
+    var read = sheetRecords_(ss, SELF_NOTES_SHEET, {});
+    if (read.error) return '';
+    var id = keyValue_(lineId);
+    var hit = read.rows.filter(function (r) { return keyValue_(r.line_id) === id; })[0];
+    return hit ? String(hit.text == null ? '' : hit.text) : '';
+  } catch (err) {
+    return '';
+  }
+}
+
+/** selfNoteSet：只寫自己那一列（line_id 一律用 token 換出來的，不收 body 的） */
+function selfNoteSet_(caller, text) {
+  var t = String(text == null ? '' : text).trim();
+  if (t.length > SELF_NOTE_MAX) return { error: 'too_long', max: SELF_NOTE_MAX };
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SELF_NOTES_SHEET);
+  if (!sheet) return { error: 'sheet_not_found', sheet: SELF_NOTES_SHEET };
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(SELF_NOTE_LOCK_MS)) return { error: 'busy' };
+  try {
+    upsertRow_(sheet, sheetHeaders_(sheet), { line_id: caller.line_id, text: t, updated_at: new Date().toISOString() },
+      SELF_NOTES_SHEET, 'line_id');
+  } finally {
+    lock.releaseLock();
+  }
+  return { success: true, text: t };
+}
+var SELF_NOTE_LOCK_MS = 5000;
+
+/**
+ * 郵件磚＋「新帳單」數字磚（ADR-018 C-2／C-5）。today＝伺服器的今天（YYYY-MM-DD）。
+ *  - today：今天收到幾封，依信種分（帳單／電子報／eTag）
+ *  - bills_3d：最近 3 天（含今天）收到的帳單——跟控制員的掃描窗口一樣（Neil 2026-10-13）
+ * 帳單不進「最急兩件」（Neil 2026-10-13：沒有「已繳」可勾，逾期會永遠掛著）。
+ * 分頁還沒建回 null，首頁就不畫郵件磚。
+ */
+var MAIL_NEW_BILL_DAYS = 3;
+function mailSummary_(ss, today) {
+  var read = sheetRecords_(ss, GMAIL_LOG_SHEET, {});
+  if (read.error) return null;
+  var from = addDaysKeyCode_(today, -(MAIL_NEW_BILL_DAYS - 1));
+  var out = { today: 0, bill: 0, newsletter: 0, etag: 0, bills_3d: 0 };
+  read.rows.forEach(function (r) {
+    // received_at 是 UTC 的 ISO 字串：取前 10 碼會把台北早上 8 點前收的信算成前一天。換成時間再取台北的日期
+    // （taipeiDateKey_ 在 stock.gs，同一個 GAS 專案、測試也一律載入）
+    var t = toTime_(r.received_at);
+    if (isNaN(t)) return;
+    var day = taipeiDateKey_(new Date(t));
+    var type = keyValue_(r.mail_type);
+    if (type === 'bill' && day >= from && day <= today) out.bills_3d++;
+    if (day !== today) return;
+    out.today++;
+    if (out.hasOwnProperty(type)) out[type]++;
+  });
+  return out;
+}
+
+/** 'YYYY-MM-DD' 加 n 天。line-router.gs 有一份 addDaysKey_，但只載 Code.gs 的環境看不到它 */
+function addDaysKeyCode_(key, n) {
+  var d = parseDateKey_(key);
+  return d ? keyValue_(new Date(d.getFullYear(), d.getMonth(), d.getDate() + n, 12, 0, 0, 0)) : '';
 }
 
 /**
@@ -576,6 +671,7 @@ function routePwaSync_(body, perf) {
   if (body.action === 'gmailView') return jsonOut(gmailView_(caller, body.what));
   if (body.action === 'gmailRuleSet') return jsonOut(gmailRuleSet_(caller, body.record));
   if (body.action === 'stockPushMe') return jsonOut(stockPushMe_(caller, body.symbol));
+  if (body.action === 'selfNoteSet') return jsonOut(selfNoteSet_(caller, body.text));
 
   if (NO_PWA_WRITE.indexOf(body.sheet) !== -1 || isBackupSheet_(body.sheet)) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');

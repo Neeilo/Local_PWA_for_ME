@@ -24,6 +24,8 @@ const DAY = 86400000;
 
 const FEATS = ['feat_expense', 'feat_tasks', 'feat_review', 'feat_notes', 'feat_mood', 'feat_log'];
 const DATA_SHEETS = ['tasks', 'reviews', 'moods', 'notes', 'expenses'];
+/** boot 帶回的表。reviews／moods 的資料還在，但 ADR-018 C-3 退場後開機不再讀 */
+const BOOT_DATA = ['tasks', 'notes', 'expenses'];
 
 /** momFeats：媽媽那列各 feat_ 的值；傳 null 代表整張表沒有 feat_ 欄 */
 function roster(momFeats = { feat_expense: 'TRUE', feat_tasks: 'TRUE', feat_review: 'TRUE', feat_notes: 'TRUE', feat_mood: 'TRUE', feat_log: 'TRUE' }, momActive = 'TRUE') {
@@ -128,7 +130,7 @@ describe('boot：先驗再讀', () => {
 
 describe('boot：一個請求帶回全部', () => {
 
-  test('形狀：session／line_users／五張表／denied；墓碑已濾掉', () => {
+  test('形狀：session／line_users／三張表／denied；墓碑已濾掉', () => {
     const e = env();
     const out = post(e, { action: 'boot', token: TOK_ME });
     assert.equal(out.session.status, 'ok');
@@ -137,7 +139,7 @@ describe('boot：一個請求帶回全部', () => {
     assert.equal(out.session.display_name, 'Neil');
     assert.equal(out.session.is_admin, true);
     assert.deepEqual(out.line_users.map((u) => u.line_id), [ME, MOM]);
-    assert.deepEqual(Object.keys(out.data).sort(), DATA_SHEETS.slice().sort());
+    assert.deepEqual(Object.keys(out.data).sort(), BOOT_DATA.slice().sort(), '退場的 reviews／moods 不在裡面');
     assert.deepEqual(out.data.tasks.map((t) => t.id), ['1'], '已刪的那筆不該出現');
     assert.deepEqual(out.denied, []);
   });
@@ -163,7 +165,7 @@ describe('boot：一個請求帶回全部', () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].action, 'boot');
     assert.equal(rows[0].trigger, 'cold');
-    assert.equal(rows[0].sheets, ['line_users'].concat(DATA_SHEETS).join(','));
+    assert.equal(rows[0].sheets, ['line_users'].concat(BOOT_DATA).join(','));
     assert.equal(rows[0].rows, 2 + 2 + 0 + 0 + 1 + 1, '讀進來的原始列數（含墓碑）');
     for (const k of ['server_ms', 'auth_ms', 'open_ms', 'read_ms']) assert.equal(typeof rows[0][k], 'number', k);
   });
@@ -275,7 +277,7 @@ describe('feat_* 是雲端權限（D-3）', () => {
     const e = env({ users: roster({}) });
     const boot = post(e, { action: 'boot', token: TOK_MOM });
     assert.deepEqual(boot.line_users.map((u) => u.line_id), [ME, MOM]);
-    assert.deepEqual(boot.denied.slice().sort(), DATA_SHEETS.slice().sort());
+    assert.deepEqual(boot.denied.slice().sort(), BOOT_DATA.slice().sort());
     assert.deepEqual(boot.data, {});
   });
 
@@ -291,7 +293,7 @@ describe('feat_* 是雲端權限（D-3）', () => {
     const e = env({ users: roster(null) });
     const boot = post(e, { action: 'boot', token: TOK_MOM });
     assert.deepEqual(boot.denied, []);
-    assert.deepEqual(Object.keys(boot.data).sort(), DATA_SHEETS.slice().sort());
+    assert.deepEqual(Object.keys(boot.data).sort(), BOOT_DATA.slice().sort());
   });
 });
 
@@ -330,7 +332,7 @@ describe('LINE 也套用功能權限', () => {
     assert.ok(prompt, '前提：有送出 prompt');
     assert.doesNotMatch(prompt, /記帳彙總/);
     assert.doesNotMatch(prompt, /支出合計/);
-    assert.match(prompt, /你只看得到以下模組：任務、日誌、心情/);
+    assert.match(prompt, /你只看得到以下模組：任務。/, '日誌與心情已退場（ADR-018），不再列出');
     assert.match(prompt, /沒有權限/);
   });
 
@@ -349,7 +351,8 @@ describe('LINE 也套用功能權限', () => {
 /* ========================================================================== */
 describe('canUse_ 與前端 featureAllowed 一字不差', () => {
 
-  const VIEW_OF = { feat_expense: 'expenses', feat_tasks: 'tasks', feat_review: 'review', feat_notes: 'notes', feat_mood: 'mood' };
+  // ADR-018：日誌（feat_review）與心情（feat_mood）退場，前端不再有那兩頁，比對剩下的
+  const VIEW_OF = { feat_expense: 'expenses', feat_tasks: 'tasks', feat_notes: 'notes' };
   const USERS = [
     { line_id: 'U1' },                                         // 沒有任何 feat_ 欄 → 全開
     { line_id: 'U2', feat_expense: '', feat_tasks: 'TRUE' },  // 有欄但留空 → 關
@@ -380,6 +383,8 @@ describe('canUse_ 與前端 featureAllowed 一字不差', () => {
       gmail_log: 'feat_gmail' });
     const byView = front.read('FEATURE_BY_VIEW');
     const uniq = (o) => [...new Set(Object.values(o))].sort();
-    assert.deepEqual(uniq(byView), uniq(bySheet));
+    // reviews／moods 的資料還在、雲端的權限對照照留（舊佇列裡的寫入仍要過 canUse_）；前端已無那兩頁（ADR-018 C-3）
+    const RETIRED = ['feat_mood', 'feat_review'];
+    assert.deepEqual(uniq(byView), uniq(bySheet).filter((f) => !RETIRED.includes(f)));
   });
 });
