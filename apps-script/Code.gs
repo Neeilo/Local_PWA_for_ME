@@ -640,7 +640,9 @@ function routePwaSync_(body, perf) {
   if (!caller.ok) { perf.unauth = caller.error; return jsonOut({ error: caller.error, reason: caller.error }); }
   perf.who = { line_id: caller.line_id, device_id: caller.device ? caller.device.device_id : '' };
 
-  if (body.action === 'boot') return perfJsonOut_(perf, withStock_(bootResponse_(caller, perf), caller, body, perf));
+  // 股票不再夾在 boot／readMany 裡（ADR-018 D-6）：前端進首頁後另打 action=stock
+  if (body.action === 'boot') return perfJsonOut_(perf, bootResponse_(caller, perf));
+  if (body.action === 'stock') return perfJsonOut_(perf, stockResponse_(caller, body, perf));
   if (body.action === 'readMany') {
     perf.sheets = Array.isArray(body.sheets) ? body.sheets.filter(function (x) { return typeof x === 'string'; }).join(',') : '';
     var openedMany = Date.now();
@@ -648,8 +650,7 @@ function routePwaSync_(body, perf) {
     perf.open_ms = Date.now() - openedMany;
     perfSet_(perf, 'open', perf.open_ms);
     var many = perfStage_(perf, 'sheets', function () { return readManyFrom_(ssMany, caller.user, body.sheets, perf); });
-    return perfJsonOut_(perf, withStock_(withExpenseConfig_(many, caller.user, ssMany, Array.isArray(body.sheets) ? body.sheets : [], perf),
-      caller, body, perf));
+    return perfJsonOut_(perf, withExpenseConfig_(many, caller.user, ssMany, Array.isArray(body.sheets) ? body.sheets : [], perf));
   }
   if (body.action === 'read') return jsonOut(readSheetResponse_(body.sheet, perf, caller.user));
   if (body.action === 'listDevices') return jsonOut(listDevices_(caller, body.line_id));
@@ -1557,7 +1558,10 @@ var LINE_DEVICES_HEADERS = ['device_id', 'token_hash', 'line_id', 'device_label'
 
 var DEVICE_IDLE_DAYS = 180;               // 滑動效期（D-5）：閒置超過就要走 C
 var DEVICE_TOUCH_MS = 86400000;           // last_used_at 一天最多寫一次（D-8）
-var DEVICE_CACHE_TTL = 300;               // 裝置查詢快取 5 分鐘（D-8，比照白名單）
+// 裝置查詢快取 6 小時（ADR-018 D-2；原 ADR-010 D-8 是 5 分鐘）。PR-0 量到開機的 auth.device 中位 1.3 秒，
+// 多半是快取過期後重讀整張 line_devices。撤銷、續期都會主動清這台的快取（invalidateDeviceCache_），
+// 所以拉長不影響「撤銷立即生效」；停用人走 writeGate_ 的名單，不在這份快取裡
+var DEVICE_CACHE_TTL = 21600;
 var DEVICE_CACHE_PREFIX = 'adr010_dev_';
 var DEVICE_LABEL_MAX = 60;
 
@@ -1679,7 +1683,7 @@ function setDeviceFields_(sheet, headers, rowNumber, patch) {
   });
 }
 
-/** 撤銷／續期之後要立刻生效，不能等 5 分鐘快取過期（交棒票 1-2） */
+/** 撤銷／續期之後要立刻生效，不能等 6 小時快取過期（交棒票 1-2） */
 function invalidateDeviceCache_(hash) {
   var cache = scriptCache_();
   if (!cache || !hash) return;
@@ -2381,9 +2385,8 @@ function authorizeArchiveMail() {
  *    裡送上來，另寫一列；server 那幾欄空白。不回頭補同一列：要先找到那一列，
  *    找錯就是寫錯人的數字，另寫一列沒有這個風險
  *
- * 寫入時機不在 server_ms 裡：GAS 不能先回應再做事，所以寫紀錄的那一點時間
- * 使用者還是要等，只是量不到自己。用 appendRow 一列一列寫：開機時五張表是
- * 並行的五個請求，appendRow 才不會互相蓋掉。
+ * 寫入時機不在 server_ms 裡：GAS 不能先回應再做事。ADR-018 起先放進排隊區（指令碼屬性），
+ * 每 10 分鐘的排程才寫進 Sheet（見 queuePerfRows_）；落地時用 appendRow 一列一列寫，並行才不互蓋。
  */
 var PERFORMANCE_HEADERS = ['id', 'ts', 'action', 'trigger', 'client_ms', 'server_ms', 'auth_ms', 'open_ms', 'read_ms',
   'sheets', 'rows', 'device_id', 'line_id', 'reply_ms', 'stages'];
@@ -2450,21 +2453,89 @@ function recordPerf_(body, perf, serverMs) {
     rows = rows.concat(clientPerfRows_(body.perf));
     if (!rows.length) return;
 
-    var sheet = ensurePerformanceSheet_();
-    var headers = perfHeaders_(sheet);
     var now = Date.now();
     rows.forEach(function (r, i) {
       r.id = String(now + i);
       r.ts = new Date(now).toISOString();
       r.device_id = perf.who.device_id || '';
       r.line_id = perf.who.line_id || '';
-      sheet.appendRow(headers.map(function (h) {
-        return (r[h] === undefined || r[h] === null) ? '' : r[h];
-      }));
     });
+    if (!queuePerfRows_(rows)) writePerfRows_(rows);
   } catch (err) {
     console.log('寫效能紀錄失敗（主流程不受影響）：' + err);
   }
+}
+
+/** 直接寫進 performance（排隊區放不進去時的備援、flushPerfQueue 的落地）。一次 appendRow 一列：並行時不互蓋 */
+function writePerfRows_(rows) {
+  var sheet = ensurePerformanceSheet_();
+  var headers = perfHeaders_(sheet);
+  rows.forEach(function (r) {
+    sheet.appendRow(headers.map(function (h) {
+      return (r[h] === undefined || r[h] === null) ? '' : r[h];
+    }));
+  });
+}
+
+/* ---------- 效能紀錄排隊（ADR-018 D-4：不擋住回應） ----------
+   GAS 不能先回應再做事：寫 performance（開表、讀表頭、appendRow）的時間使用者都在等，
+   而且 server_ms 量不到它。改成每個請求只在指令碼屬性放一個**自己的鍵**（perfq_＜id＞_＜亂數＞），
+   每 10 分鐘的排程 flushPerfQueue 一次寫進 Sheet、寫完刪鍵。
+   - 並行不互蓋：每個請求一個鍵，沒有「讀出來 → 加一筆 → 寫回去」的競爭
+   - 放不進去（屬性額度、容量 500KB 滿了、沒有權限）→ 退回直接寫，紀錄不會因為排隊而掉
+   - 管理員看效能摘要前先 flush，看到的是最新的 */
+var PERF_QUEUE_PREFIX = 'perfq_';
+var PERF_QUEUE_FUNCTION = 'flushPerfQueue';
+var PERF_QUEUE_MINUTES = 10;
+
+function queuePerfRows_(rows) {
+  try {
+    var key = PERF_QUEUE_PREFIX + rows[0].id + '_' + Math.floor(Math.random() * 1e9);
+    PropertiesService.getScriptProperties().setProperty(key, JSON.stringify(rows));
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * 排程（每 10 分鐘）：把排隊的效能紀錄寫進 Sheet。先寫、寫成功才刪鍵——中途失敗頂多下次重寫幾列，
+ * 不會掉。拿不到鎖（另一個 flush 在跑）就跳過，下一輪再來。依 id 排序，表上照時間先後。
+ * 排隊是空的就什麼都不寫（每 10 分鐘一列「0 筆」只會把表灌大）。
+ */
+function flushPerfQueue() {
+  var started = Date.now();
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(PERF_LOCK_MS)) return { written: 0, reason: 'busy' };
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var all = props.getProperties();
+    var keys = Object.keys(all).filter(function (k) { return k.indexOf(PERF_QUEUE_PREFIX) === 0; });
+    if (!keys.length) return { written: 0 };
+    var rows = [];
+    keys.forEach(function (k) {
+      var list = null;
+      try { list = JSON.parse(all[k]); } catch (err) { list = null; }
+      if (Array.isArray(list)) rows = rows.concat(list);
+    });
+    rows.sort(function (a, b) { return Number(a.id) - Number(b.id); });
+    writePerfRows_(rows);
+    keys.forEach(function (k) { props.deleteProperty(k); });
+    recordSchedulePerf_('perfFlush', rows.length, Date.now() - started);
+    return { written: rows.length };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 每 10 分鐘的排程。比照 installUnauthTrigger：先刪同名的再建，重複執行不累積 */
+function installPerfQueueTrigger() {
+  var removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === PERF_QUEUE_FUNCTION) { ScriptApp.deleteTrigger(t); removed++; }
+  });
+  ScriptApp.newTrigger(PERF_QUEUE_FUNCTION).timeBased().everyMinutes(PERF_QUEUE_MINUTES).create();
+  return { removed: removed, created: PERF_QUEUE_FUNCTION };
 }
 
 /**
@@ -2716,6 +2787,7 @@ function perfCollectStages_(g, raw, serverMs) {
  */
 function perfSummary_(caller, now) {
   if (!truthy_((caller.user || {}).is_admin)) return perfForbidden_(caller, 'perfSummary');
+  try { flushPerfQueue(); } catch (err) { console.log('效能紀錄排隊區沒寫進去（摘要照舊算）：' + err); }
   var nowMs = now || Date.now();
   var data = perfReadRows_();
   var since = nowMs - PERF_SUMMARY_DAYS * PERF_DAY_MS;

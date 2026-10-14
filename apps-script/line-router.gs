@@ -660,10 +660,11 @@ function initSteps_() {
     } },
     { label: '股票（ADR-015）', run: installStock_ },
     { label: 'Gmail 控制員（ADR-016）', run: installGmail_ },
-    { label: '排程（到期提醒＋_guide＋未驗證彙總＋股票提醒＋盤後收盤價）', run: function () {
+    { label: '排程（到期提醒＋_guide＋未驗證彙總＋效能紀錄落地＋股票提醒＋盤後收盤價）', run: function () {
       installAdr009Triggers();
       installGuideTrigger();            // 裝好會順便更新一次 _guide
       installUnauthTrigger();           // ADR-014 D-15：每小時把未驗證請求寫成一列
+      installPerfQueueTrigger();        // ADR-018 D-4：每 10 分鐘把排隊的效能紀錄寫進 Sheet
       installStockTriggers_();          // ADR-015 T6／T7
       return { level: 'ok', text: '已安裝（先刪同名的再建，不會累積）；_guide 已更新' };
     } },
@@ -695,6 +696,7 @@ function scheduleHours_() {
   h[DUE_CHECK_FUNCTION] = '每天約 ' + DUE_CHECK_HOUR + ' 點';
   h[GUIDE_REFRESH_FUNCTION] = '每天約 ' + GUIDE_REFRESH_HOUR + ' 點';
   h[UNAUTH_FLUSH_FUNCTION] = '每小時';
+  h[PERF_QUEUE_FUNCTION] = '每 ' + PERF_QUEUE_MINUTES + ' 分鐘';
   h[STOCK_RULES_FUNCTION] = '每 ' + STOCK_RULES_MINUTES + ' 分鐘，只在盤中動作';
   h[GMAIL_CONTROLLER_FUNCTION] = '每天約 ' + GMAIL_CONTROLLER_HOUR + ' 點';
   h[STOCK_DAILY_FUNCTION] = '交易日 ' + STOCK_DAILY_HOUR + '～' + STOCK_DAILY_LAST_HOUR + ' 點每小時，拿到當天收盤就停';

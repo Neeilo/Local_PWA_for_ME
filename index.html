@@ -605,10 +605,15 @@
 .boot-progress{ position:absolute; left:0; right:0; top:0; height:3px; overflow:hidden; }
 .boot-progress .bar{ height:100%; width:0; background:var(--accent); }
 .boot-progress-msg{ margin-top:6px; font-size:12px; color:var(--muted); }
-.skel i{ display:block; height:12px; border-radius:6px; background:var(--line); margin:10px 0; animation:skel-pulse 1.2s ease-in-out infinite; }
-.skel i:nth-child(2){ width:80%; }
-.skel i:nth-child(3){ width:55%; }
-@keyframes skel-pulse{ 50%{ opacity:.45; } }
+/* 全螢幕 Loading（ADR-018 D-1）：取代首頁骨架。資料到齊才收起；不顯示舊資料 */
+.boot-loading{ position:fixed; inset:0; z-index:35; background:var(--bg); display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:18px; padding:0 40px; }
+.boot-loading[hidden]{ display:none; }
+.boot-loading img{ width:96px; height:96px; border-radius:22px; }
+.boot-loading-track{ width:min(220px, 70vw); height:4px; border-radius:2px; background:var(--line); overflow:hidden; }
+.boot-loading-track .bar{ height:100%; width:0; background:var(--accent); }
+.boot-loading-msg{ font-size:13px; color:var(--muted); min-height:1.4em; text-align:center; }
+@media (prefers-reduced-motion: reduce){ .boot-loading-track .bar, .boot-progress .bar{ transition:none !important; } }
 .conn-banner{
   margin-top:6px; padding:6px 12px; border-radius:10px; font-size:13px; line-height:1.5;
   background:rgba(255,92,92,.14); color:#b03030; border:1px solid rgba(255,92,92,.3);
@@ -757,6 +762,13 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
   <h2 id="idGateTitle">配對這台裝置</h2>
   <p class="sub" id="idGateSub"></p>
   <div id="idGateBody"></div>
+</div>
+
+<!-- 全螢幕 Loading（ADR-018 D-1）：一開頁就在，開機資料到齊（或確定要配對／讀不到）才收起 -->
+<div class="boot-loading" id="bootLoading" role="status" aria-live="polite">
+  <img src="neilos-icon-ios-180.png" alt="" width="96" height="96">
+  <div class="boot-loading-track"><div class="bar" id="bootLoadingBar"></div></div>
+  <div class="boot-loading-msg" id="bootLoadingMsg">讀取中…</div>
 </div>
 
 <header>
@@ -1408,24 +1420,54 @@ function forgetDevice(reason){
    2026-10-01 的效能紀錄裡有一筆開機 38 秒，就是兩趟疊在一起跑。 */
 let bootPromise=null;
 function startSession(trigger){
-  if(gateMode==='renew') return pollRenewal();
+  if(gateMode==='renew'){ loadingHide(); return pollRenewal(); }
   if(!deviceToken){
+    loadingHide();
     applyIdentity();
     if(!localOnly) openAuthGate('pair');
     return Promise.resolve(false);
   }
   if(bootPromise) return bootPromise;
   const started=Date.now();
-  const showBar = trigger==='cold' || trigger==='foreground';
-  if(showBar) progressStart();
+  // 開機、離開超過 30 分鐘的回前景：全螢幕 Loading，資料到齊才進首頁（ADR-018 D-1／D-3）
+  const full = trigger==='cold' || trigger==='foreground';
+  if(full){
+    progressStart('full');
+    stockData=null; stockFailed=false;     // 不顯示舊報價（ADR-009）：開機後另打 action=stock 補上
+  }
   bootPromise=runBoot(trigger).then(ok=>{
     if(ok && trigger) perfNote('boot', trigger, Date.now()-started);
+    if(ok) refreshStock(trigger);          // 不等它：報價慢，Loading 不等報價（D-6）
     return ok;
   }).finally(()=>{
     bootPromise=null; lastPullAt=Date.now();
-    if(showBar) progressDone();
+    if(full) progressDone('full');
   });
   return bootPromise;
+}
+
+/* 股票（ADR-018 D-6）：不再夾在 boot／readMany 裡，獨立一個請求。開機進首頁後、輪詢、手動刷新、
+   股票寫入之後各打一次；同一時間只跑一趟。只在財務區、有 feat_stock 時打（wantStock）。
+   讀不到（網路）就留著這次 session 上一份、畫面照 cloudOnline 講連線異常；雲端說沒權限就清掉 */
+let stockPromise=null;
+function refreshStock(trigger){
+  if(!wantStock() || !myLineId || gateMode) return Promise.resolve(false);
+  if(stockPromise) return stockPromise;
+  stockPromise=(async()=>{
+    let j=null;
+    try{ j=await cloudPost({action:'stock', trigger:trigger||'manual'}); }catch(e){ j=null; }
+    if(!j) return false;
+    if(j.error==='forbidden'){ stockData=null; stockFailed=false; }
+    else if(j.error) stockFailed=true;
+    else applyStockData(j.stock);
+    renderStockParts();
+    return !j.error;
+  })().finally(()=>{ stockPromise=null; });
+  return stockPromise;
+}
+function renderStockParts(){
+  renderDashStocks();
+  if(currentView()==='stocks') renderStocksView();
 }
 
 /* 套用順序：身份 → 名單 → 資料 → 補送。
@@ -1434,7 +1476,7 @@ function startSession(trigger){
 async function runBoot(trigger){
   let j=null;
   // 「再試一次」、續期完成這兩處沒有傳 trigger：都是人按出來的，記成 manual（ADR-014 D-12：每個請求都要記）
-  try{ j=await cloudPost({action:'boot', trigger:trigger||'manual', stock:wantStock()}); }catch(e){ j=null; }
+  try{ j=await cloudPost({action:'boot', trigger:trigger||'manual'}); }catch(e){ j=null; }
   const s=j && j.session;
   if(!s || s.status!=='ok' || !s.line_id || !Array.isArray(j.line_users) || !j.data || typeof j.data!=='object'){
     rosterStatus='unavailable';
@@ -1452,7 +1494,6 @@ async function runBoot(trigger){
   if(gateMode) closeAuthGate();
   roster=j.line_users.filter(u=>rosterId(u));
   rosterStatus = activeUsers().length ? 'ok' : 'empty';
-  applyStockData(j.stock);
   const ok=applyCloudData(j.data, j.denied, j);
   applyIdentity();
   if(ok) flushOutbox();
@@ -1499,6 +1540,7 @@ function applyIdentity(){
 function openAuthGate(mode, notice){
   gateMode=mode;
   gateNotice=notice||'';
+  loadingHide();                         // 要配對／續期就不是「等資料」了
   document.getElementById('idGate').hidden=false;
   renderAuthGate();
 }
@@ -2364,6 +2406,7 @@ function stopPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null;
 function pollTick(){
   if(document.visibilityState!=='visible') return;     // 保險：背景時不送
   timedPull('poll');
+  refreshStock('poll');                                // 報價另打，不拖慢其他資料（ADR-018 D-6）
   flushOutbox();                                       // 順手把積著的推出去
 }
 
@@ -2372,7 +2415,27 @@ function manualRefresh(){
   toast('更新中…');
   flushOutbox();
   progressStart();
-  return timedPull('manual').finally(progressDone);
+  refreshStock('manual');
+  return timedPull('manual').finally(()=>progressDone());
+}
+
+/* 回前景（ADR-018 D-3）：離開 30 分鐘內 → 不顯示 Loading、只跑 readMany（頂端細條「更新中」）；
+   超過 30 分鐘 → 完整開機＋全螢幕 Loading。
+   代價（ADR 後果欄）：30 分鐘內回前景不重問 session，別人在別台改的權限最慢等下一輪完整開機；
+   但每個 readMany 照樣驗 token，撤銷、停用一樣當下就被擋。
+   5 秒內重複切換不重打（原本的節流） */
+const FOREGROUND_FULL_AFTER_MS=30*60*1000;
+const FOREGROUND_PULL_MIN_GAP=5000;
+let hiddenAt=0;
+function onForeground(now){
+  const away = hiddenAt ? now-hiddenAt : 0;
+  hiddenAt=0;
+  if(away>FOREGROUND_FULL_AFTER_MS) return startSession('foreground');
+  if(now-lastPullAt<FOREGROUND_PULL_MIN_GAP) return Promise.resolve(false);
+  if(!myLineId) return startSession('foreground');   // 還沒有身份（開機失敗過）：照完整開機走
+  progressStart();
+  refreshStock('foreground');
+  return timedPull('foreground').finally(()=>progressDone());
 }
 
 /* pull 一次並記耗時。輪詢也每次都記（ADR-014 D-13，取消原本的 20 抽 1） */
@@ -2448,9 +2511,8 @@ function applyPendingOverlay(){
 async function pullFromCloud(meta){
   let j=null;
   // 沒帶 meta 的是動作之後的重新整理（打勾週期任務、分期、續期…），記成 manual（ADR-014 D-12）
-  try{ j=await cloudPost(Object.assign({action:'readMany', sheets:DATA_SHEETS, trigger:'manual', stock:wantStock()}, meta)); }catch(e){ j=null; }
+  try{ j=await cloudPost(Object.assign({action:'readMany', sheets:DATA_SHEETS, trigger:'manual'}, meta)); }catch(e){ j=null; }
   if(!j || j.error || !j.data || typeof j.data!=='object') return pullFailed();
-  applyStockData(j.stock);
   return applyCloudData(j.data, j.denied, j);
 }
 
@@ -3021,7 +3083,8 @@ function renderArchiveCard(){
 }
 
 /* ---------- 股票（ADR-015 T4） ----------
-   資料跟著 15 秒輪詢的 readMany 帶回（stock:true，只在有 feat_stock 且在財務區時），不另開請求。
+   ADR-018 D-6 起是獨立請求 action=stock（refreshStock）：開機進首頁後、15 秒輪詢時另打，
+   只在有 feat_stock 且在財務區時；開機的全螢幕 Loading 不等它。
    持股、均價、賣超都由雲端算（computeHoldings_，只有一份實作）；這裡只負責畫。
    寫入直接送雲端、不進待送佇列：離線時顯示連線錯誤、不假裝存好了（CLAUDE.md Rule 9 的現行決策）。 */
 let stockData=null;          // 雲端回的 stock：{ ready, watch, trades, holdings, quotes, members, my_member, ... }
@@ -3046,7 +3109,7 @@ const STOCK_FIELD={side:'買賣別', qty:'數量', price:'價格', fee:'手續�
 
 function wantStock(){ return zone==='finance' && featureAllowed('stocks'); }
 function applyStockData(st){
-  if(st===undefined) return;                       // 這次沒要（不在財務區）：留著上一份
+  if(st===undefined) return;
   if(!st || st.error){ stockFailed=true; return; }
   stockFailed=false;
   stockData=st;
@@ -3099,7 +3162,7 @@ function renderStocksView(){
   setHidden('stockRuleCard', !onSettings);
   setHidden('stockCfgCard', !(onSettings && isAdmin() && !!stockData.config));
   if(!stockData){
-    body.innerHTML=`<div class="empty-hint">${stockFailed ? '⚠️ 股票資料讀不到，稍後會再試' : (cloudOnline===false ? '⚠️ 連不上雲端' : '讀取中…')}</div>`;
+    body.innerHTML=`<div class="empty-hint">${stockFailed ? '⚠️ 股票資料讀不到，稍後會再試' : (cloudOnline===false ? '⚠️ 連不上雲端' : '報價更新中…')}</div>`;
     return;
   }
   if(!stockData.ready){ body.innerHTML=`<div class="empty-hint">${STOCK_ERR.sheet_not_found}</div>`; return; }
@@ -3230,7 +3293,7 @@ function stockErrorText(r){
 async function sendStock(sheet, record, keyField){
   let r=null;
   try{ r=await cloudPost({action:'upsert', sheet, record, key_field:keyField, trigger:'write'}); }catch(e){ r=null; }
-  if(r && r.success){ await syncFromCloud({trigger:'manual'}); renderStocksView(); }
+  if(r && r.success){ await refreshStock('manual'); renderStocksView(); }
   return r;
 }
 async function saveStockTrade(){
@@ -3342,7 +3405,7 @@ async function saveStockConfig(){
       try{ r=await cloudPost({action:'stockConfigSet', key, value:want[key], trigger:'write'}); }catch(e){ r=null; }
       if(!r || !r.success){ toast(stockErrorText(r)); return; }
     }
-    await syncFromCloud({trigger:'manual'});
+    await refreshStock('manual');
     fillStockSettingsForms();
     renderStocksView();
     toast(changed.length ? '已儲存' : '已確認現金（更新日期）');
@@ -3404,16 +3467,19 @@ function rebalHtml(){
 /* 首頁兩張卡（T8）：掛 featureAllowed，關掉 feat_stock 就真的 display:none；切區不打雲端 */
 function renderDashStocks(){
   const allowed=featureAllowed('stocks');
-  const rb=allowed ? rebalHtml() : '';
+  // 開機後報價還沒回來（D-6）：自選股磚、再平衡磚（管理者）先講「報價更新中」，不畫舊價格
+  const pending = allowed && !stockData && !stockFailed && cloudOnline!==false && !!deviceToken;
+  const rb=allowed ? (pending && isAdmin() ? '<div class="dash-sub">報價更新中…</div>' : rebalHtml()) : '';
   setHidden('dashRebalCard', !rb);
   // 再平衡只有管理者有（D-10）：沒有它的時候，分期磚撐滿一列，不留半格空白
   const plan=document.getElementById('dashPlanCard');
   if(plan && plan.classList && plan.classList.toggle) plan.classList.toggle('wide', !rb);
   const r=document.getElementById('dashRebal'); if(r) r.innerHTML=rb;
   const watch=allowed ? ((stockData||{}).watch||[]) : [];
-  setHidden('dashStockCard', !allowed || !watch.length);
+  setHidden('dashStockCard', !allowed || (!watch.length && !pending));
   const el=document.getElementById('dashStocks');
   if(!el) return;
+  if(pending && !watch.length){ el.innerHTML='<div class="dash-sub">報價更新中…</div>'; return; }
   el.innerHTML = `<div class="stk-mini">${watch.map(w=>{
     const q=(stockData.quotes||{})[w.symbol];
     return `<button class="${stockHits(w.symbol).length?'hit':''}" onclick="goView('stocks')">
@@ -4331,9 +4397,9 @@ function openExpenseDonut(){
 }
 
 /* ---------- 首頁三層（ADR-018 C-1～C-6） ---------- */
-/* 雲端讀到過一次才算數。在那之前首頁畫骨架——「還沒有支出紀錄」這類空狀態
-   只在「真的讀到了、而且是空的」時出現（ADR-012 D-5），不然開機那幾秒會先騙人一次。
-   沒有配對（先在本機用）的人不等雲端，照常畫本機的東西——不然會永遠卡在骨架 */
+/* 雲端讀到過一次才算數。在那之前首頁只寫「讀取中／連不上」——「還沒有支出紀錄」這類空狀態
+   只在「真的讀到了、而且是空的」時出現（ADR-012 D-5），不然會先騙人一次。
+   沒有配對（先在本機用）的人不等雲端，照常畫本機的東西——不然會永遠卡在讀取中 */
 let firstLoadDone=false;
 let selfNote='';              // 給自己的一段話：boot 帶回自己那一列（只有本人讀得到，C-4）
 let selfNoteEditing=false;
@@ -4347,7 +4413,7 @@ function renderDashboard(){
   if(title && currentView()==='home') title.textContent=homeGreeting();
   renderZoneCard();
   renderToday();
-  if(!firstLoadDone && deviceToken){ renderSkeletons(); return; }
+  if(!firstLoadDone && deviceToken){ renderPending(); return; }
   renderDashExpense(); renderDashPlans(); renderDashStocks(); renderDashNotes(); renderDashMail();
   renderDeep();
 }
@@ -4407,7 +4473,7 @@ function renderToday(){
   if(!tiles || !list) return;
   if(!featureAllowed('tasks')){ tiles.innerHTML=''; list.innerHTML=''; return; }
   if(!firstLoadDone && deviceToken){
-    tiles.innerHTML=''; list.innerHTML='<div class="skel" aria-label="讀取中"><i></i><i></i></div>'; return;
+    tiles.innerHTML=''; list.innerHTML=pendingHint(); return;
   }
   const today=todayKey();
   const {todos, reminders}=homeTaskLists();
@@ -4561,46 +4627,72 @@ function toggleTaskFromHome(id){
   toggleTask(id);
   renderDashboard();
 }
-function renderSkeletons(){
+/* 還沒讀到過雲端（ADR-018 起骨架退場：開機有全螢幕 Loading 蓋著，這裡只會在「開機讀不到」之後被看到）。
+   不說「還沒有支出紀錄」這類空狀態——那只在真的讀到、而且是空的時候說（ADR-012 D-5） */
+function pendingHint(){
+  return `<div class="empty-hint">${cloudOnline===false ? '⚠️ 連不上雲端，恢復後會自動更新' : '讀取中…'}</div>`;
+}
+function renderPending(){
   ['dashExpense','dashPlans','dashNotes','dashMail','deepTodo','deepReminder','boardList'].forEach(id=>{
     const el=document.getElementById(id);
-    if(el) el.innerHTML='<div class="skel" aria-label="讀取中"><i></i><i></i><i></i></div>';
+    if(el) el.innerHTML=pendingHint();
   });
 }
 
-/* ---------- 等待進度條（ADR-012 D-5） ----------
-   GAS 沒辦法一邊讀一邊回報進度，所以這是「估計」的：先快後慢衝到 90% 停住，
-   資料到齊跳 100% 淡出。超過 10 秒改講「比平常慢」，至少讓人知道不是當掉。
-   預估秒數之後依 performance 的開機中位數調整。輪詢不顯示：背景更新不該打擾人。 */
-const BOOT_EXPECTED_MS=7000;
+/* ---------- 等待畫面（ADR-012 D-5 → ADR-018 D-1／D-3） ----------
+   兩種：
+     full ＝全螢幕 Loading（App icon＋進度條）：開機、離開超過 30 分鐘的回前景。資料到齊才收起，
+            取代原本的首頁骨架——不顯示舊資料，也不先畫一半（ADR-009）
+     其餘 ＝頂端細條＋「更新中…」：30 分鐘內的回前景、手動刷新。畫面上的資料照舊可用
+   GAS 沒辦法一邊讀一邊回報進度，所以進度是「估計」的：先快後慢衝到 90% 停住，資料到齊跳 100%。
+   超過 10 秒改講「比平常慢」，至少讓人知道不是當掉。輪詢不顯示：背景更新不該打擾人。
+   prefers-reduced-motion：進度條不做動畫（CSS 關掉 transition）。 */
+const BOOT_EXPECTED_MS=5000;         // D-5 的目標：冷啟動 ≤ 5 秒
 const BOOT_SLOW_MS=10000;
+const PROGRESS_LABEL='更新中…';
 let progressTimers=[];
 function progressClear(){ progressTimers.forEach(clearTimeout); progressTimers=[]; }
-function progressStart(){
-  const wrap=document.getElementById('bootProgress');
-  if(!wrap) return;
-  const bar=wrap.querySelector('.bar'), msg=document.getElementById('bootProgressMsg');
+function progressParts(mode){
+  return mode==='full'
+    ? { wrap:document.getElementById('bootLoading'), bar:document.getElementById('bootLoadingBar'), msg:document.getElementById('bootLoadingMsg') }
+    : { wrap:document.getElementById('bootProgress'), bar:null, msg:document.getElementById('bootProgressMsg') };
+}
+function progressStart(mode){
+  const full = mode==='full';
+  const p=progressParts(mode);
+  if(!p.wrap) return;
+  const bar=p.bar || (p.wrap.querySelector ? p.wrap.querySelector('.bar') : null);
   progressClear();
-  wrap.hidden=false;
-  bar.style.transition='none'; bar.style.width='0%'; bar.style.opacity='1';
-  if(msg){ msg.hidden=true; msg.textContent=''; }
+  p.wrap.hidden=false;
+  if(bar){ bar.style.transition='none'; bar.style.width='0%'; bar.style.opacity='1'; }
+  if(p.msg){ p.msg.hidden=false; p.msg.textContent = full ? '讀取中…' : PROGRESS_LABEL; }
   progressTimers.push(setTimeout(()=>{
+    if(!bar) return;
     bar.style.transition='width '+(BOOT_EXPECTED_MS/1000)+'s cubic-bezier(.1,.75,.25,1)';
     bar.style.width='90%';
   },30));
   progressTimers.push(setTimeout(()=>{
-    if(msg){ msg.hidden=false; msg.textContent='比平常慢，仍在等雲端回應…'; }
+    if(p.msg){ p.msg.hidden=false; p.msg.textContent='比平常慢，仍在等雲端回應…'; }
   },BOOT_SLOW_MS));
 }
-function progressDone(){
-  const wrap=document.getElementById('bootProgress');
-  if(!wrap) return;
-  const bar=wrap.querySelector('.bar'), msg=document.getElementById('bootProgressMsg');
+function progressDone(mode){
+  const full = mode==='full';
+  const p=progressParts(mode);
+  if(!p.wrap) return;
+  const bar=p.bar || (p.wrap.querySelector ? p.wrap.querySelector('.bar') : null);
   progressClear();
-  if(msg){ msg.hidden=true; msg.textContent=''; }
-  bar.style.transition='width .25s ease-out, opacity .4s ease .25s';
-  bar.style.width='100%'; bar.style.opacity='0';
-  progressTimers.push(setTimeout(()=>{ wrap.hidden=true; },700));
+  if(full){ p.wrap.hidden=true; if(bar) bar.style.width='0%'; return; }   // 全螢幕：到齊就收，不多等淡出
+  if(p.msg){ p.msg.hidden=true; p.msg.textContent=''; }
+  if(bar){
+    bar.style.transition='width .25s ease-out, opacity .4s ease .25s';
+    bar.style.width='100%'; bar.style.opacity='0';
+  }
+  progressTimers.push(setTimeout(()=>{ p.wrap.hidden=true; },700));
+}
+/* 沒有要等雲端（要配對、續期、先在本機用）：Loading 直接收起 */
+function loadingHide(){
+  const el=document.getElementById('bootLoading');
+  if(el) el.hidden=true;
 }
 
 /* ---------- 共用白板（ADR-009 §三） ----------
@@ -5069,12 +5161,10 @@ function renderAll(){
 
      session 與白名單一起補：停用、撤銷、權限都是**別人在別的裝置上**改的，
      只靠冷啟動更新會慢一整輪。 */
-  const FOREGROUND_PULL_MIN_GAP=5000;
   document.addEventListener('visibilitychange',()=>{
-    if(document.visibilityState!=='visible'){ stopPolling(); return; }
+    if(document.visibilityState!=='visible'){ stopPolling(); hiddenAt=Date.now(); return; }
     startPolling();                                   // 回前景才恢復輪詢
-    if(Date.now()-lastPullAt<FOREGROUND_PULL_MIN_GAP) return;
-    startSession('foreground');
+    onForeground(Date.now());
   });
   startPolling();
 

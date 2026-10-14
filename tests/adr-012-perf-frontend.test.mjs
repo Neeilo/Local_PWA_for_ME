@@ -64,21 +64,26 @@ describe('請求帶 trigger', () => {
     const e = env();
     await e.callRaw('startSession', 'cold');
     await settle();
-    assert.deepEqual(e.calls.map((c) => c.body.action), ['boot'], 'ADR-012：3 輪 7 個請求 → 1 個');
+    // ADR-012：3 輪 7 個請求 → 1 個；ADR-018 D-6 起股票另打一個（不擋 Loading）
+    assert.deepEqual(e.calls.map((c) => c.body.action), ['boot', 'stock']);
     assert.equal(e.calls[0].body.trigger, 'cold');
 
-    const p = pending(e);
+    // 這筆夾在下一個請求送上去——開機之後緊接著的就是 action=stock
+    const p = pending(e).length ? pending(e) : (e.calls[1].body.perf || []);
     assert.equal(p.length, 1);
     assert.equal(p[0].action, 'boot');
     assert.equal(p[0].trigger, 'cold');
     assert.equal(typeof p[0].client_ms, 'number');
   });
 
-  test('init 開機傳 cold、回前景傳 foreground', () => {
+  test('init 開機傳 cold、回前景交給 onForeground（裡面帶 foreground）', () => {
     const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
     const init = html.slice(html.indexOf('(function init(){'));
     assert.match(init, /startSession\('cold'\)/);
-    assert.match(init, /startSession\('foreground'\)/);
+    assert.match(init, /onForeground\(Date\.now\(\)\)/);
+    const fg = html.slice(html.indexOf('function onForeground('), html.indexOf('function timedPull('));
+    assert.match(fg, /startSession\('foreground'\)/);
+    assert.match(fg, /timedPull\('foreground'\)/);
   });
 
   test('手動刷新：一個 readMany（三張表，不含名單）帶 manual，記一筆 pull/manual', async () => {

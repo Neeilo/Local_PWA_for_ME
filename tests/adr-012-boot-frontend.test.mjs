@@ -126,7 +126,8 @@ describe('boot 成功：身份 → 名單 → 資料 → 補送', () => {
     assert.equal(e.read('rosterStatus'), 'ok');
     assert.deepEqual(e.read('state.tasks').map((t) => t.txt), ['雲端的']);
     assert.equal(e.read('cloudOnline'), true);
-    assert.deepEqual(e.calls.map((c) => c.body.action), ['boot', 'upsert']);
+    // 股票另打（ADR-018 D-6）：boot 回來、進首頁之後才發，不擋開機
+    assert.deepEqual(e.calls.map((c) => c.body.action), ['boot', 'upsert', 'stock']);
   });
 
   test('開機與回前景同時觸發：只跑一趟 boot', async () => {
@@ -145,14 +146,16 @@ describe('boot 成功：身份 → 名單 → 資料 → 補送', () => {
     assert.equal(e.calls.filter((c) => c.body.action === 'boot').length, 1);
   });
 
-  test('回前景走 boot（重新確認身份與名單）；輪詢與手動刷新走 readMany（不含名單）', async () => {
+  test('完整開機走 boot（重新確認身份與名單）；輪詢與手動刷新走 readMany（不含名單）；股票另打 action=stock', async () => {
     const e = env((b) => (b.action === 'boot' ? BOOT() : b.action === 'readMany' ? { data: ALL(), denied: [] } : null));
     await e.callRaw('startSession', 'foreground');
     await e.callRaw('manualRefresh');
     e.call('pollTick');
     await settle();
     const acts = e.calls.map((c) => c.body.action + ':' + (c.body.trigger || '-'));
-    assert.deepEqual(acts, ['boot:foreground', 'readMany:manual', 'readMany:poll']);
+    // 手動刷新那次的股票被前一趟（還沒回來的 stock:foreground）併掉：同一時間只跑一趟
+    assert.deepEqual(acts, ['boot:foreground', 'stock:foreground', 'readMany:manual', 'readMany:poll', 'stock:poll']);
+    assert.ok(e.calls.every((c) => !('stock' in c.body)), 'boot／readMany 不再帶 stock 旗標');
     for (const c of e.calls.filter((x) => x.body.action === 'readMany')) {
       assert.deepEqual(c.body.sheets, ['tasks', 'notes', 'expenses'], 'reviews／moods 已退場（ADR-018）');
     }
@@ -214,68 +217,83 @@ describe('denied：明確沒權限，跟讀取失敗是兩件事', () => {
 });
 
 /* ========================================================================== */
-describe('等待畫面（D-5）', () => {
+describe('等待畫面（D-5 → ADR-018 D-1：全螢幕 Loading 取代骨架）', () => {
 
-  test('第一次讀到之前：首頁畫骨架，不說「還沒有支出紀錄」；讀到之後才出現空狀態', async () => {
+  test('第一次讀到之前：首頁寫「讀取中…」，不說「還沒有支出紀錄」；讀到之後才出現空狀態', async () => {
     const e = env((b) => (b.action === 'boot' ? BOOT() : null));
     const els = stableDom(e);
     e.call('renderDashboard');
-    assert.match(els.dashExpense.innerHTML, /skel/);
-    assert.match(els.deepTodo.innerHTML, /skel/);
-    assert.match(els.urgentList.innerHTML, /skel/);
-    assert.match(els.boardList.innerHTML, /skel/);
+    for (const id of ['dashExpense', 'deepTodo', 'urgentList', 'boardList']) assert.match(els[id].innerHTML, /讀取中…/, id);
     assert.doesNotMatch(els.dashExpense.innerHTML, /還沒有支出紀錄/);
+    assert.doesNotMatch(HTML, /class="skel"/, '骨架退場');
 
     await e.callRaw('startSession', 'cold');
     e.call('renderDashboard');
     assert.match(els.dashExpense.innerHTML, /還沒有支出紀錄/, '真的讀到了、而且是空的，才講空');
   });
 
-  test('沒有配對（先在本機用）：不等雲端，首頁照常畫本機的東西，不會永遠卡在骨架', () => {
+  test('沒有配對（先在本機用）：不等雲端，Loading 收起、首頁照常畫本機的東西', async () => {
     const e = env();
     const els = stableDom(e);
     e.raw('deviceToken = null; localOnly = true');
+    await e.callRaw('startSession', 'cold');
+    assert.equal(els.bootLoading.hidden, true);
     e.call('renderDashboard');
-    assert.doesNotMatch(els.deepTodo.innerHTML, /skel/);
     assert.match(els.deepTodo.innerHTML, /目前沒有進行中的待辦/);
     assert.match(els.urgentList.innerHTML, /3 天內沒有急事/);
   });
 
-  test('讀取失敗時骨架留著（連線橫幅會講原因），不改成「沒有資料」', async () => {
+  test('讀取失敗：Loading 收起、首頁講連不上（不改成「沒有資料」，ADR-009）', async () => {
     const e = env((b) => (b.action === 'boot' ? { __reject: true } : null));
     const els = stableDom(e);
     await e.callRaw('startSession', 'cold');
+    assert.equal(els.bootLoading.hidden, true);
     e.call('renderDashboard');
-    assert.match(els.dashExpense.innerHTML, /skel/);
+    assert.match(els.dashExpense.innerHTML, /連不上雲端/);
+    assert.doesNotMatch(els.dashExpense.innerHTML, /還沒有支出紀錄/);
   });
 
-  test('進度條：開機、回前景、手動刷新會出現；輪詢不出現；結束後收起', async () => {
+  test('全螢幕 Loading：開機出現、資料到齊才收；手動刷新只用頂端細條「更新中…」；輪詢都不出現', async () => {
     const e = env((b) => (b.action === 'boot' ? BOOT() : b.action === 'readMany' ? { data: ALL(), denied: [] } : null));
     const els = stableDom(e);
-    e.raw('var __starts = 0; var __ps = progressStart; progressStart = function(){ __starts++; __ps(); }');
-    await e.callRaw('startSession', 'cold');
-    assert.equal(e.read('__starts'), 1);
-    assert.equal(els.bootProgress.hidden, true, '資料到齊就收起');
+    e.raw('var __modes = []; var __ps = progressStart; progressStart = function(m){ __modes.push(m || "bar"); __ps(m); }');
+    const p = e.callRaw('startSession', 'cold');
+    assert.equal(els.bootLoading.hidden, false, '等資料時蓋著');
+    await p;
+    assert.equal(els.bootLoading.hidden, true, '資料到齊就收起');
     e.call('pollTick');
     await settle();
-    assert.equal(e.read('__starts'), 1, '背景更新不該打擾人');
+    assert.deepEqual(e.read('__modes'), ['full'], '背景更新不該打擾人');
     await e.callRaw('manualRefresh');
-    assert.equal(e.read('__starts'), 2);
-    await e.callRaw('startSession', 'foreground');
-    assert.equal(e.read('__starts'), 3);
+    assert.deepEqual(e.read('__modes'), ['full', 'bar']);
+    assert.equal(els.bootLoading.hidden, true);
   });
 
-  test('節奏常數：預估秒數另寫一個、超過 10 秒改講「比平常慢」', () => {
+  test('HTML 一開頁 Loading 就在（不先閃一下空首頁）；用 App icon；要配對時收起', async () => {
+    assert.match(HTML, /<div class="boot-loading" id="bootLoading" role="status"[^>]*>/);
+    assert.doesNotMatch(HTML.match(/<div class="boot-loading"[^>]*>/)[0], /hidden/);
+    assert.match(HTML, /<img src="neilos-icon-ios-180\.png"/);
     const e = env();
-    assert.equal(typeof e.read('BOOT_EXPECTED_MS'), 'number');
+    const els = stableDom(e);
+    e.raw('deviceToken = null; localOnly = false');
+    await e.callRaw('startSession', 'cold');
+    assert.equal(els.bootLoading.hidden, true);
+    assert.equal(e.read('gateMode'), 'pair');
+  });
+
+  test('節奏常數：預估 5 秒（D-5 目標）、超過 10 秒改講「比平常慢」；減少動態效果時進度條不動畫', () => {
+    const e = env();
+    assert.equal(e.read('BOOT_EXPECTED_MS'), 5000);
     assert.equal(e.read('BOOT_SLOW_MS'), 10000);
     assert.match(HTML, /比平常慢，仍在等雲端回應…/);
+    assert.match(HTML, /@media \(prefers-reduced-motion: reduce\)\{ \.boot-loading-track \.bar, \.boot-progress \.bar\{ transition:none !important; \} \}/);
   });
 
-  test('進度條與骨架只用 CSS 變數，不寫死色碼', () => {
-    const css = HTML.match(/\.boot-progress[\s\S]*?@keyframes skel-pulse[^}]*}[^}]*}/)[0];
+  test('進度條與 Loading 只用 CSS 變數，不寫死色碼', () => {
+    const css = HTML.match(/\.boot-progress\{[\s\S]*?\.boot-loading-msg\{[^}]*}/)[0];
     assert.doesNotMatch(css, /#[0-9a-fA-F]{3,6}\b/);
     assert.match(css, /var\(--accent\)/);
+    assert.match(css, /var\(--bg\)/);
   });
 });
 

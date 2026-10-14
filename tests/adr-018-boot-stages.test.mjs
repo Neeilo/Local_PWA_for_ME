@@ -61,23 +61,32 @@ const topLevelSum = (st) => Object.keys(st).filter((k) => k.indexOf('.') === -1)
 /* ========================================================================== */
 describe('boot／readMany：每一段都記到 stages 欄', () => {
 
-  test('管理員 boot（財務區）：驗證三子段、名單、各表、分類、分期、群組、perf_rows、報價、序列化都在', () => {
+  test('管理員 boot：驗證三子段、名單、各表、分類、分期、群組、perf_rows、序列化都在；股票不在（D-6 移到 action=stock）', () => {
     const e = env();
     const out = post(e, { token: TOK_ME, action: 'boot', trigger: 'cold', stock: true });
     assert.equal(out.session.status, 'ok', '主流程照常');
-    assert.ok(out.stock, '有帶股票');
+    assert.equal(out.stock, undefined, '開機不等報價');
 
     const row = perfRows(e).find((r) => r.action === 'boot');
     assert.ok(row, 'boot 寫了一列');
     const st = stagesOf(row);
     for (const k of ['parse', 'auth', 'auth.device', 'auth.gate', 'auth.touch', 'open', 'users',
       'sheets', 'sheets.tasks', 'sheets.expenses', 'groups', 'perf_rows', 'unauth_alert',
-      'expense_config', 'installments', 'stock', 'stock.quote', 'json']) {
+      'expense_config', 'installments', 'json']) {
       assert.equal(typeof st[k], 'number', '缺 ' + k);
       assert.ok(st[k] >= 0, k + ' 不能是負數');
     }
+    assert.equal(st.stock, undefined);
     assert.equal(st.auth, row.auth_ms, 'auth 段就是原本的 auth_ms，不重量');
     assert.ok(topLevelSum(st) <= row.server_ms, '頂層加總不超過 server_ms：子段沒有被重複加');
+  });
+
+  test('action=stock：自己一列，記 stock 與 stock.quote', () => {
+    const e = env();
+    const out = post(e, { token: TOK_ME, action: 'stock', trigger: 'cold' });
+    assert.ok(out.stock);
+    const st = stagesOf(perfRows(e).find((r) => r.action === 'stock'));
+    for (const k of ['auth', 'stock', 'stock.quote', 'json']) assert.equal(typeof st[k], 'number', '缺 ' + k);
   });
 
   test('一般成員 boot：沒權限的段不出現（沒有記帳就沒有分類／分期、不是管理員就沒有 perf_rows、沒帶 stock 就沒有報價）', () => {
@@ -90,19 +99,20 @@ describe('boot／readMany：每一段都記到 stages 欄', () => {
     assert.equal(typeof st['sheets.tasks'], 'number');
   });
 
-  test('readMany（輪詢）：同一套分段；不讀名單所以沒有 users', () => {
+  test('readMany（輪詢）：同一套分段；不讀名單所以沒有 users；股票另打所以沒有 stock', () => {
     const e = env();
     post(e, { token: TOK_ME, action: 'readMany', sheets: ['tasks', 'expenses'], trigger: 'poll', stock: true });
     const st = stagesOf(perfRows(e).find((r) => r.action === 'readMany'));
-    for (const k of ['auth', 'open', 'sheets', 'sheets.tasks', 'sheets.expenses', 'expense_config', 'installments', 'stock', 'json']) {
+    for (const k of ['auth', 'open', 'sheets', 'sheets.tasks', 'sheets.expenses', 'expense_config', 'installments', 'json']) {
       assert.equal(typeof st[k], 'number', '缺 ' + k);
     }
     assert.equal(st.users, undefined);
+    assert.equal(st.stock, undefined);
   });
 
   test('stages 只有段名與毫秒：找不到 token、資料內容', () => {
     const e = env();
-    post(e, { token: TOK_ME, action: 'boot', trigger: 'cold', stock: true });
+    post(e, { token: TOK_ME, action: 'boot', trigger: 'cold' });
     const raw = perfRows(e).find((r) => r.action === 'boot').stages;
     assert.ok(!raw.includes(TOK_ME) && !raw.includes('祕密'), raw);
     for (const [k, v] of Object.entries(JSON.parse(raw))) {

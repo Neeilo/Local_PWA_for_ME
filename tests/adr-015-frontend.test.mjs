@@ -92,15 +92,43 @@ describe('股票格的開關與資料要不要', () => {
     assert.equal(e.call('wantStock'), false);
   });
 
-  test('輪詢的 readMany 帶 stock 旗標，並收下回來的股票資料', async () => {
+  test('輪詢另打 action=stock（readMany 不再帶 stock 旗標），收下回來的股票資料（ADR-018 D-6）', async () => {
     const fresh = Object.assign({}, STOCK, { my_member: '新的' });
     const { e } = env({ stock: null, fetchImpl: ({ body }) => (body.action === 'readMany'
-      ? respond({ data: { tasks: [], reviews: [], moods: [], notes: [], expenses: [] }, denied: [], stock: fresh }) : null) });
-    await e.callRaw('syncFromCloud', { trigger: 'poll' });
-    const sent = e.calls.find((c) => c.body && c.body.action === 'readMany').body;
-    assert.equal(sent.stock, true);
-    assert.equal(sent.trigger, 'poll');
+      ? respond({ data: { tasks: [], notes: [], expenses: [] }, denied: [] })
+      : body.action === 'stock' ? respond({ stock: fresh }) : null) });
+    e.call('pollTick');
+    await new Promise((r) => setTimeout(r, 10));
+    const many = e.calls.find((c) => c.body && c.body.action === 'readMany').body;
+    assert.equal('stock' in many, false);
+    const st = e.calls.find((c) => c.body && c.body.action === 'stock').body;
+    assert.equal(st.trigger, 'poll');
     assert.equal(e.read('stockData.my_member'), '新的');
+  });
+
+  test('生產力區不打 action=stock', async () => {
+    const { e } = env({ fetchImpl: () => respond({ data: { tasks: [], notes: [], expenses: [] }, denied: [] }) });
+    e.raw('zone = "productivity"');
+    e.call('pollTick');
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(e.calls.filter((c) => c.body && c.body.action === 'stock').length, 0);
+  });
+
+  test('雲端說沒權限 → 清掉；讀失敗 → 保留上一份並標出來；網路斷 → 原地不動', async () => {
+    let answer = null;
+    const { e, el } = env({ fetchImpl: ({ body }) => (body.action === 'stock' ? answer() : null) });
+    answer = () => respond({ stock: { error: 'stock_failed' } });
+    await e.callRaw('refreshStock', 'poll');
+    assert.equal(e.read('stockData.my_member'), '爸爸');
+    assert.equal(e.read('stockFailed'), true);
+    answer = () => Promise.reject(new Error('offline'));
+    await e.callRaw('refreshStock', 'poll');
+    assert.equal(e.read('stockData.my_member'), '爸爸');
+    answer = () => respond({ error: 'forbidden' });
+    await e.callRaw('refreshStock', 'poll');
+    assert.equal(e.read('stockData'), null);
+    e.call('renderStocksView');
+    assert.doesNotMatch(el('stockBody').innerHTML, /爸爸/);
   });
 
   test('這次沒要（回應沒有 stock）→ 保留上一份；雲端說讀失敗 → 保留並標出來', () => {
