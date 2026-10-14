@@ -674,6 +674,8 @@ function routePwaSync_(body, perf) {
   if (body.action === 'gmailRuleSet') return jsonOut(gmailRuleSet_(caller, body.record));
   if (body.action === 'stockPushMe') return jsonOut(stockPushMe_(caller, body.symbol));
   if (body.action === 'selfNoteSet') return jsonOut(selfNoteSet_(caller, body.text));
+  if (body.action === 'aiConfigGet') return jsonOut(aiConfigGet_(caller));
+  if (body.action === 'aiConfigSet') return jsonOut(aiConfigSet_(caller, body.provider));
 
   if (NO_PWA_WRITE.indexOf(body.sheet) !== -1 || isBackupSheet_(body.sheet)) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');
@@ -2591,7 +2593,7 @@ function perfJsonOut_(perf, obj) {
  *  - reply_ms ：從收到事件到送出回覆——使用者實際等的時間
  * 只記名單上啟用中的人（比照 PWA：沒通過驗證的請求一列都不寫，免得陌生人灌爆這張表）。
  */
-function recordLinePerf_(action, userId, serverMs, replyMs) {
+function recordLinePerf_(action, userId, serverMs, replyMs, stages) {
   try {
     var user = lineUserById_(userId);
     if (!user || !truthy_(user.is_active)) return;
@@ -2599,7 +2601,8 @@ function recordLinePerf_(action, userId, serverMs, replyMs) {
     var headers = perfHeaders_(sheet);
     var now = Date.now();
     var r = { id: String(now), ts: new Date(now).toISOString(), action: action, trigger: 'line',
-              server_ms: serverMs, reply_ms: replyMs == null ? '' : replyMs, line_id: String(userId || '').trim() };
+              server_ms: serverMs, reply_ms: replyMs == null ? '' : replyMs, line_id: String(userId || '').trim(),
+              stages: perfStagesText_(stages) };
     sheet.appendRow(headers.map(function (h) { return r[h] === undefined || r[h] === null ? '' : r[h]; }));
   } catch (err) {
     console.log('寫 LINE 效能紀錄失敗（主流程不受影響）：' + err);

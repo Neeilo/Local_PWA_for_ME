@@ -75,7 +75,8 @@ var QUERY_REPLY_LINES = 5;
  */
 var GEMINI_MODEL_DEFAULT = 'gemini-3.5-flash';
 var GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-var GEMINI_TIMEOUT_REPLY = 'AI 暫時無法回應，請稍後再試';
+// ADR-017 起失敗訊息帶供應商名：「Claude 暫時無法回應，請稍後再試」（D-4）
+var AI_FAIL_REPLY_SUFFIX = '暫時無法回應，請稍後再試';
 
 /**
  * 輸出上限刻意給得寬。
@@ -249,10 +250,12 @@ function handleLineWebhook_(body) {
  */
 var LINE_LOG_QUEUE = null;
 var LINE_REPLIED_AT = null;
+var LINE_PERF = null;          // 這個事件的分段計時（stages）；目前只有「查/」會記（ADR-017）
 function runLineEvent_(event) {
   var started = Date.now();
   LINE_LOG_QUEUE = [];
   LINE_REPLIED_AT = null;
+  LINE_PERF = {};
   try {
     handleLineEvent_(event);
   } finally {
@@ -263,8 +266,9 @@ function runLineEvent_(event) {
     if (/^(message|postback)$/.test(type)) {
       recordLinePerf_('line' + type.charAt(0).toUpperCase() + type.slice(1),
         (event.source && event.source.userId) || '', Date.now() - started,
-        LINE_REPLIED_AT === null ? null : LINE_REPLIED_AT - started);
+        LINE_REPLIED_AT === null ? null : LINE_REPLIED_AT - started, LINE_PERF && LINE_PERF.stages);
     }
+    LINE_PERF = null;
   }
 }
 
@@ -984,7 +988,7 @@ function firstLine_(text) {
 /* ========================================================================== */
 
 /**
- * 「查/問題」的完整流程：組上下文 → 呼叫 Gemini → 回覆 → 寫 log。
+ * 「查/問題」的完整流程：組上下文 → 呼叫 AI（ADR-017：Gemini／OpenAI／Claude 擇一，見 ai.gs） → 回覆 → 寫 log。
  * 全程不寫任何資料列，所以 logs 的 target_row 一律留空。
  */
 function handleQuery_(question, rawText, userId) {
@@ -992,18 +996,15 @@ function handleQuery_(question, rawText, userId) {
     logTransaction_(QUERY_LOG_SOURCE, '失敗', rawText, '缺少問題內容', '', '', userId);
     return '要問什麼呢？\n格式：' + QUERY_USAGE;
   }
+  // 效能紀錄（ADR-017 × PR-0）：「查/」本來就有一列 LINE 效能列，在它的 stages 記 query 與兩個子段
+  var perf = LINE_PERF;
+  return perfStage_(perf, 'query', function () { return answerQuery_(question, rawText, userId, perf); });
+}
 
-  var key = geminiKey_();
-  if (!key) {
-    // 這不是「AI 暫時無法回應」——是根本還沒設定，講清楚才知道要去哪裡修
-    console.log('查詢略過：指令碼屬性 GEMINI_API_KEY 不存在或是空字串');
-    logTransaction_(QUERY_LOG_SOURCE, '失敗', rawText, 'GEMINI_API_KEY 未設定', '', '', userId);
-    return 'AI 查詢還沒設定完成（缺 GEMINI_API_KEY）。';
-  }
-
+function answerQuery_(question, rawText, userId, perf) {
   var context;
   try {
-    context = buildQueryContext_(userId);
+    context = perfStage_(perf, 'query.context', function () { return buildQueryContext_(userId); });
   } catch (err) {
     console.log('查詢組資料失敗：' + err);
     logTransaction_(QUERY_LOG_SOURCE, '失敗', rawText, '讀取資料失敗',
@@ -1011,24 +1012,26 @@ function handleQuery_(question, rawText, userId) {
     return '讀不到資料，請稍後再試。';
   }
 
-  var res = callGemini_(key, buildQueryPrompt_(context, question));
+  // ADR-017：出口依設定選 Gemini／OpenAI／Claude，只打選定的那一家，失敗不換家（D-4）
+  var res = perfStage_(perf, 'query.ai', function () { return callAi_(buildQueryPrompt_(context, question)); });
+  var who = 'provider=' + res.provider + '｜model=' + res.model;
+  if (!res.ok && res.reason === 'no_key') {
+    // 這不是「暫時無法回應」——是根本還沒設定，講清楚才知道要去哪裡修
+    console.log('查詢略過：指令碼屬性 ' + res.missingKey + ' 不存在或是空字串');
+    logTransaction_(QUERY_LOG_SOURCE, '失敗', rawText, res.missingKey + ' 未設定', who, '', userId);
+    return 'AI 查詢還沒設定完成（缺 ' + res.missingKey + '）。';
+  }
   if (!res.ok) {
-    // 對外統一口徑，對內留完整證據——安靜的失敗是最貴的那種
-    logTransaction_(QUERY_LOG_SOURCE, '失敗', rawText, res.reason, res.detail, '', userId);
-    return GEMINI_TIMEOUT_REPLY;
+    // 對外統一口徑（帶供應商名，D-4），對內留完整證據——安靜的失敗是最貴的那種
+    logTransaction_(QUERY_LOG_SOURCE, '失敗', rawText, res.reason, who + '｜' + (res.detail || ''), '', userId);
+    return res.label + ' ' + AI_FAIL_REPLY_SUFFIX;
   }
 
   logTransaction_(QUERY_LOG_SOURCE, '成功', rawText,
     (res.truncated ? '已回覆（被截斷）：' : '已回覆：') + truncate_(question, 40),
-    res.truncated ? 'finishReason=MAX_TOKENS，maxOutputTokens=' + GEMINI_MAX_OUTPUT_TOKENS : '',
+    who + (res.truncated ? '｜被截斷，輸出上限 ' + GEMINI_MAX_OUTPUT_TOKENS : ''),
     '', userId);
-  return res.text;
-}
-
-function geminiKey_() {
-  var raw = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-  // 從網頁複製常會帶到換行或空白，前後修掉（比照 LINE 權杖的處理）
-  return raw ? String(raw).trim() : '';
+  return res.text + '\n\n（由 ' + res.label + ' 彙整）';      // D-5
 }
 
 function geminiModel_() {
@@ -1315,8 +1318,8 @@ function truncate_(text, max) {
  * 每一種失敗都留 console.log，不靜默吞掉（ADR-006 §B）——
  * 「額度用完」「模型名稱過期」「key 是別的專案的」從外面看全都是同一種安靜的失敗。
  */
-function callGemini_(key, prompt) {
-  var model = geminiModel_();
+function callGemini_(key, prompt, model) {
+  model = model || geminiModel_();     // ADR-017 起由 callAi_ 傳入（GEMINI_MODEL 覆寫照舊），沒傳就照舊自己讀
   var url = GEMINI_API_BASE + '/' + encodeURIComponent(model) + ':generateContent';
 
   var res;
