@@ -85,8 +85,42 @@ function callAi_(prompt) {
     res = { ok: false, reason: '程式錯誤', detail: String(err && err.stack || err) };
   }
   var out = Object.assign({}, res, base);
-  if (!out.ok) aiNoteError_(id, out.reason);
+  if (!out.ok) {
+    out.reason = aiExplain_(p.label, out.reason, out.detail);
+    aiNoteError_(id, out.reason);
+  }
   return out;
+}
+
+/**
+ * 錯誤代碼翻成人話（Neil 2026-10-14）：「HTTP 429」看不出是額度用完還是打太快，要點進原始訊息讀英文。
+ * 原本的 reason 留在前面（logs 與設定頁照樣看得到代碼），後面接「・說明」。已經有說明的（例如 404 的
+ * 「跑 diagnoseAi」提示）不重複加。依 HTTP 狀態碼與回應內容的關鍵字判斷，三家共用。
+ */
+function aiExplain_(label, reason, detail) {
+  var r = String(reason || '');
+  var m = /^HTTP (\d{3})/.exec(r);
+  if (!m || r.indexOf('（') !== -1) return r;
+  var code = Number(m[1]);
+  var body = String(detail || '').toLowerCase();
+  var hint = '';
+  if (/insufficient_quota|credit_balance|credit balance|billing|resource_exhausted|quota/.test(body) && (code === 429 || code === 400 || code === 403)) {
+    // Gemini 的「每分鐘上限」與「額度用完」用同一組字（quota），分不開就兩個都講
+    hint = '額度用完或超過用量上限，請到 ' + label + ' 帳戶加值或檢查用量設定';
+  } else if (code === 401 || /invalid_api_key|api_key_invalid|authentication_error|incorrect api key/.test(body)) {
+    hint = 'API key 錯誤或已失效，請重新設定指令碼屬性';
+  } else if (code === 403) {
+    hint = '這把 key 沒有使用這個模型的權限';
+  } else if (code === 404) {
+    hint = '模型名稱不存在，跑 diagnoseAi 或改模型的指令碼屬性';
+  } else if (code === 429) {
+    hint = '呼叫太頻繁，稍等一下再試';
+  } else if (code === 400) {
+    hint = '請求格式不被接受（多半是模型不支援某個參數）';
+  } else if (code === 529 || code === 503 || code >= 500) {
+    hint = label + ' 服務暫時忙碌或故障，稍後再試';
+  }
+  return hint ? r + '・' + hint : r;
 }
 
 /** 最後一次失敗（只留一筆）。寫不進去不影響回覆——這是給人回頭看的 */
@@ -254,7 +288,7 @@ function diagnoseAi() {
     try { res = p.call(key, model, '只回覆「OK」兩個字。') || {}; } catch (err) { res = { ok: false, reason: String(err) }; }
     line.ms = Date.now() - t;
     line.ok = !!res.ok;
-    line.reason = res.ok ? '' : String(res.reason || '');
+    line.reason = res.ok ? '' : aiExplain_(p.label, res.reason, res.detail);
     return line;
   });
   console.log('目前使用：' + table[current].label + '（' + current + '）');
