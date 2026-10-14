@@ -617,6 +617,7 @@
 .boot-loading-track{ width:min(220px, 70vw); height:4px; border-radius:2px; background:var(--line); overflow:hidden; }
 .boot-loading-track .bar{ height:100%; width:0; background:var(--accent); }
 .boot-loading-msg{ font-size:13px; color:var(--muted); min-height:1.4em; text-align:center; }
+.boot-loading #bootRetry{ width:auto; min-width:160px; }
 @media (prefers-reduced-motion: reduce){ .boot-loading-track .bar, .boot-progress .bar{ transition:none !important; } }
 .conn-banner{
   margin-top:6px; padding:6px 12px; border-radius:10px; font-size:13px; line-height:1.5;
@@ -771,8 +772,9 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
 <!-- 全螢幕 Loading（ADR-018 D-1）：一開頁就在，開機資料到齊（或確定要配對／讀不到）才收起 -->
 <div class="boot-loading" id="bootLoading" role="status" aria-live="polite">
   <img src="neilos-icon-ios-180.png" alt="" width="96" height="96">
-  <div class="boot-loading-track"><div class="bar" id="bootLoadingBar"></div></div>
+  <div class="boot-loading-track" id="bootLoadingTrack"><div class="bar" id="bootLoadingBar"></div></div>
   <div class="boot-loading-msg" id="bootLoadingMsg">讀取中…</div>
+  <button class="btn" id="bootRetry" hidden onclick="retryBoot()">重新整理</button>
 </div>
 
 <header>
@@ -1453,21 +1455,60 @@ function startSession(trigger){
   }
   if(bootPromise) return bootPromise;
   const started=Date.now();
-  // 開機、離開超過 30 分鐘的回前景：全螢幕 Loading，資料到齊才進首頁（ADR-018 D-1／D-3）
-  const full = trigger==='cold' || trigger==='foreground';
+  // 開機、離開超過 30 分鐘的回前景：全螢幕 Loading，資料到齊才進首頁（ADR-018 D-1／D-3）。
+  // 停在 Loading 上按「重新整理」的那一次也是（trigger=manual，但畫面還蓋著）
+  const full = trigger==='cold' || trigger==='foreground' || loadingShown();
   if(full){
     progressStart('full');
     stockData=null; stockFailed=false;     // 不顯示舊報價（ADR-009）：開機後另打 action=stock 補上
   }
-  bootPromise=runBoot(trigger).then(ok=>{
+  bootPromise=(full ? bootWithRetry(trigger) : runBoot(trigger)).then(ok=>{
     if(ok && trigger) perfNote('boot', trigger, Date.now()-started);
     if(ok) refreshStock(trigger);          // 不等它：報價慢，Loading 不等報價（D-6）
+    if(full){
+      if(ok || gateMode) progressDone('full');
+      else loadingStuck();                 // 兩次都失敗：停在 Loading，給一顆「重新整理」（Neil 2026-10-14）
+    }
     return ok;
+  }, err=>{
+    if(full) loadingStuck();
+    throw err;
   }).finally(()=>{
     bootPromise=null; lastPullAt=Date.now();
-    if(full) progressDone('full');
   });
   return bootPromise;
+}
+
+/* 開機失敗自動重試一次（Neil 2026-10-14）：剛打開 App 時網路常常還沒接上，第一次請求就失敗。
+   認證問題（要配對、續期、被停用）不重試——cloudPost 已經帶去對的畫面了 */
+const BOOT_RETRY_MS=2000;
+async function bootWithRetry(trigger){
+  if(await runBoot(trigger)) return true;
+  if(gateMode) return false;
+  await new Promise(r=>setTimeout(r, BOOT_RETRY_MS));
+  if(gateMode) return false;
+  return runBoot(trigger);
+}
+function loadingShown(){
+  const el=document.getElementById('bootLoading');
+  return !!el && !el.hidden;
+}
+/* 兩次都連不上：停在 Loading，不進首頁（不顯示舊資料，ADR-009），讓人自己決定什麼時候再試 */
+function loadingStuck(){
+  progressClear();
+  const el=document.getElementById('bootLoading');
+  if(el) el.hidden=false;
+  const msg=document.getElementById('bootLoadingMsg');
+  if(msg){ msg.hidden=false; msg.textContent='⚠️ 連不上雲端，請確認網路後再試一次'; }
+  const btn=document.getElementById('bootRetry');
+  if(btn){ btn.hidden=false; btn.disabled=false; }
+  const track=document.getElementById('bootLoadingTrack');
+  if(track) track.hidden=true;               // 停住的進度條看起來像還在讀，收起來
+}
+function retryBoot(){
+  const btn=document.getElementById('bootRetry');
+  if(btn){ btn.hidden=true; }
+  return startSession('manual');
 }
 
 /* 股票（ADR-018 D-6）：不再夾在 boot／readMany 裡，獨立一個請求。開機進首頁後、輪詢、手動刷新、
@@ -4765,6 +4806,10 @@ function progressStart(mode){
   p.wrap.hidden=false;
   if(bar){ bar.style.transition='none'; bar.style.width='0%'; bar.style.opacity='1'; }
   if(p.msg){ p.msg.hidden=false; p.msg.textContent = full ? '讀取中…' : PROGRESS_LABEL; }
+  if(full){
+    const b=document.getElementById('bootRetry'); if(b) b.hidden=true;
+    const t=document.getElementById('bootLoadingTrack'); if(t) t.hidden=false;
+  }
   progressTimers.push(setTimeout(()=>{
     if(!bar) return;
     bar.style.transition='width '+(BOOT_EXPECTED_MS/1000)+'s cubic-bezier(.1,.75,.25,1)';
