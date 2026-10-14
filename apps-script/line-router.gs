@@ -78,7 +78,7 @@ var QUERY_REPLY_LINES = 5;
  * 不必回頭改這支程式。不確定目前有哪些可用時，跑 diagnoseGemini —— 
  * 它會直接問 Google「這把 key 能用哪些模型」，比猜可靠。
  */
-var GEMINI_MODEL_DEFAULT = 'gemini-3.5-flash';
+var GEMINI_MODEL_DEFAULT = 'gemini-3.5-flash-lite';   // ADR-017 D-6：預設輕量級（與 ai.gs 的 AI_MODELS 第一個相同）
 var GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 // ADR-017 起失敗訊息帶供應商名：「Claude 暫時無法回應，請稍後再試」（D-4）
 var AI_FAIL_REPLY_SUFFIX = '暫時無法回應，請稍後再試';
@@ -1411,7 +1411,7 @@ function callGemini_(key, prompt, model) {
       headers: { 'x-goog-api-key': key },
       payload: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.2, maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS }
+        generationConfig: geminiGenConfig_(model)
       }),
       muteHttpExceptions: true
     });
@@ -1465,6 +1465,18 @@ function callGemini_(key, prompt, model) {
     };
   }
   return { ok: true, text: got.text };
+}
+
+/**
+ * Gemini 3 系列（ADR-017 D-6，依 2026-10-14 官方 Gemini 3 開發指南）：temperature 官方強烈建議維持預設 1.0
+ * （調低可能鬼打牆），所以不送；思考預設是 high，Pro 會把 2048 的上限吃到只剩半截答案，所以壓在 low——
+ * 跟 OpenAI／Claude 的推理強度 low 對齊。清單外手動設的舊型號（2.x）照改版前送 temperature 0.2。
+ */
+function geminiGenConfig_(model) {
+  if (/^gemini-3/.test(String(model))) {
+    return { maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS, thinkingConfig: { thinkingLevel: 'low' } };
+  }
+  return { temperature: 0.2, maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS };
 }
 
 /** 回 { text, finishReason }——finishReason 是判斷「有沒有說完」的唯一依據 */

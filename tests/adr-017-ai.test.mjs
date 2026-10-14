@@ -375,3 +375,150 @@ describe('錯誤代碼說明（Neil 2026-10-14：「HTTP 429」看不出是額�
     assert.match(out[1].reason, /^HTTP 429・額度用完/);
   });
 });
+
+/* ========================================================================== */
+describe('T5｜模型選擇開到設定頁（ADR-017 D-6，2026-10-14）', () => {
+
+  const TIERS = ['輕量', '標準', '進階'];
+  const LIST = {
+    gemini: ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-3.1-pro-preview'],
+    openai: ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra'],
+    claude: ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5']
+  };
+  const get = (e, tok = TOK_ME) => post(e, { token: tok, action: 'aiConfigGet', trigger: 'manual' });
+  const set = (e, body, tok = TOK_ME) => post(e, Object.assign({ token: tok, action: 'aiConfigSet', trigger: 'write' }, body));
+
+  test('屬性空白 → 三家都走輕量級（Gemini 從 3.5 Flash 換成 3.5 Flash-Lite）', () => {
+    for (const id of ['gemini', 'openai', 'claude']) {
+      const e = env({ properties: Object.assign({ AI_PROVIDER: id }, KEYS) });
+      ask(e);
+      const c = e.net.calls[0];
+      const model = id === 'gemini' ? decodeURIComponent(c.url.split('/models/')[1].split(':')[0]) : c.body.model;
+      assert.equal(model, LIST[id][0], id);
+    }
+  });
+
+  test('aiConfigGet：每家多回 models（輕量／標準／進階＋型號名）、目前生效的 model、custom；仍不回 key', () => {
+    const e = env({ properties: Object.assign({ CLAUDE_MODEL: 'claude-sonnet-5-5' }, KEYS) });
+    const out = get(e);
+    for (const p of out.providers) {
+      assert.deepEqual(p.models.map((m) => m.id), LIST[p.id], p.id);
+      assert.deepEqual(p.models.map((m) => m.tier), TIERS, p.id);
+      assert.ok(p.models.every((m) => m.label && !/\$/.test(m.label)), '有型號名、不顯示價格');
+    }
+    const claude = out.providers.find((p) => p.id === 'claude');
+    assert.equal(claude.model, 'claude-sonnet-5-5');
+    assert.equal(claude.custom, false);
+    const raw = JSON.stringify(out);
+    for (const k of Object.values(KEYS)) assert.ok(!raw.includes(k), '不能有 key：' + k);
+  });
+
+  test('清單外的值（Neil 在編輯器手動設的）照用、custom:true', () => {
+    const e = env({ properties: Object.assign({ GEMINI_MODEL: 'gemini-2.5-pro' }, KEYS) });
+    const g = get(e).providers.find((p) => p.id === 'gemini');
+    assert.equal(g.model, 'gemini-2.5-pro');
+    assert.equal(g.custom, true);
+    ask(e);
+    assert.match(e.net.calls[0].url, /models\/gemini-2\.5-pro:generateContent/);
+  });
+
+  test('aiConfigSet 只改模型、不改供應商：寫該家的 *_MODEL、寫 logs（哪家、從哪個到哪個）', () => {
+    const e = env({ properties: KEYS });
+    const out = set(e, { provider: 'claude', model: 'claude-sonnet-5-5' });
+    assert.deepEqual(out, { success: true, provider: 'gemini', target: 'claude', model: 'claude-sonnet-5-5' });
+    assert.equal(e.properties.CLAUDE_MODEL, 'claude-sonnet-5-5');
+    assert.equal(e.properties.AI_PROVIDER, undefined, '供應商不動');
+    const log = e.transactions.find((t) => t[0] === 'AI');
+    assert.match(log[3], /Claude 模型：Haiku 5\.5 → Sonnet 5\.5/);
+    assert.equal(log[6], ME);
+    assert.match(ask(e), /由 Gemini 彙整/, '回覆標示不變、仍用 Gemini');
+  });
+
+  test('aiConfigSet：清單外的 model、他家的 model id、沒 key 的那家、非管理員都拒絕，設定不動', () => {
+    const e = env({ properties: { GEMINI_API_KEY: 'g', OPENAI_API_KEY: 'o' } });
+    assert.equal(set(e, { provider: 'openai', model: 'gpt-5' }).error, 'unknown_model');
+    assert.equal(set(e, { provider: 'openai', model: 'claude-haiku-5-5' }).error, 'unknown_model');
+    assert.equal(set(e, { provider: 'claude', model: 'claude-opus-5-5' }).error, 'no_key');
+    assert.equal(set(e, { provider: 'grok', model: 'x' }).error, 'unknown_provider');
+    assert.equal(set(e, { provider: 'openai', model: 'gpt-6-astra' }, TOK_MOM).error, 'forbidden');
+    assert.equal(e.properties.OPENAI_MODEL, undefined);
+    assert.equal(e.properties.CLAUDE_MODEL, undefined);
+  });
+
+  test('Gemini 3 系列：推理強度 low（thinkingLevel）、不送 temperature（官方建議維持預設）；舊型號照舊 0.2', () => {
+    const e = env({ properties: KEYS });
+    ask(e);
+    const g = e.net.calls[0].body.generationConfig;
+    assert.deepEqual(g, { maxOutputTokens: 2048, thinkingConfig: { thinkingLevel: 'low' } });
+    const old = env({ properties: Object.assign({ GEMINI_MODEL: 'gemini-2.5-flash' }, KEYS) });
+    ask(old);
+    assert.deepEqual(old.net.calls[0].body.generationConfig, { temperature: 0.2, maxOutputTokens: 2048 });
+  });
+
+  test('OpenAI／Claude 標準與進階級：同一組參數（官方文件三級都收 low）', () => {
+    for (const [id, prop, model] of [['openai', 'OPENAI_MODEL', 'gpt-6-astra'], ['claude', 'CLAUDE_MODEL', 'claude-opus-5-5']]) {
+      const e = env({ properties: Object.assign({ AI_PROVIDER: id, [prop]: model }, KEYS) });
+      ask(e);
+      const b = e.net.calls[0].body;
+      assert.equal(b.model, model);
+      if (id === 'openai') assert.equal(b.reasoning_effort, 'low');
+      else assert.deepEqual(b.output_config, { effort: 'low' });
+      assert.equal('temperature' in b, false);
+    }
+  });
+
+  test('diagnoseAi：測各家目前生效的模型', () => {
+    const e = env({ properties: Object.assign({ CLAUDE_MODEL: 'claude-opus-5-5' }, KEYS) });
+    const out = e.call('diagnoseAi');
+    assert.deepEqual(out.map((l) => l.model), ['gemini-3.5-flash-lite', 'gpt-6-luna', 'claude-opus-5-5']);
+    assert.equal(e.net.calls.find((c) => c.who === 'claude').body.model, 'claude-opus-5-5');
+  });
+
+  /* ---------- PWA ---------- */
+  const models = (id) => LIST[id].map((m, i) => ({ id: m, tier: TIERS[i], label: m.toUpperCase() }));
+  const CFG = () => ({ success: true, provider: 'gemini', lastError: null, providers: [
+    { id: 'gemini', label: 'Gemini', hasKey: true, model: 'gemini-2.5-pro', custom: true, models: models('gemini') },
+    { id: 'openai', label: 'OpenAI', hasKey: false, model: 'gpt-6-luna', custom: false, models: models('openai') },
+    { id: 'claude', label: 'Claude', hasKey: true, model: 'claude-sonnet-5-5', custom: false, models: models('claude') }] });
+  function fe(handler) {
+    const e = loadFrontend({ fetchImpl: ({ body }) => ({ json: () => Promise.resolve(handler(body)) }) });
+    e.raw('myLineId = "' + ME + '"; deviceToken = "tok"; roster = [{line_id:"' + ME + '", is_active:"TRUE", is_admin:"TRUE"}]');
+    const els = {};
+    const doc = e.context.document;
+    const orig = doc.getElementById;
+    e.set('document', Object.assign({}, doc, { getElementById: (id) => els[id] || (els[id] = orig(id)) }));
+    return { e, els };
+  }
+
+  test('設定頁：每家一個模型下拉（等級＋型號名），選中目前的；自訂的顯示「自訂：xxx」；沒 key 的整列 disabled', () => {
+    const { e, els } = fe(() => CFG());
+    e.raw('aiState.cfg = ' + JSON.stringify(CFG()));
+    e.call('renderAiCard');
+    const html = els.aiBody.innerHTML;
+    assert.match(html, /<select [^>]*onchange="pickAiModel\('claude', this\.value\)"[^>]*>/);
+    assert.match(html, /<option value="claude-sonnet-5-5" selected>標準・CLAUDE-SONNET-5-5<\/option>/);
+    assert.match(html, /<option value="gemini-2\.5-pro" selected disabled>自訂：gemini-2\.5-pro<\/option>/);
+    assert.match(html, /<option value="gemini-3\.5-flash-lite">輕量・GEMINI-3\.5-FLASH-LITE<\/option>/);
+    assert.match(html, /<select disabled [^>]*onchange="pickAiModel\('openai', this\.value\)"/);
+  });
+
+  test('改模型：送 aiConfigSet（provider＋model、trigger write），送出中再改不重送；成功後畫面跟著換', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const e = loadFrontend({ fetchImpl: ({ body }) => ({ json: () => (body.action === 'aiConfigSet'
+      ? gate.then(() => ({ success: true, provider: 'gemini', target: 'gemini', model: 'gemini-3.8-flash' })) : Promise.resolve(CFG())) }) });
+    e.raw('myLineId = "' + ME + '"; deviceToken = "tok"; roster = [{line_id:"' + ME + '", is_active:"TRUE", is_admin:"TRUE"}]');
+    e.raw('aiState.cfg = ' + JSON.stringify(CFG()));
+    const a = e.callRaw('pickAiModel', 'gemini', 'gemini-3.8-flash');
+    e.callRaw('pickAiModel', 'gemini', 'gemini-3.1-pro-preview');
+    release();
+    await a;
+    const sets = e.calls.filter((c) => c.body.action === 'aiConfigSet');
+    assert.equal(sets.length, 1);
+    assert.deepEqual([sets[0].body.provider, sets[0].body.model, sets[0].body.trigger], ['gemini', 'gemini-3.8-flash', 'write']);
+    assert.equal(e.read('aiState.cfg.providers[0].model'), 'gemini-3.8-flash');
+    assert.equal(e.read('aiState.cfg.providers[0].custom'), false);
+    assert.equal(e.read('aiState.cfg.provider'), 'gemini', '供應商不動');
+    assert.ok(e.toasts.some((t) => /Gemini 改用 GEMINI-3\.8-FLASH/.test(t)));
+  });
+});

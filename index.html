@@ -441,6 +441,7 @@
   }
   .place-btns button.sel{border-color:var(--accent); background:var(--accent-soft); color:var(--accent);}
   .place-btns button:disabled:not(.sel){opacity:.4; cursor:not-allowed;}
+  .ai-model{margin-top:4px; max-width:210px; padding:5px 8px; font-size:13px;}
   .dict-row{ padding:6px 0; border-bottom:1px solid var(--line); }
   .dict-row:last-child{ border-bottom:none; }
   .dict-row code{ font-size:13px; word-break:break-all; margin-right:6px; }
@@ -1169,7 +1170,7 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
         <span class="place-count" id="aiCount"></span><span class="fold-arrow" id="foldArrow-ai">▾</span></button>
       <div class="fold-body" id="fold-ai" hidden>
         <div id="aiBody"></div>
-        <p class="slot-hint">切換立即生效、全家共用。API key 設在 Apps Script 的指令碼屬性；沒有 key 的那一家不能選。失敗不會自動換家。</p>
+        <p class="slot-hint">切換立即生效、全家共用。API key 設在 Apps Script 的指令碼屬性；沒有 key 的那一家不能選。失敗不會自動換家。模型：輕量最便宜，標準與進階答得更細但比較貴。</p>
       </div>
     </div>
 
@@ -2800,10 +2801,11 @@ function renderDictCard(){
       ${c.note?`<div class="dash-sub">${esc(c.note)}</div>`:''}${c.example?`<div class="dash-sub">例：${esc(c.example)}</div>`:''}</div>`).join('')).join('');
 }
 
-/* ---------- 🤖 AI 供應商（ADR-017 D-1～D-4） ----------
+/* ---------- 🤖 AI 供應商（ADR-017 D-1～D-4、D-6） ----------
    全系統共用一個設定，管理員在這裡三選一，立即生效。雲端只回「有沒有 key」與模型，key 本身永遠不下來。
+   D-6：每家一個模型下拉（輕量／標準／進階），改了只換那一家的模型、不換供應商；清單外的（編輯器手動設的）顯示「自訂」。
    點了就送 aiConfigSet；送出中再按不理（比照 ADR-015 R-2 防連點）。 */
-const AI_ERRORS={forbidden:'只有管理者可以切換', no_key:'這一家還沒設定 API key', unknown_provider:'不認得的供應商'};
+const AI_ERRORS={forbidden:'只有管理者可以切換', no_key:'這一家還沒設定 API key', unknown_provider:'不認得的供應商', unknown_model:'不在清單裡的模型'};
 let aiState={cfg:null, loading:false, busy:false};
 async function loadAiConfig(){
   aiState.loading=true; renderAiCard();
@@ -2818,13 +2820,18 @@ function aiCardHtml(cfg){
   const rows=(cfg.providers||[]).map(p=>{
     const sel=p.id===cfg.provider;
     return `<div class="place-row">
-      <span class="place-name">${esc(p.label)}<br><small class="dash-sub">${p.hasKey?'✅ 已設定':'❌ 未設定 key'}・${esc(p.model||'')}</small></span>
+      <span class="place-name">${esc(p.label)}<br><small class="dash-sub">${p.hasKey?'✅ 已設定':'❌ 未設定 key'}・${esc(p.model||'')}</small><br>${aiModelSelect(p)}</span>
       <div class="place-btns"><button class="${sel?'sel':''}" ${(!p.hasKey||sel||aiState.busy)?'disabled':''} onclick="pickAiProvider('${esc(p.id)}')">${sel?'使用中':'切換'}</button></div>
     </div>`;
   }).join('');
   const e=cfg.lastError;
   const err = e ? `<p class="dash-sub">最後一次失敗：${esc(String(e.at||'').slice(0,16).replace('T',' '))}（UTC）・${esc(((cfg.providers||[]).find(p=>p.id===e.provider)||{}).label||e.provider||'')}・${esc(e.reason||'')}</p>` : '';
   return rows + err;
+}
+function aiModelSelect(p){
+  const custom = p.custom ? `<option value="${esc(p.model)}" selected disabled>自訂：${esc(p.model)}</option>` : '';
+  const opts=(p.models||[]).map(m=>`<option value="${esc(m.id)}"${(!p.custom&&m.id===p.model)?' selected':''}>${esc(m.tier)}・${esc(m.label)}</option>`).join('');
+  return `<select ${(!p.hasKey||aiState.busy)?'disabled ':''}class="ai-model" aria-label="${esc(p.label)} 模型" onchange="pickAiModel('${esc(p.id)}', this.value)">${custom}${opts}</select>`;
 }
 function renderAiCard(){
   setHidden('aiCard', !isAdmin());
@@ -2848,6 +2855,23 @@ async function pickAiProvider(id){
     toast('「查/」改用 '+(p?p.label:r.provider));
   }else{
     toast(r ? '⚠️ '+(AI_ERRORS[r.error]||r.error||'沒有切換') : '⚠️ 連不上雲端，沒有切換');
+  }
+  renderAiCard();
+}
+async function pickAiModel(id, model){
+  if(aiState.busy){ toast('切換中，請稍候'); return; }
+  const p=((aiState.cfg||{}).providers||[]).find(x=>x.id===id);
+  if(!p || (!p.custom && p.model===model)) return;
+  aiState.busy=true; renderAiCard();
+  let r=null;
+  try{ r=await cloudPost({action:'aiConfigSet', provider:id, model, trigger:'write'}); }catch(e){ r=null; }
+  aiState.busy=false;
+  if(r && r.success){
+    p.model=r.model; p.custom=false;
+    const m=(p.models||[]).find(x=>x.id===r.model);
+    toast(p.label+' 改用 '+(m?m.label:r.model));
+  }else{
+    toast(r ? '⚠️ '+(AI_ERRORS[r.error]||r.error||'沒有更換') : '⚠️ 連不上雲端，沒有更換');
   }
   renderAiCard();
 }
