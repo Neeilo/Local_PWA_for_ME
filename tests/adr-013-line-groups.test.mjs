@@ -149,7 +149,7 @@ describe('群組三道門（D-13）', () => {
   test('1 對 1 行為不變：不看 line_groups（就算有一個停用的群組也一樣）', () => {
     const e = env({ groups: [groupRow({ is_active: '' })] });
     assert.match(say(e, ME, '記帳/120/外食', 'user'), /已記錄支出/);
-    assert.match(say(e, ME, '亂打/123', 'user'), /沒有這個前綴/, '1 對 1 打錯前綴照樣回提示');
+    assert.match(say(e, ME, '亂打/123', 'user'), /看不懂這個指令，傳 \? 看字典/, '1 對 1 打錯前綴照樣回提示');
   });
 });
 

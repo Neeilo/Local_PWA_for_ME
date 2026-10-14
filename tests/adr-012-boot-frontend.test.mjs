@@ -243,14 +243,55 @@ describe('等待畫面（D-5 → ADR-018 D-1：全螢幕 Loading 取代骨架）
     assert.match(els.urgentList.innerHTML, /3 天內沒有急事/);
   });
 
-  test('讀取失敗：Loading 收起、首頁講連不上（不改成「沒有資料」，ADR-009）', async () => {
+  test('開機失敗：自動重試一次；第二次也失敗 → 停在 Loading、出現「重新整理」，不進首頁（Neil 2026-10-14）', async () => {
     const e = env((b) => (b.action === 'boot' ? { __reject: true } : null));
     const els = stableDom(e);
     await e.callRaw('startSession', 'cold');
-    assert.equal(els.bootLoading.hidden, true);
+    assert.equal(e.calls.filter((c) => c.body.action === 'boot').length, 2, '自動重試一次');
+    assert.equal(els.bootLoading.hidden, false, '停在 Loading');
+    assert.equal(els.bootRetry.hidden, false, '有重新整理按鈕');
+    assert.match(els.bootLoadingMsg.textContent, /連不上雲端/);
     e.call('renderDashboard');
-    assert.match(els.dashExpense.innerHTML, /連不上雲端/);
-    assert.doesNotMatch(els.dashExpense.innerHTML, /還沒有支出紀錄/);
+    assert.doesNotMatch(els.dashExpense.innerHTML, /還沒有支出紀錄/, '背後也不改成「沒有資料」（ADR-009）');
+  });
+
+  test('第一次失敗、重試成功：Loading 收起，進首頁', async () => {
+    let n = 0;
+    const e = env((b) => (b.action === 'boot' ? (++n === 1 ? { __reject: true } : BOOT()) : null));
+    const els = stableDom(e);
+    assert.equal(await e.callRaw('startSession', 'cold'), true);
+    assert.equal(n, 2);
+    assert.equal(els.bootLoading.hidden, true);
+    assert.equal(e.read('cloudOnline'), true);
+  });
+
+  test('按「重新整理」：再跑一次完整開機（同樣會重試）；成功就收起 Loading、按鈕藏起來', async () => {
+    let up = false;
+    const e = env((b) => (b.action === 'boot' ? (up ? BOOT() : { __reject: true }) : null));
+    const els = stableDom(e);
+    await e.callRaw('startSession', 'cold');
+    assert.equal(els.bootRetry.hidden, false);
+    up = true;
+    assert.equal(await e.callRaw('retryBoot'), true);
+    assert.equal(els.bootLoading.hidden, true);
+    assert.equal(els.bootRetry.hidden, true);
+    const last = e.calls.filter((c) => c.body.action === 'boot').pop();
+    assert.equal(last.body.trigger, 'manual', '人按的，記成 manual');
+  });
+
+  test('認證問題（續期）不重試：直接帶去續期畫面，Loading 收起', async () => {
+    const e = env((b) => {
+      if (b.action === 'boot') return { error: 'token_expired' };
+      if (b.action === 'renewStart') return { success: true, code: '123456', oa_id: '', expires_in: 600 };
+      return null;
+    });
+    const els = stableDom(e);
+    await e.callRaw('startSession', 'cold');
+    await settle();
+    assert.equal(e.calls.filter((c) => c.body.action === 'boot').length, 1);
+    assert.equal(e.read('gateMode'), 'renew');
+    assert.equal(els.bootLoading.hidden, true);
+    assert.equal(els.bootRetry.hidden, true);
   });
 
   test('全螢幕 Loading：開機出現、資料到齊才收；手動刷新只用頂端細條「更新中…」；輪詢都不出現', async () => {

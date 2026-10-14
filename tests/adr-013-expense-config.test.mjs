@@ -317,9 +317,9 @@ describe('LINE「分類」關鍵字', () => {
     assert.ok(e.transactions.some((t) => t[1] === '失敗' && t[2] === '分類' && t[6] === MOM));
   });
 
-  test('出現在支援清單裡', () => {
+  test('出現在 ? 字典裡（ADR-018 B-3 起支援清單改由指令登記表產生）', () => {
     const e = env();
-    assert.match(e.call('supportedPrefixesMessage_'), /・分類/);
+    assert.match(e.call('handleHelpCommand_', ME), /・分類　看記帳可用的大類、細項、對象/);
   });
 });
 

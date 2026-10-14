@@ -383,7 +383,14 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
     // 時間戳只要固定格式就好：要驗的是「有寫」，不是 Google 的時區換算
     Session: { getScriptTimeZone: () => 'Asia/Taipei' },
     Utilities: {
-      formatDate: () => '2026-09-23 06:00',
+      // 只有 yyyy-MM-dd（dateKey_ 那種「今天是哪天」）照真的日期算：不然「本月」「近 30 天」的邊界跟測試資料的日期對不上
+      formatDate: (d, _tz, fmt) => {
+        if (fmt === 'yyyy-MM-dd' && d instanceof Date) {
+          const p = (x) => String(x).padStart(2, '0');
+          return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+        }
+        return '2026-09-23 06:00';
+      },
       getUuid: () => randomUUID(),
       // 真的 computeDigest 回的是 Java 的有號位元組（-128～127），照樣假，
       // 否則 tokenHash_ 裡「轉回 0～255」那一步就測不到
