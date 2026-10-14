@@ -675,7 +675,7 @@ function routePwaSync_(body, perf) {
   if (body.action === 'stockPushMe') return jsonOut(stockPushMe_(caller, body.symbol));
   if (body.action === 'selfNoteSet') return jsonOut(selfNoteSet_(caller, body.text));
   if (body.action === 'aiConfigGet') return jsonOut(aiConfigGet_(caller));
-  if (body.action === 'aiConfigSet') return jsonOut(aiConfigSet_(caller, body.provider));
+  if (body.action === 'aiConfigSet') return jsonOut(aiConfigSet_(caller, body.provider, body.model));
   if (body.action === 'commandDict') return jsonOut(commandDictForPwa_(caller));
 
   if (NO_PWA_WRITE.indexOf(body.sheet) !== -1 || isBackupSheet_(body.sheet)) {

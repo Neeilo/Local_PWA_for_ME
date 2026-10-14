@@ -10,6 +10,8 @@
  *
  * 模型都可以用指令碼屬性覆寫（GEMINI_MODEL／OPENAI_MODEL／CLAUDE_MODEL）——各家改版比我們快，
  * 不必回頭改程式。不確定 key 或模型對不對，在編輯器跑 diagnoseAi()。
+ * D-6（2026-10-14）：設定頁每家可在 AI_MODELS 的三級（輕量／標準／進階）之間選，選了就寫回同一個
+ * *_MODEL 屬性（單一來源）；屬性空白 → 輕量級。屬性是清單外的值（在編輯器手動設的）照用。
  *
  * 各家實際採用的端點與預設模型（2026-10-14 依官方文件）：
  *   - Gemini：沿用 line-router.gs 的 callGemini_（generateContent），行為不變
@@ -24,6 +26,24 @@ var AI_PROVIDER_PROP = 'AI_PROVIDER';
 var AI_LAST_ERROR_PROP = 'AI_LAST_ERROR';
 var AI_DEFAULT_PROVIDER = 'gemini';
 var AI_LOG_SOURCE = 'AI';
+
+/**
+ * 設定頁可選的模型（D-6）。每家第一個是輕量級＝屬性空白時的預設。
+ * 2026-10-14 依各家官方文件核對：三家的標準／進階級都收跟輕量級同一組參數（OpenAI reasoning_effort low、
+ * Claude output_config.effort low；Gemini 3 系列 thinkingLevel low，見 line-router.gs 的 callGemini_）。
+ * 價格只做排序參考，不顯示在 PWA。
+ */
+var AI_MODELS = {
+  gemini: [{ id: 'gemini-3.5-flash-lite', label: '3.5 Flash-Lite', tier: '輕量' },
+           { id: 'gemini-3.8-flash', label: '3.8 Flash', tier: '標準' },
+           { id: 'gemini-3.1-pro-preview', label: '3.1 Pro', tier: '進階' }],
+  openai: [{ id: 'gpt-6-luna', label: 'GPT-6 Luna', tier: '輕量' },
+           { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', tier: '標準' },
+           { id: 'gpt-6-astra', label: 'GPT-6 Astra', tier: '進階' }],
+  claude: [{ id: 'claude-haiku-5-5', label: 'Haiku 5.5', tier: '輕量' },
+           { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', tier: '標準' },
+           { id: 'claude-opus-5-5', label: 'Opus 5.5', tier: '進階' }]
+};
 
 var OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 var OPENAI_MODEL_DEFAULT = 'gpt-6-luna';
@@ -64,6 +84,11 @@ function aiProviderId_() {
 
 function aiModelOf_(p) {
   return aiProp_(p.modelProp) || p.defaultModel;
+}
+
+/** 這一家清單裡的那一筆；清單外（手動設的）回 null */
+function aiModelEntry_(id, model) {
+  return (AI_MODELS[id] || []).filter(function (m) { return m.id === model; })[0] || null;
 }
 
 /**
@@ -247,24 +272,41 @@ function aiConfigGet_(caller) {
     provider: aiProviderId_(),
     providers: AI_PROVIDER_IDS.map(function (id) {
       var p = table[id];
-      return { id: id, label: p.label, hasKey: !!aiProp_(p.keyProp), model: aiModelOf_(p) };
+      var model = aiModelOf_(p);
+      return { id: id, label: p.label, hasKey: !!aiProp_(p.keyProp), model: model, custom: !aiModelEntry_(id, model),
+               models: AI_MODELS[id].map(function (m) { return { id: m.id, label: m.label, tier: m.tier }; }) };
     }),
     lastError: aiLastError_()
   };
 }
 
-/** aiConfigSet：只收三家之一；沒有 key 的那一家不能選；寫 logs（誰、從哪家到哪家） */
-function aiConfigSet_(caller, provider) {
+/**
+ * aiConfigSet：只收三家之一；沒有 key 的那一家不能選；寫 logs（誰、從哪家到哪家）。
+ * 帶 model（D-6）＝只改那一家的模型、不換供應商：只收那一家清單內的 id。
+ */
+function aiConfigSet_(caller, provider, model) {
   if (!truthy_((caller.user || {}).is_admin)) return aiForbidden_(caller, 'aiConfigSet');
   var id = String(provider == null ? '' : provider).trim().toLowerCase();
   if (AI_PROVIDER_IDS.indexOf(id) === -1) return { error: 'unknown_provider' };
   var p = aiProviders_()[id];
   if (!aiProp_(p.keyProp)) return { error: 'no_key', key: p.keyProp };
+  if (model != null && model !== '') return aiModelSet_(caller, id, p, String(model).trim());
   var from = aiProviderId_();
   PropertiesService.getScriptProperties().setProperty(AI_PROVIDER_PROP, id);
   logTransaction_(AI_LOG_SOURCE, '成功', 'PWA aiConfigSet', 'AI 供應商：' + aiProviders_()[from].label + ' → ' + p.label,
     'from=' + from + '｜to=' + id, '', caller.line_id);
   return { success: true, provider: id };
+}
+
+function aiModelSet_(caller, id, p, model) {
+  var to = aiModelEntry_(id, model);
+  if (!to) return { error: 'unknown_model' };
+  var before = aiModelOf_(p);
+  var was = aiModelEntry_(id, before);
+  PropertiesService.getScriptProperties().setProperty(p.modelProp, model);
+  logTransaction_(AI_LOG_SOURCE, '成功', 'PWA aiConfigSet', p.label + ' 模型：' + (was ? was.label : before) + ' → ' + to.label,
+    'provider=' + id + '｜from=' + before + '｜to=' + model, '', caller.line_id);
+  return { success: true, provider: aiProviderId_(), target: id, model: model };
 }
 
 /* -------------------------------------------------------------------------- */
