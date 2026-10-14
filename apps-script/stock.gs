@@ -882,8 +882,14 @@ function stockPayload_(caller, trigger, perf) {
   return out;
 }
 
-function withStock_(out, caller, body, perf) {
-  if (!body || body.stock !== true || !canUse_(caller.user, 'feat_stock')) return out;
+/**
+ * 股票資料（action=stock，ADR-018 D-6）。原本夾在 boot／readMany 裡（stock:true），
+ * PR-0 量到開機的 stock 段中位 3.8 秒（報價 2.4 秒）——全螢幕 Loading 不能等它。
+ * 現在是獨立請求：開機進首頁後才打，輪詢也另打（只在財務區、有 feat_stock 時）。
+ */
+function stockResponse_(caller, body, perf) {
+  if (!canUse_(caller.user, 'feat_stock')) return { error: 'forbidden' };
+  var out = {};
   try {
     out.stock = perfStage_(perf, 'stock', function () { return stockPayload_(caller, body.trigger, perf); });
   } catch (err) {

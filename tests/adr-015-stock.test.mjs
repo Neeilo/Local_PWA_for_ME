@@ -447,11 +447,12 @@ describe('T2 交易：持有者與權限由後端強制（PWA upsert）', () => 
     assert.equal(post(e, { action: 'completeRecurring', token: TOK.NEIL, sheet: 'stock_rules', record: { id: 'x' } }).error, 'unknown_action');
   });
 
-  test('feat_stock 關閉者：讀不到、寫不進、readMany 不帶股票資料', () => {
+  test('feat_stock 關閉者：讀不到、寫不進、action=stock 被擋', () => {
     const e = env();
     assert.equal(post(e, { action: 'read', token: TOK.AUNT, sheet: 'stock_trades' }).error, 'forbidden');
     assert.equal(up(e, 'AUNT', Object.assign({ id: 't1' }, base)).error, 'forbidden');
-    const many = post(e, { action: 'readMany', token: TOK.AUNT, sheets: ['tasks'], stock: true, trigger: 'poll' });
+    const many = post(e, { action: 'stock', token: TOK.AUNT, trigger: 'poll' });
+    assert.equal(many.error, 'forbidden');
     assert.equal(many.stock, undefined);
     assert.equal(e.net.calls.all.length, 0);
   });
@@ -480,7 +481,7 @@ describe('T2 交易：持有者與權限由後端強制（PWA upsert）', () => 
 });
 
 /* ========================================================================== */
-describe('T4 的資料來源：readMany 附帶股票資料', () => {
+describe('T4 的資料來源：action=stock（ADR-018 D-6 起獨立請求，不再夾在 boot／readMany）', () => {
   const sheets = () => ({
     stock_trades: new FakeSheet('stock_trades', [TRADE_HEADERS,
       trade('b1', '2026-10-01', '00631L', 'buy', 1000, 40, '爸爸', NEIL),
@@ -489,9 +490,9 @@ describe('T4 的資料來源：readMany 附帶股票資料', () => {
       ['0050', '元大台灣50', 20, 'TRUE', NEIL, ''], ['00631L', '元大台灣50正2', 10, 'TRUE', NEIL, ''], ['6488', '環球晶', 30, 'FALSE', NEIL, '']])
   });
 
-  test('stock:true → 自選（只有啟用中、依 sort）、全家交易、持股、報價、家人名單、我的 member', () => {
+  test('action=stock → 自選（只有啟用中、依 sort）、全家交易、持股、報價、家人名單、我的 member', () => {
     const e = env({ sheets: sheets() });
-    const out = post(e, { action: 'readMany', token: TOK.MOM, sheets: ['tasks'], stock: true, trigger: 'poll' });
+    const out = post(e, { action: 'stock', token: TOK.MOM, trigger: 'poll' });
     const s = out.stock;
     assert.deepEqual(s.watch.map((w) => w.symbol), ['00631L', '0050']);
     assert.equal(s.trades.length, 2, '有 feat_stock 看全家，不套用「只看我的」');
@@ -502,22 +503,19 @@ describe('T4 的資料來源：readMany 附帶股票資料', () => {
     assert.equal(s.ready, true);
   });
 
-  test('沒帶 stock:true（不在財務區）→ 不帶、不打外部', () => {
+  test('readMany／boot 不再帶股票：就算舊版 App 還送 stock:true，也不讀、不打外部（Loading 不等報價）', () => {
     const e = env({ sheets: sheets() });
-    const out = post(e, { action: 'readMany', token: TOK.NEIL, sheets: ['tasks'], trigger: 'poll' });
-    assert.equal(out.stock, undefined);
+    const many = post(e, { action: 'readMany', token: TOK.NEIL, sheets: ['tasks'], stock: true, trigger: 'poll' });
+    const boot = post(e, { action: 'boot', token: TOK.NEIL, stock: true, trigger: 'cold' });
+    assert.equal(many.stock, undefined);
+    assert.equal(boot.stock, undefined);
+    assert.ok(Array.isArray(boot.line_users), 'boot 本身照常');
     assert.equal(e.net.calls.all.length, 0);
-  });
-
-  test('boot 也帶（開機就在財務區）', () => {
-    const e = env({ sheets: sheets() });
-    const out = post(e, { action: 'boot', token: TOK.NEIL, stock: true, trigger: 'cold' });
-    assert.equal(out.stock.holdings.length, 2);
   });
 
   test('報價整個掛掉：交易與持股照常回，報價是空的', () => {
     const e = env({ sheets: sheets(), net: network({ fail: { fugle: true, mis: true } }), overrides: { googleFinanceValues_: () => { throw new Error('quota'); } } });
-    const out = post(e, { action: 'readMany', token: TOK.NEIL, sheets: ['tasks'], stock: true, trigger: 'poll' });
+    const out = post(e, { action: 'stock', token: TOK.NEIL, trigger: 'poll' });
     assert.equal(out.stock.holdings.length, 2);
     assert.deepEqual(out.stock.quotes, {});
     assert.equal(out.stock.missing.length, 3);
@@ -526,7 +524,7 @@ describe('T4 的資料來源：readMany 附帶股票資料', () => {
   test('分頁還沒建（還沒「初始化」）→ ready:false，不報錯', () => {
     const e = env();
     delete e.sheets.stock_trades;
-    const out = post(e, { action: 'readMany', token: TOK.NEIL, sheets: ['tasks'], stock: true, trigger: 'poll' });
+    const out = post(e, { action: 'stock', token: TOK.NEIL, trigger: 'poll' });
     assert.equal(out.stock.ready, false);
   });
 });
@@ -757,11 +755,11 @@ describe('T5 再平衡只給管理者', () => {
 
   test('管理者的 readMany 帶 config 與 rebalance；非管理者連鍵都沒有', () => {
     const e = env({ sheets: sheets() });
-    const admin = post(e, { action: 'readMany', token: TOK.NEIL, sheets: ['tasks'], stock: true, trigger: 'poll' }).stock;
+    const admin = post(e, { action: 'stock', token: TOK.NEIL, trigger: 'poll' }).stock;
     assert.equal(admin.rebalance.status, 'ok');
     assert.equal(admin.rebalance.value, 206400);
     assert.equal(admin.config.cash, 200000);
-    const mom = post(e, { action: 'readMany', token: TOK.MOM, sheets: ['tasks'], stock: true, trigger: 'poll' }).stock;
+    const mom = post(e, { action: 'stock', token: TOK.MOM, trigger: 'poll' }).stock;
     assert.equal('rebalance' in mom, false);
     assert.equal('config' in mom, false);
   });
@@ -852,7 +850,7 @@ describe('T6 規則的寫入與讀取', () => {
     const e = env({ sheets: { stock_rules: rulesSheet([
       rule('r1', '2330', 'price_above', { price: 2500 }, MOM), rule('r2', '2330', 'price_below', { price: 1 }, MOM),
       rule('r3', '2330', 'price_above', { price: 1 }, NEIL)]) } });
-    const s = post(e, { action: 'readMany', token: TOK.MOM, sheets: ['tasks'], stock: true, trigger: 'poll' }).stock;
+    const s = post(e, { action: 'stock', token: TOK.MOM, trigger: 'poll' }).stock;
     assert.deepEqual(s.rules.map((r) => r.id), ['r1', 'r2']);
     assert.deepEqual(s.hits['2330'].map((h) => h.id), ['r1']);
     assert.match(s.hits['2330'][0].reason, /現價 2,560 ≥ 2,500/);
@@ -1075,7 +1073,7 @@ describe('代號開頭的 0 不能被 Sheet 吃掉', () => {
       assert.equal(out.success, true, symbol + ' ' + JSON.stringify(out));
     }
     assert.deepEqual(e.sheets.stock_watch.toRecords().map((r) => r.symbol), ['00631L', '0056', '00878']);
-    const s = post(e, { action: 'readMany', token: TOK.NEIL, sheets: ['tasks'], stock: true, trigger: 'poll' }).stock;
+    const s = post(e, { action: 'stock', token: TOK.NEIL, trigger: 'poll' }).stock;
     assert.deepEqual(s.watch.map((w) => w.symbol), ['00631L', '0056', '00878']);
     assert.deepEqual(Object.keys(s.quotes).sort(), ['0056', '00631L', '00878']);
   });
@@ -1093,7 +1091,7 @@ describe('代號開頭的 0 不能被 Sheet 吃掉', () => {
     post(e, { action: 'upsert', token: TOK.NEIL, sheet: 'stock_trades', trigger: 'write',
       record: { id: 'p1', trade_date: '2026-10-08', symbol: '00878', side: 'buy', qty: 100, price: 21.9 } });
     assert.deepEqual(trades(e).map((t) => t.symbol), ['0056', '00878']);
-    const s = post(e, { action: 'readMany', token: TOK.NEIL, sheets: ['tasks'], stock: true, trigger: 'poll' }).stock;
+    const s = post(e, { action: 'stock', token: TOK.NEIL, trigger: 'poll' }).stock;
     // 持股依第一筆交易日排序；LINE 那筆是「今天」，所以只比代號、不比順序（10-08 之後順序會反過來）
     assert.deepEqual(s.holdings.map((h) => h.symbol).sort(), ['0056', '00878']);
     assert.match(line(e, NEIL, '賣/0056/1000/37'), /✅ 賣出 0056/);
