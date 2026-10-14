@@ -1119,8 +1119,10 @@ function buildQueryContext_(userId, question) {
     // 只給後者的話，AI 會拿近 30 天的合計去回答「這個月」——數字包含上個月下旬，
     // 而且跟 App 首頁的「本月支出」對不起來。多算一組的成本只有幾行。
     expenses: allowed.expenses ? {
-      month: sumExpensesSince_(expenseRows, monthStartKey_(), cfg),
-      window: sumExpensesSince_(expenseRows, since, cfg)
+      // 兩組都要有上限（2026-10-14 補）：分期的未來各期早就寫進 expenses（每月 1 號），
+      // 只看「≥ 起點」會把明年的分期也算進「本月」，跟 App 的本月支出對不起來
+      month: sumExpensesSince_(expenseRows, monthStartKey_(), cfg, monthEndKey_()),
+      window: sumExpensesSince_(expenseRows, since, cfg, today)
     } : null,
     // 提醒沒有「完成」（ADR-018 A-2）：不放進未完成任務（不然永遠掛在那裡），另列未來 30 天
     tasks: allowed.tasks ? collectTasks_(taskRows.filter(function (r) { return !isReminder_(r); }), since) : null,
@@ -1178,6 +1180,11 @@ function monthStartKey_() {
   return dateKey_(new Date()).slice(0, 7) + '-01';
 }
 
+/** 月底 YYYY-MM-31：字串比較用，比當月最後一天大一點也沒關係（下個月的 01 一定比它大） */
+function monthEndKey_() {
+  return dateKey_(new Date()).slice(0, 7) + '-31';
+}
+
 /**
  * expenses → 大類 → 細項兩層小計 + 對象小計 + 總計 + 筆數（完整不截斷，ADR-013 D-5）。
  *
@@ -1187,7 +1194,7 @@ function monthStartKey_() {
  * 對象可複選：一筆「姐姐,妹妹」的帳**整筆**同時計入兩個人。拆成各半是在替使用者
  * 決定比例，而那正是這個欄位沒記的事。代價是對象小計相加會大於總額——提示詞會講明。
  */
-function sumExpensesSince_(rows, since, cfg) {
+function sumExpensesSince_(rows, since, cfg, until) {
   var acc = {
     expense: { total: 0, count: 0, byCat: {}, byTarget: {} },
     income: { total: 0, count: 0, byCat: {}, byTarget: {} }
@@ -1197,6 +1204,7 @@ function sumExpensesSince_(rows, since, cfg) {
   rows.forEach(function (r) {
     var date = toDateKey_(r.expense_date);
     if (!date || date < since) return;
+    if (until && date > until) return;      // 還沒到的（分期的未來各期）不算
     var type = String(r.type || '').trim() === 'income' ? 'income' : 'expense';
     var amount = Number(r.amount) || 0;
     var raw = String(r.category || '其他').trim() || '其他';

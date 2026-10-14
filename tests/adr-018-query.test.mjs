@@ -45,8 +45,6 @@ function env({ notes = [], tasks = [], expenses = [], momNotes = 'TRUE' } = {}) 
       logs: new FakeSheet('logs', [['id']])
     },
     overrides: {
-      // 假 runtime 的 Utilities.formatDate 回固定字串；這批要真的「今天」才算得出 30 天窗口與未來 30 天
-      dateKey_: (d) => { const p = (x) => String(x).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); },
       callGemini_: (_k, p) => { prompt = p; return { ok: true, text: '好' }; },
       lineReply_: (_t, msg) => { replies.push(String(msg)); }
     }
@@ -142,6 +140,22 @@ describe('軟刪除不送給 AI', () => {
     assert.ok(!p.includes('刪掉的雜記') && p.includes('留著的雜記'));
     assert.match(p, /支出合計 120 元（1 筆）/);
     assert.ok(!/1,119|999/.test(p));
+  });
+});
+
+/* ========================================================================== */
+describe('記帳彙總只算到今天／本月底（2026-10-14 Neil 回報：「查/10月份開支」比 App 多）', () => {
+
+  test('分期的未來各期（下個月起）不算進本月與近 30 天；本月稍後的仍算進本月', () => {
+    const p = env({ expenses: [
+      ['1', dayKey(0), 'expense', '飲食', 100, '', '', ME, ''],
+      ['2', dayKey(40), 'expense', '教育', 22700, '分期', '', ME, ''],
+      ['3', dayKey(400), 'expense', '教育', 22700, '分期', '', ME, '']
+    ] }).ask(ME, '這個月花多少');
+    const month = p.slice(p.indexOf('▍本月'), p.indexOf('▍近 30 天'));
+    const win = p.slice(p.indexOf('▍近 30 天'));
+    assert.match(month, /支出合計 100 元（1 筆）/);
+    assert.match(win, /支出合計 100 元（1 筆）/);
   });
 });
 
