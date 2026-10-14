@@ -329,3 +329,49 @@ describe('PWA：設定頁「🤖 AI 供應商」（D-1、D-3）', () => {
     assert.ok(e.toasts.some((t) => /改用 Claude/.test(t)));
   });
 });
+
+/* ========================================================================== */
+describe('錯誤代碼說明（Neil 2026-10-14：「HTTP 429」看不出是額度用完還是打太快）', () => {
+
+  const cases = [
+    ['openai', 429, { error: { type: 'insufficient_quota', code: 'credit_balance_exhausted', message: 'You have no credits remaining.' } }, /^HTTP 429・額度用完或超過用量上限，請到 OpenAI 帳戶加值/],
+    ['openai', 429, { error: { type: 'requests', message: 'Rate limit reached' } }, /^HTTP 429・呼叫太頻繁/],
+    ['openai', 401, { error: { code: 'invalid_api_key' } }, /^HTTP 401・API key 錯誤或已失效/],
+    ['claude', 400, { type: 'error', error: { type: 'invalid_request_error', message: 'Your credit balance is too low to access the Anthropic API.' } }, /^HTTP 400・額度用完或超過用量上限，請到 Claude 帳戶/],
+    ['claude', 529, { type: 'error', error: { type: 'overloaded_error' } }, /^HTTP 529・Claude 服務暫時忙碌或故障/],
+    ['gemini', 429, { error: { status: 'RESOURCE_EXHAUSTED', message: 'Quota exceeded' } }, /^HTTP 429・額度用完或超過用量上限，請到 Gemini 帳戶/],
+    ['gemini', 403, { error: { status: 'PERMISSION_DENIED' } }, /^HTTP 403・這把 key 沒有使用這個模型的權限/],
+    ['claude', 400, { type: 'error', error: { type: 'invalid_request_error', message: 'temperature is not supported' } }, /^HTTP 400・請求格式不被接受/]
+  ];
+  for (const [who, code, body, want] of cases) {
+    test(who + ' HTTP ' + code + ' → ' + want.source.slice(1, 40), () => {
+      const net = network();
+      const e = env({ net: network({ [who]: net.reply(code, body) }), properties: Object.assign({ AI_PROVIDER: who }, KEYS) });
+      ask(e);
+      assert.match(JSON.parse(e.properties.AI_LAST_ERROR).reason, want);
+      assert.ok(e.transactions.some((t) => t[0] === '查詢' && t[1] === '失敗' && want.test(t[3])), 'logs 的 result 也是同一句');
+    });
+  }
+
+  test('404 已經有「跑 diagnoseAi」的提示：不重複加說明', () => {
+    const net = network();
+    const e = env({ net: network({ claude: net.reply(404, { error: { type: 'not_found_error' } }) }), properties: Object.assign({ AI_PROVIDER: 'claude' }, KEYS) });
+    ask(e);
+    const reason = JSON.parse(e.properties.AI_LAST_ERROR).reason;
+    assert.match(reason, /^HTTP 404（模型「claude-haiku-5-5」可能不存在，跑 diagnoseAi）$/);
+  });
+
+  test('連線失敗（不是 HTTP 錯誤）：原樣', () => {
+    const e = env({ net: network({ openai: new Error('timeout') }), properties: Object.assign({ AI_PROVIDER: 'openai' }, KEYS) });
+    ask(e);
+    assert.equal(JSON.parse(e.properties.AI_LAST_ERROR).reason, '連線失敗');
+  });
+
+  test('diagnoseAi 也用同一套說明', () => {
+    const net = network();
+    const e = env({ net: network({ openai: net.reply(429, { error: { code: 'credit_balance_exhausted' } }) }),
+      properties: { GEMINI_API_KEY: 'g', OPENAI_API_KEY: 'o' } });
+    const out = e.call('diagnoseAi');
+    assert.match(out[1].reason, /^HTTP 429・額度用完/);
+  });
+});
