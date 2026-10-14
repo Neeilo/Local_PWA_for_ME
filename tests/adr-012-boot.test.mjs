@@ -332,7 +332,7 @@ describe('LINE 也套用功能權限', () => {
     assert.ok(prompt, '前提：有送出 prompt');
     assert.doesNotMatch(prompt, /記帳彙總/);
     assert.doesNotMatch(prompt, /支出合計/);
-    assert.match(prompt, /你只看得到以下模組：任務。/, '日誌與心情已退場（ADR-018），不再列出');
+    assert.match(prompt, /你只看得到以下模組：任務、雜記。/, '日誌與心情已退場（ADR-018），雜記進「查/」（ADR-018 B-1）');
     assert.match(prompt, /沒有權限/);
   });
 

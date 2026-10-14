@@ -62,6 +62,11 @@ var QUERY_LOG_SOURCE = '查詢';
 /** 資料窗口與逐筆上限，皆為可調參數（ADR-006 §B） */
 var QUERY_WINDOW_DAYS = 30;
 var QUERY_MAX_TOTAL_RECORDS = 30;
+/** 雜記獨立額度（ADR-018 B-1）：不跟任務搶那 30 筆；問題帶 [類別] 時只放那一類、上限 50、不受 30 天窗口 */
+var QUERY_NOTES_MAX = 20;
+var QUERY_NOTES_CATEGORY_MAX = 50;
+/** 提醒也進「查/」（B-1）：今天起未來 30 天內到期的 */
+var QUERY_REMINDER_DAYS = 30;
 
 /** 回覆行數上限（寫進提示詞）。ADR-013 D-5：兩層彙總之後先不改，抽成常數方便之後調 */
 var QUERY_REPLY_LINES = 5;
@@ -521,6 +526,8 @@ function handleJoin_(event) {
 function routeLineMessage_(rawText, userId, chatId) {
   var text = String(rawText || '').trim();
   if (!text) return supportedPrefixesMessage_();
+  // ?／指令（ADR-018 B-3）：一對一走這裡；群組在 groupMessageReply_ 先攔下（要看群組開了哪些）
+  if (isHelpCommand_(text)) return handleHelpCommand_(userId);
 
   var slash = text.indexOf('/');
   var prefix = (slash === -1 ? text : text.slice(0, slash)).trim();
@@ -546,7 +553,7 @@ function routeLineMessage_(rawText, userId, chatId) {
   var route = ROUTE_TABLE[prefix];
 
   if (!route) {
-    return '沒有這個前綴喔。\n' + supportedPrefixesMessage_() + '\n' + versionLine_();
+    return supportedPrefixesMessage_() + '\n' + versionLine_();
   }
 
   // 功能權限（ADR-012 D-3）：跟 PWA 同一張對照表、同一個 canUse_
@@ -1004,7 +1011,7 @@ function handleQuery_(question, rawText, userId) {
 function answerQuery_(question, rawText, userId, perf) {
   var context;
   try {
-    context = perfStage_(perf, 'query.context', function () { return buildQueryContext_(userId); });
+    context = perfStage_(perf, 'query.context', function () { return buildQueryContext_(userId, question); });
   } catch (err) {
     console.log('查詢組資料失敗：' + err);
     logTransaction_(QUERY_LOG_SOURCE, '失敗', rawText, '讀取資料失敗',
@@ -1090,16 +1097,18 @@ function windowStartKey_() {
  * 對應欄位是 null，提示詞那一段整段不出現。
  */
 // 複盤與心情已退場（ADR-018 C-3）：資料留著，「查/」不再讀
-var QUERY_SHEETS = ['expenses', 'tasks'];
+var QUERY_SHEETS = ['expenses', 'tasks', 'notes'];
 
-function buildQueryContext_(userId) {
+function buildQueryContext_(userId, question) {
   var since = windowStartKey_();
   var today = dateKey_(new Date());
   var user = lineUserById_(userId);
   var allowed = {};
   QUERY_SHEETS.forEach(function (name) { allowed[name] = canUseSheet_(user, name); });
-  var expenseRows = allowed.expenses ? readSheet_('expenses') : [];
+  // 軟刪除的列不送給 AI（2026-10-14 補：readSheet_ 不濾 del，刪掉的任務／帳以前也會被拿去回答）
+  var expenseRows = allowed.expenses ? withoutTombstones_(readSheet_('expenses')) : [];
   var cfg = allowed.expenses ? expenseConfig_() : null;
+  var taskRows = allowed.tasks ? withoutTombstones_(readSheet_('tasks')) : [];
 
   return {
     since: since,
@@ -1113,8 +1122,55 @@ function buildQueryContext_(userId) {
       month: sumExpensesSince_(expenseRows, monthStartKey_(), cfg),
       window: sumExpensesSince_(expenseRows, since, cfg)
     } : null,
-    tasks: allowed.tasks ? collectTasks_(readSheet_('tasks'), since) : null
+    // 提醒沒有「完成」（ADR-018 A-2）：不放進未完成任務（不然永遠掛在那裡），另列未來 30 天
+    tasks: allowed.tasks ? collectTasks_(taskRows.filter(function (r) { return !isReminder_(r); }), since) : null,
+    reminders: allowed.tasks ? collectReminders_(taskRows, today) : null,
+    notes: allowed.notes ? collectNotes_(readSheet_('notes'), userId, since, queryNoteCategory_(question)) : null
   };
+}
+
+/**
+ * 問題裡的 [類別]（ADR-018 B-1）：「[文章] 上次存的那篇講什麼」「最近 [作品] 有哪些」。
+ * 半形全形方括號都收；沒有就回空字串。
+ */
+function queryNoteCategory_(question) {
+  var m = String(question || '').match(/[\[［]\s*([^\]］\s][^\]］]{0,9}?)\s*[\]］]/);
+  return m ? m[1].trim() : '';
+}
+
+/**
+ * notes → 逐筆（ADR-018 B-1／B-2）。
+ *  - **只讀發問者自己的**（line_id＝發問者）：白板上別人的也不讀——「查/」的回答會出現在 LINE 上，
+ *    家人的雜記不該因為問了一句話就被摘要出來
+ *  - 有 [類別]：只放那一類（雜記存成「[類別] 內容」）、上限 50、不受 30 天窗口
+ *  - 沒有：近 30 天、新的在前、上限 20
+ */
+function collectNotes_(rows, userId, since, category) {
+  var mine = withoutTombstones_(rows).filter(function (r) {
+    return String(r.line_id || '').trim() === String(userId || '').trim() && String(r.text || '').trim();
+  }).map(function (r) {
+    return { text: String(r.text).trim(), created: toDateKey_(r.created_at) };
+  });
+  var picked;
+  if (category) {
+    var head = '[' + category + ']';
+    picked = mine.filter(function (n) { return n.text.indexOf(head) === 0; });
+  } else {
+    picked = mine.filter(function (n) { return n.created && n.created >= since; });
+  }
+  picked.sort(function (a, b) { return String(b.created).localeCompare(String(a.created)); });
+  var max = category ? QUERY_NOTES_CATEGORY_MAX : QUERY_NOTES_MAX;
+  return { category: category, total: picked.length, items: picked.slice(0, max) };
+}
+
+/** 提醒：今天到今天＋30 天內到期的，依日期由近到遠（過期還沒翻頁的週期提醒不放：9 點排程會翻） */
+function collectReminders_(rows, today) {
+  var end = addDaysKey_(today, QUERY_REMINDER_DAYS);
+  return rows.filter(function (r) { return isReminder_(r); }).map(function (r) {
+    return { text: String(r.text || '').trim(), due: toDateKey_(r.due_date),
+             recur: r.recur_interval ? (r.recur_interval + String(r.recur_unit || '')) : '' };
+  }).filter(function (r) { return r.text && r.due && r.due >= today && r.due <= end; })
+    .sort(function (a, b) { return a.due.localeCompare(b.due); });
 }
 
 /** 月初 YYYY-MM-01，與前端 monthKey() 的「本月」定義一致 */
@@ -1209,7 +1265,7 @@ function collectTasks_(rows, since) {
 function buildQueryPrompt_(ctx, question) {
   var lines = [];
   // 舊的呼叫端沒有 allowed：當成全開，提示詞與改版前一字不差
-  var allowed = ctx.allowed || { expenses: true, tasks: true };
+  var allowed = ctx.allowed || { expenses: true, tasks: true, notes: true };
   var visible = QUERY_SHEETS.filter(function (name) { return allowed[name]; })
     .map(function (name) { return FEATURE_LABEL[FEATURE_BY_SHEET[name]]; });
 
@@ -1270,6 +1326,23 @@ function buildQueryPrompt_(ctx, question) {
   if (doneTasks.length) {
     lines.push('【近 ' + QUERY_WINDOW_DAYS + ' 天內已完成的任務】');
     lines.push(doneTasks.map(function (t) { return '・' + t.created + ' ' + t.text; }).join('\n'));
+    lines.push('');
+  }
+
+  // 提醒與雜記各有自己的額度，不跟任務搶（ADR-018 B-1）
+  if (allowed.tasks && ctx.reminders) {
+    lines.push('【未來 ' + QUERY_REMINDER_DAYS + ' 天的提醒】（提醒沒有「完成」，到期會再推播）');
+    lines.push(ctx.reminders.length
+      ? ctx.reminders.map(function (r) { return '・' + r.due + ' ' + r.text + (r.recur ? '（每 ' + r.recur + '）' : ''); }).join('\n')
+      : '（沒有）');
+    lines.push('');
+  }
+  if (allowed.notes && ctx.notes) {
+    var n = ctx.notes;
+    lines.push(n.category
+      ? '【雜記・只看「' + n.category + '」這一類，不限日期】共 ' + n.total + ' 則' + (n.total > n.items.length ? '，以下列出最新的 ' + n.items.length + ' 則' : '')
+      : '【近 ' + QUERY_WINDOW_DAYS + ' 天的雜記】共 ' + n.total + ' 則' + (n.total > n.items.length ? '，以下列出最新的 ' + n.items.length + ' 則' : ''));
+    lines.push(n.items.length ? n.items.map(function (x) { return '・' + x.created + ' ' + x.text; }).join('\n') : '（沒有）');
     lines.push('');
   }
 
@@ -1557,24 +1630,125 @@ function lineDeniedMessage_(code) {
   return '這個帳號沒有權限寫入喔。\n輸入 whoami 可以查到自己的 userId。';
 }
 
+/**
+ * 打錯指令（或空訊息）時的回覆（ADR-018 B-3）：以前列一整串支援清單，一半是手寫、跟真的路由對不上。
+ * 現在只回一行，完整清單在 ? 字典（由 COMMANDS 產生）。「沒有這個前綴」那條另外接版本號尾行。
+ */
+var UNKNOWN_COMMAND_LINE = '看不懂這個指令，傳 ? 看字典';
 function supportedPrefixesMessage_() {
-  var lines = ['目前支援：'];
-  for (var prefix in ROUTE_TABLE) {
-    if (Object.prototype.hasOwnProperty.call(ROUTE_TABLE, prefix)) {
-      lines.push('・' + ROUTE_TABLE[prefix].usage);
+  return UNKNOWN_COMMAND_LINE;
+}
+
+/* ========================================================================== */
+/* 指令登記表（ADR-018 B-3）                                                    */
+/*                                                                            */
+/* LINE 的 ?／指令 字典、PWA 設定頁「📖 指令字典」都從這一份產生。                   */
+/* 路由（ROUTE_TABLE、STOCK_PREFIXES、查／分類／初始化／配對…）沒有從這裡產生——      */
+/* 它們各自有處理邏輯——改用測試對齊：任何路由前綴沒登記、用法字串不一致、群組開關對不上， */
+/* tests/adr-018-commands.test.mjs 就紅燈。新增指令時兩邊都要改。                    */
+/*                                                                            */
+/*  key      : 前綴（「任務/」的「任務」）或整句指令（「分類」）                        */
+/*  group    : 字典裡的分組                                                     */
+/*  scope    : private（只限一對一）｜group（只限群組）｜both                        */
+/*  groupCmd : 在群組裡受哪個 line_groups 開關管（cmd_*）；不在群組用就空著              */
+/*  feat     : 要有哪個功能權限（空＝人人可用）；adminOnly：只有管理者                   */
+/* ========================================================================== */
+var HELP_COMMANDS = ['?', '？', '指令'];
+var COMMAND_GROUPS = ['任務', '記帳', '查詢', '股票', '帳號與裝置', '管理', '說明'];
+var COMMANDS = [
+  { key: '任務', group: '任務', usage: ROUTE_TABLE['任務'].usage, example: '任務/繳電話費/H',
+    note: '建好會問到期日', scope: 'both', groupCmd: 'cmd_tasks', feat: 'feat_tasks' },
+  { key: '提醒', group: '任務', usage: ROUTE_TABLE['提醒'].usage, example: '提醒/繳房租',
+    note: '接著選日期與重複（不重複／每週／每月／每年）', scope: 'both', groupCmd: 'cmd_tasks', feat: 'feat_tasks' },
+  { key: '記帳', group: '記帳', usage: ROUTE_TABLE['記帳'].usage, example: '記帳/120/飲食/午餐',
+    note: '只打金額會跳出分類按鈕', scope: 'both', groupCmd: 'cmd_expense', feat: 'feat_expense' },
+  { key: '收入', group: '記帳', usage: ROUTE_TABLE['收入'].usage, example: '收入/50000/薪資',
+    scope: 'both', groupCmd: 'cmd_expense', feat: 'feat_expense' },
+  { key: CATEGORY_COMMAND, group: '記帳', usage: CATEGORY_COMMAND, note: '看記帳可用的大類、細項、對象',
+    scope: 'both', groupCmd: 'cmd_expense', feat: 'feat_expense' },
+  { key: QUERY_PREFIX, group: '查詢', usage: QUERY_USAGE, example: '查/這個月花多少',
+    note: '問題裡加 [類別] 只查那一類雜記，例：查/[文章] 最近存了什麼', scope: 'both', groupCmd: 'cmd_query', feat: '' },
+  { key: '買', group: '股票', usage: STOCK_TRADE_USAGE, example: '買/0050/1000/190.5', scope: 'private', feat: 'feat_stock' },
+  { key: '賣', group: '股票', usage: '賣/代號/數量/價格[/持有者]', example: '賣/0050/500/195', scope: 'private', feat: 'feat_stock' },
+  { key: '股', group: '股票', usage: STOCK_QUOTE_USAGE, example: '股/0050', note: '現價與你的持股', scope: 'private', feat: 'feat_stock' },
+  { key: PAIR_COMMAND, group: '帳號與裝置', usage: PAIR_COMMAND, note: '拿 App 的配對碼', scope: 'private', feat: '' },
+  { key: RENEW_COMMAND, group: '帳號與裝置', usage: RENEW_USAGE, note: 'App 閒置太久要續期時', scope: 'private', feat: '' },
+  { key: 'whoami', group: '帳號與裝置', usage: 'whoami', note: '查自己的 userId（群組裡會多給群組 ID）', scope: 'both', feat: '' },
+  { key: REGISTER_PREFIX, group: '帳號與裝置', usage: REGISTER_USAGE, note: '還沒註冊的人用', scope: 'private', feat: '' },
+  { key: INIT_COMMAND, group: '管理', usage: INIT_COMMAND, note: '部署後的安裝步驟，可重複執行', scope: 'private', feat: '', adminOnly: true },
+  { key: '?', group: '說明', usage: '? 或 指令', note: '看這份字典', scope: 'both', feat: '' }
+];
+var COMMAND_SCOPE_LABEL = { private: '限一對一', group: '限群組', both: '一對一、群組都可以' };
+
+function isHelpCommand_(text) {
+  return HELP_COMMANDS.indexOf(String(text || '').trim()) !== -1;
+}
+
+/**
+ * 這個人在這個地方能用哪些指令。
+ *  where：'private'（一對一）｜'group'（群組，另看 groupRecord 的 cmd_* 開關）｜'pwa'（App 的字典：不分聊天室）
+ * 群組裡的指令還要過本人的白名單與功能權限——跟真的執行時同一套判斷（canUse_）。
+ */
+function commandsFor_(user, where, groupRecord) {
+  var isAdmin = truthy_((user || {}).is_admin);
+  return COMMANDS.filter(function (c) {
+    if (c.adminOnly && !isAdmin) return false;
+    if (c.feat && !canUse_(user, c.feat)) return false;
+    if (where === 'private') return c.scope !== 'group';
+    if (where === 'group') {
+      if (c.scope === 'private') return false;
+      return c.groupCmd ? truthy_((groupRecord || {})[c.groupCmd]) : true;
     }
-  }
-  lines.push('・' + QUERY_USAGE);
-  lines.push('・記帳/金額（不打分類會跳出分類按鈕）');
-  lines.push('・' + CATEGORY_COMMAND + '（看記帳可用的大類、細項、對象）');
-  lines.push('・' + STOCK_TRADE_USAGE + '；賣/ 同格式（限一對一聊天）');
-  lines.push('・' + STOCK_QUOTE_USAGE + '（現價與你的持股，限一對一聊天）');
-  lines.push('・' + INIT_COMMAND + '（管理者：部署後的安裝步驟，可重複執行）');
-  lines.push('・' + REGISTER_USAGE);
-  lines.push('・' + PAIR_COMMAND + '（拿 App 的配對碼，限一對一聊天）');
-  lines.push('・' + RENEW_USAGE);
-  lines.push('（輸入 whoami 可查自己的 userId）');
+    return true;
+  });
+}
+
+function commandDictionaryText_(cmds, where) {
+  var lines = ['📖 指令字典（' + (where === 'group' ? '這個群組' : '一對一') + '，只列你能用的）'];
+  COMMAND_GROUPS.forEach(function (g) {
+    var items = cmds.filter(function (c) { return c.group === g; });
+    if (!items.length) return;
+    lines.push('');
+    lines.push('【' + g + '】');
+    items.forEach(function (c) {
+      lines.push('・' + c.usage + (c.note ? '　' + c.note : ''));
+      if (c.example) lines.push('　例：' + c.example);
+    });
+  });
   return lines.join('\n');
+}
+
+/** 一對一的 ?／指令 */
+function handleHelpCommand_(userId) {
+  return commandDictionaryText_(commandsFor_(lineUserById_(userId), 'private'), 'private');
+}
+
+/**
+ * 群組裡的 ?／指令。家族群組裡「?」常常只是聊天，所以**沒啟用的群組一律不回**（不插嘴）；
+ * 啟用的群組才回，而且只列這個群組開放的、發問者本人能用的。
+ */
+function groupHelpReply_(text, source, userId) {
+  var all = lineGroupsCached_();
+  if (!all.ok) return null;
+  var g = findGroup_(all, chatIdOf_(source));
+  if (!g || !truthy_(g.record.is_active) || String(g.record.left_at == null ? '' : g.record.left_at).trim()) return null;
+  if (!userId) return null;
+  var w = writeGate_(userId, 'LINE 群組 ' + firstLine_(text));
+  if (!w.allowed) return null;
+  return commandDictionaryText_(commandsFor_(w.user || lineUserById_(userId), 'group', g.record), 'group');
+}
+
+/** PWA 設定頁「📖 指令字典」（action=commandDict，點開才抓）。不分聊天室，標出各指令能在哪裡用 */
+function commandDictForPwa_(caller) {
+  var cmds = commandsFor_(caller.user, 'pwa');
+  return {
+    success: true,
+    groups: COMMAND_GROUPS.map(function (g) {
+      return { group: g, items: cmds.filter(function (c) { return c.group === g; }).map(function (c) {
+        return { usage: c.usage, example: c.example || '', note: c.note || '', scope: COMMAND_SCOPE_LABEL[c.scope] };
+      }) };
+    }).filter(function (x) { return x.items.length; })
+  };
 }
 
 /**
@@ -2181,6 +2355,7 @@ function groupMessageReply_(text, source, userId) {
   // 等待到期日（ADR-014 D-21）：只認建立者本人在同一個群組的下一句，其他人的話照常不理
   var waited = taskDateWaitReply_(text, source, userId);
   if (waited !== null) return waited;
+  if (isHelpCommand_(text)) return groupHelpReply_(text, source, userId);
   var cmd = groupCommandOf_(text);
   if (cmd === null) return null;
   if (cmd === '') return '「' + String(text).trim() + '」只能在跟 bot 的一對一聊天室用。';

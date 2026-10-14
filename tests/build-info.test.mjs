@@ -46,7 +46,7 @@ describe('LINE：沒有這個前綴時附上發行號', () => {
   test('有 BUILD_INFO：最後一行是「目前版本：#run · main@sha（時間）」', () => {
     const call = loadLineRouter({ run: '33', sha: 'abc1234', builtAt: '09-30 10:49' });
     const lines = call('routeLineMessage_', '亂打/123', 'U1').split('\n');
-    assert.equal(lines[0], '沒有這個前綴喔。');
+    assert.equal(lines[0], '看不懂這個指令，傳 ? 看字典', 'ADR-018 B-3：一行，完整清單在 ? 字典');
     assert.equal(lines[lines.length - 1], '目前版本：#33 · main@abc1234（09-30 10:49）');
   });
 
@@ -56,10 +56,10 @@ describe('LINE：沒有這個前綴時附上發行號', () => {
     assert.match(lines[lines.length - 1], /^目前版本：未知/);
   });
 
-  test('支援清單本身一字不改，版本只多一行在最後', () => {
+  test('提示本身一字不改，版本只多一行在最後', () => {
     const call = loadLineRouter({ run: '33', sha: 'abc1234', builtAt: '09-30 10:49' });
     const reply = call('routeLineMessage_', '亂打/123', 'U1');
-    assert.equal(reply, '沒有這個前綴喔。\n' + call('supportedPrefixesMessage_') +
+    assert.equal(reply, call('supportedPrefixesMessage_') +
       '\n目前版本：#33 · main@abc1234（09-30 10:49）');
   });
 

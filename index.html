@@ -441,6 +441,9 @@
   }
   .place-btns button.sel{border-color:var(--accent); background:var(--accent-soft); color:var(--accent);}
   .place-btns button:disabled:not(.sel){opacity:.4; cursor:not-allowed;}
+  .dict-row{ padding:6px 0; border-bottom:1px solid var(--line); }
+  .dict-row:last-child{ border-bottom:none; }
+  .dict-row code{ font-size:13px; word-break:break-all; margin-right:6px; }
   /* 已滿的那一側：仍可點（點了會給提示），但先讓人看出來為什麼選不動 */
 
   /* ---------- LOG 頁（ADR-006 §C） ---------- */
@@ -1115,6 +1118,15 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
         <div class="place-btns" id="themeBtns"></div>
       </div>
       <p class="slot-hint">「自動」跟著手機的深淺色設定。只存這支手機，不同步雲端。</p>
+    </div>
+    <!-- 📖 指令字典（ADR-018 B-3）：跟 LINE 的 ? 同一份登記表（雲端 COMMANDS）。點開才抓（commandDict），不進開機 -->
+    <div class="slot-card fold" id="dictCard">
+      <button class="fold-head" onclick="toggleFold('dict')"><h2>📖 指令字典</h2>
+        <span class="place-count"></span><span class="fold-arrow" id="foldArrow-dict">▾</span></button>
+      <div class="fold-body" id="fold-dict" hidden>
+        <div id="dictBody"></div>
+        <p class="slot-hint">只列你能用的。在 LINE 傳 ? 也看得到同一份（只列那個聊天室能用的）。</p>
+      </div>
     </div>
   </div>
 
@@ -2722,6 +2734,29 @@ async function purgePerf(){
   perfSummaryCache=null;
   renderPerfCard();
   toast('已刪除 '+r.deleted+' 筆，剩 '+r.remaining+' 筆');
+}
+
+/* ---------- 📖 指令字典（ADR-018 B-3） ----------
+   雲端的指令登記表（COMMANDS）照這個人的權限過濾後送下來，App 只負責畫。不分聊天室，標出能在哪裡用 */
+let dictState={data:null, loading:false};
+async function loadCommandDict(){
+  dictState.loading=true; renderDictCard();
+  let r=null;
+  try{ r=await cloudPost({action:'commandDict', trigger:'manual'}); }catch(e){ r=null; }
+  dictState.loading=false;
+  dictState.data = (r && r.success) ? r : null;
+  if(!dictState.data) toast('⚠️ 讀不到指令字典');
+  renderDictCard();
+}
+function renderDictCard(){
+  const body=document.getElementById('dictBody');
+  if(!body) return;
+  const d=dictState.data;
+  if(dictState.loading){ body.innerHTML='<div class="empty-hint">讀取中…</div>'; return; }
+  if(!d){ body.innerHTML=''; return; }
+  body.innerHTML=(d.groups||[]).map(g=>`<p class="perf-sub">${esc(g.group)}</p>`+g.items.map(c=>
+    `<div class="dict-row"><code>${esc(c.usage)}</code><small class="dash-sub">${esc(c.scope)}</small>
+      ${c.note?`<div class="dash-sub">${esc(c.note)}</div>`:''}${c.example?`<div class="dash-sub">例：${esc(c.example)}</div>`:''}</div>`).join('')).join('');
 }
 
 /* ---------- 🤖 AI 供應商（ADR-017 D-1～D-4） ----------
@@ -4870,6 +4905,7 @@ const FOLD_LOAD={
   push:    ()=>{ if(!pushState.groups) loadPushGroups(); },
   perf:    ()=>{ if(!perfSummaryCache) loadPerfSummary(); },
   ai:      ()=>{ if(!aiState.cfg) loadAiConfig(); },
+  dict:    ()=>{ if(!dictState.data) loadCommandDict(); },
   logs:    ()=>{ openLogsView(); },
   archive: ()=>{}
 };
