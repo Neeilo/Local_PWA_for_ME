@@ -25,6 +25,7 @@
 | `sheet-guide.gs` | `_guide` 導覽分頁：分頁登記表＋每天自動重新產生（`refreshGuide()`） |
 | `stock.gs` | 股票（ADR-015）：報價層 `quote_()`（富果 → MIS → GOOGLEFINANCE；非交易時段讀 `stock_daily`）、持股（移動平均）、交易／自選的寫入把關、LINE「買/」「賣/」「股/」的處理、建表 `installStock_()`（併入「初始化」）。再平衡試算 `computeRebalance_()`、提醒規則 `evaluateRule_()`（儀表板亮燈與推播共用）、排程 `checkStockRules`（每 5 分鐘，盤中）與 `fetchStockDaily`（交易日 14～19 點每小時，拿到當天收盤就停）。資料源探針 `probeStockSources()` 也在這裡，編輯器手動執行 |
 | `gmail.gs` | Gmail 控制員（ADR-016）。排程 `runGmailController`（每天約 9 點）：依 `gmail_rules` 掃最近 3 天 → Gmail **只貼標籤**（規則標籤＋`NeilOS/已處理`，不封存／不已讀／不刪除）→ 帳單 PDF 原封不動存 Drive `Neil OS/Gmail 附件/{信種}/{YYYY-MM}/` → 寫 `gmail_log`。去重看 `msg_id`、不看標籤（標籤是整串的）。「初始化」的 `installGmail_()` 建兩張表、補 `feat_gmail`／`cmd_gmail`／`notify_gmail`、建 Drive 資料夾、裝排程；移除排程用 `uninstallGmailController`。部署後在編輯器執行一次 `authorizeGmailController` 同意 Gmail＋Drive 權限。規則探針 `probeGmail()`（只讀，編輯器手動執行）。解析器對照表 `GMAIL_PARSERS`（純函式，規則有填才讀內文；抓不到標 ⚠️ 待確認、不猜值）；掃完推一則彙總給「啟用＋`notify_gmail`」的群組（0 封不推）。App 用的管理員 API：`gmailView`（規則／郵件列表）、`gmailRuleSet`（新增／編輯／停用規則），只限管理者＋`feat_gmail` |
+| `lab-clip.gs` | **實驗用探針，不是功能**（RD 收藏搜集器 MVP 階段 0）。只有 `probeClipSources()`：編輯器手動執行，測 Apify 能否拿到 IG 貼文全文＋每一張圖、GAS 能否把圖下載進 Drive 測試資料夾「Neil OS 探針｜收藏 MVP（驗完可整個刪）」、Jina 退路、成本與網址正規化（交棒頁 V1～V7）。不接 LINE、不寫 Sheet、不改任何既有函式。金鑰讀指令碼屬性 `APIFY_TOKEN`（必填）／`JINA_API_KEY`（選填）；選填 `APIFY_ACTOR`、`APIFY_INPUT_FIELD`、`CLIP_PROBE_URLS`（一行一篇：網址\|預期張數\|備註）。grill-me 定案後整支刪掉或改寫 |
 | `build-info.gs` | **不在 repo**：CI 部署時產生的發行號（`BUILD_INFO`），LINE 回「沒有這個前綴」時附在最後一行。`npm run pull` 會把它帶回來，已列入 `.gitignore` |
 
 ⚠️ **兩個密鑰一律讀指令碼屬性，不可寫回原始碼**（見下）。線上版原本把
