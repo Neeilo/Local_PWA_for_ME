@@ -462,18 +462,15 @@ function dailyCloses_(symbols, now) {
   return out;
 }
 
-/** 報價的效能紀錄：action=quote，sheets 欄寫「來源×檔數」（ADR-015 T1） */
+/** 報價的效能紀錄：action=quote，sheets 欄寫「來源×檔數」（ADR-015 T1）。只排隊，由 flushPerfQueue 落地（ADR-019 B-2） */
 function recordQuotePerf_(source, count, ms, ctx) {
   try {
     var c = ctx || {};
-    var sheet = ensurePerformanceSheet_();
-    var headers = perfHeaders_(sheet);
     var now = Date.now();
     var trigger = PERF_TRIGGERS.indexOf(c.trigger) !== -1 ? c.trigger : '';
-    var r = { id: String(now) + source, ts: new Date(now).toISOString(), action: 'quote', trigger: trigger,
+    queuePerfRows_([{ id: String(now) + source, ts: new Date(now).toISOString(), action: 'quote', trigger: trigger,
               server_ms: ms, sheets: source + '×' + count, rows: count,
-              line_id: c.line_id || '', device_id: c.device_id || '' };
-    sheet.appendRow(headers.map(function (h) { return r[h] === undefined || r[h] === null ? '' : r[h]; }));
+              line_id: c.line_id || '', device_id: c.device_id || '' }]);
   } catch (err) {
     console.log('寫報價效能紀錄失敗（主流程不受影響）：' + err);
   }

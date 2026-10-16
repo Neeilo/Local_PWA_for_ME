@@ -22,7 +22,7 @@ const MOM = 'Umom';     // 一般成員（沒有股票、沒有記帳）
 const TOK_ME = 'tok-neil-device';
 const TOK_MOM = 'tok-mom-device';
 const PERF_HEADERS = ['id', 'ts', 'action', 'trigger', 'client_ms', 'server_ms', 'auth_ms', 'open_ms', 'read_ms',
-  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms', 'stages'];
+  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms', 'stages', 'request_id'];
 
 function env({ sheets = {} } = {}) {
   return loadCodeGs({
@@ -54,7 +54,12 @@ function post(e, body) {
   return JSON.parse(e.call('handlePwaSync_', { postData: { contents: JSON.stringify(body) } }).body);
 }
 
-const perfRows = (e) => (e.sheets.performance ? e.sheets.performance.toRecords() : []);
+// ADR-019 B-2：紀錄先排隊，flushPerfQueue 落地後才在表上；flush 自己那列（perfFlush）不算進來
+const perfRows = (e) => {
+  e.call('flushPerfQueue');
+  const sh = e.ss.getSheetByName('performance');
+  return sh ? sh.toRecords().filter((r) => r.action !== 'perfFlush') : [];
+};
 const stagesOf = (row) => JSON.parse(row.stages);
 const topLevelSum = (st) => Object.keys(st).filter((k) => k.indexOf('.') === -1).reduce((a, k) => a + st[k], 0);
 
@@ -122,9 +127,10 @@ describe('boot／readMany：每一段都記到 stages 欄', () => {
   });
 
   test('舊表（沒有 stages 欄）：自動補在最右邊，舊欄位一格不動', () => {
-    const old = PERF_HEADERS.slice(0, -1);
+    const old = PERF_HEADERS.slice(0, -2);         // 沒有 stages 的舊表當然也沒有更晚的 request_id（ADR-019）
     const e = env({ sheets: { performance: new FakeSheet('performance', [old.slice()]) } });
     post(e, { token: TOK_ME, action: 'boot', trigger: 'cold' });
+    e.call('flushPerfQueue');   // ADR-019 B-2：排隊的紀錄落地後才在表上
     assert.deepEqual(e.sheets.performance.values[0], PERF_HEADERS);
     assert.ok(stagesOf(perfRows(e)[0]).auth >= 0);
   });

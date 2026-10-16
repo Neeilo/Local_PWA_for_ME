@@ -1373,16 +1373,19 @@ function cloudPost(body){
   // 暫存的耗時紀錄搭這班車上去（ADR-012 T1）。那三扇門不經過雲端的驗證，帶了也寫不進去
   const carry = (!SELF_HANDLED_ACTIONS.includes(body.action) && perfPending.length) ? perfPending.splice(0) : null;
   const started = Date.now();
+  // 每個請求一個 ID（ADR-019 B-3）：雲端那列記下它，手機量完這次的耗時也帶著它，摘要才對得起來
+  const rid = newRequestId();
+  lastRequestId[body.action] = rid;
   return fetch(CLOUD_URL,{
     method:'POST',
     headers:{'Content-Type':'text/plain'},
-    body:JSON.stringify(Object.assign({token:deviceToken||''}, body, carry?{perf:carry}:{}))
+    body:JSON.stringify(Object.assign({token:deviceToken||''}, body, {request_id:rid}, carry?{perf:carry}:{}))
   }).then(r=>r.json()).then(j=>{
     if(j && AUTH_ERRORS.includes(j.error)){
       if(carry) perfRestore(carry);                  // 被擋下的請求雲端一列都不寫
       if(!SELF_HANDLED_ACTIONS.includes(body.action)) handleAuthError(j.error);
     }
-    if(body.trigger==='write' && j && j.success) perfNote(body.action, 'write', Date.now()-started);
+    if(body.trigger==='write' && j && j.success) perfNote(body.action, 'write', Date.now()-started, rid);
     return j;
   }, err=>{
     if(carry) perfRestore(carry);                    // 沒送到就不能丟，下一班再帶
@@ -1402,11 +1405,20 @@ const PERF_PENDING_MAX=20;          // 跟雲端一個請求收的上限一樣
    3 支手機 × 30 天 ≈ 21,600 列，再加開機與寫入 → 30,000 才提醒 */
 const PERF_ALERT_ROWS=30000;
 let perfPending=[], perfRows=0, perfSummaryCache=null;
+let lastRequestId={};               // action → 最近一次請求的 request_id：開機／輪詢量完耗時時拿來配對（ADR-019 B-3）
 let unauthAlert=null;               // { ts, bad_token }：未驗證請求某一小時暴增（ADR-014 D-15）
 let groupNames={};                  // 群組 ID → 名稱：只含畫面上任務用到的群組，開機時帶回（任務列「👥 群組名」）
 
-function perfNote(action, trigger, ms){
-  perfPending.push({action, trigger, client_ms:Math.round(ms)});
+/* request_id 只收雲端認得的形狀（英數、-、_，8～64 字）。有 crypto.randomUUID 就用；
+   舊裝置（iOS 15.4 以前）沒有，退回時間戳＋亂數——只拿來配對，不需要密碼學等級 */
+function newRequestId(){
+  try{ if(typeof crypto!=='undefined' && crypto.randomUUID) return crypto.randomUUID(); }catch(e){}
+  return Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,10).padEnd(8,'0');
+}
+/* rid：這筆量的是哪一次請求（切區不打請求，沒有）。at：手機上實際發生的時間——
+   這筆要搭下一個請求才上得去，雲端的上傳時間不等於它發生的時間（ADR-019 B-3） */
+function perfNote(action, trigger, ms, rid){
+  perfPending.push(Object.assign({action, trigger, client_ms:Math.round(ms), at:Date.now()}, rid?{request_id:rid}:{}));
   if(perfPending.length>PERF_PENDING_MAX) perfPending=perfPending.slice(-PERF_PENDING_MAX);
 }
 function perfRestore(list){
@@ -1464,7 +1476,7 @@ function startSession(trigger){
     stockData=null; stockFailed=false;     // 不顯示舊報價（ADR-009）：開機後另打 action=stock 補上
   }
   bootPromise=(full ? bootWithRetry(trigger) : runBoot(trigger)).then(ok=>{
-    if(ok && trigger) perfNote('boot', trigger, Date.now()-started);
+    if(ok && trigger) perfNote('boot', trigger, Date.now()-started, lastRequestId.boot);
     if(ok) refreshStock(trigger);          // 不等它：報價慢，Loading 不等報價（D-6）
     if(full){
       if(ok || gateMode) progressDone('full');
@@ -2508,7 +2520,7 @@ function onForeground(now){
 function timedPull(trigger){
   const started=Date.now();
   return syncFromCloud({trigger}).then(ok=>{
-    if(ok) perfNote('pull', trigger, Date.now()-started);
+    if(ok) perfNote('pull', trigger, Date.now()-started, lastRequestId.readMany);
     return ok;
   });
 }
@@ -2724,8 +2736,10 @@ function perfStagesRow(g){
 function perfSummaryHtml(r){
   if(!r || !r.success) return '<p class="perf-sub">讀不到效能紀錄，稍後再試。</p>';
   if(!r.total) return '<p class="perf-sub">還沒有任何紀錄。</p>';
+  // 雲端外＝同一個請求的手機耗時 − 雲端耗時（網路＋GAS 冷啟動，ADR-019 B-3）；對不到的組不顯示
+  const outside=(g)=>g.paired>0 ? `<tr><td colspan="4" class="perf-sub">雲端外（網路＋冷啟動，對得上 ${g.paired} 筆）：一般 ${fmtMs(g.outside_p50)}</td></tr>` : '';
   const client=(r.client||[]).map(g=>`<tr><td>${esc(PERF_TRIGGER_LABEL[g.trigger]||g.trigger)}</td>
-      <td>${g.count}</td><td>${fmtMs(g.p50)}</td><td>${fmtMs(g.p90)}</td></tr>`).join('');
+      <td>${g.count}</td><td>${fmtMs(g.p50)}</td><td>${fmtMs(g.p90)}</td></tr>`+outside(g)).join('');
   const server=(r.server||[]).map(g=>`<tr><td>${esc(g.action)}</td>
       <td>${g.count}</td><td>${fmtMs(g.p50)}</td><td>${fmtMs(g.p90)}</td>
       <td>${g.auth_pct}／${g.open_pct}／${g.read_pct}%</td></tr>`+perfStagesRow(g)).join('');

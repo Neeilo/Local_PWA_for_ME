@@ -206,6 +206,7 @@ describe('效能紀錄（ADR-017 × PR-0）', () => {
   test('「查/」那一列的 stages：query／query.context／query.ai；只有段名與毫秒', () => {
     const e = env({ properties: Object.assign({ AI_PROVIDER: 'claude' }, KEYS) });
     ask(e);
+    e.call('flushPerfQueue');   // ADR-019 B-2：排隊的紀錄落地後才在表上
     const row = e.sheets.performance.toRecords().find((r) => r.action === 'lineMessage');
     const st = JSON.parse(row.stages);
     for (const k of ['query', 'query.context', 'query.ai']) assert.equal(typeof st[k], 'number', k);
@@ -215,6 +216,7 @@ describe('效能紀錄（ADR-017 × PR-0）', () => {
   test('不是「查/」的訊息：stages 空白', () => {
     const e = env({ properties: KEYS });
     ask(e, ME, '任務/買菜');
+    e.call('flushPerfQueue');   // ADR-019 B-2：排隊的紀錄落地後才在表上
     const row = e.sheets.performance.toRecords().find((r) => r.action === 'lineMessage');
     assert.equal(row.stages, '');
   });

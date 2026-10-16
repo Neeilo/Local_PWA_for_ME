@@ -61,7 +61,12 @@ function env({ tasks = [], notes = [], expenses = [], groups = null, overrides =
   });
 }
 const post = (e, body) => JSON.parse(e.call('handlePwaSync_', { postData: { contents: JSON.stringify(body) } }).body);
-const perfRows = (e) => (e.sheets.performance ? e.sheets.performance.toRecords() : []);
+// ADR-019 B-2：紀錄先排隊，flushPerfQueue 落地後才在表上；flush 自己那列（perfFlush）不算進來
+const perfRows = (e) => {
+  e.call('flushPerfQueue');
+  const sh = e.ss.getSheetByName('performance');
+  return sh ? sh.toRecords().filter((r) => r.action !== 'perfFlush') : [];
+};
 
 /* ========================================================================== */
 describe('T8-1 守門：每一個雲端動作都帶 trigger', () => {

@@ -8,7 +8,7 @@
  *     ・並行的兩個請求各自一個鍵，不互蓋
  *     ・落地的列跟以前直接寫的一模一樣（stages、device_id、line_id 都在）、依時間排序、寫完刪鍵
  *     ・拿不到鎖就跳過、鍵留著下一輪；排隊是空的就一列都不寫
- *     ・屬性放不進去 → 退回直接寫，紀錄不會掉
+ *     ・屬性放不進去 → ADR-019 B-2 起不再退回直接寫（見 adr-019-perf.test.mjs）
  *     ・管理員看效能摘要前先 flush，看到的是最新的
  *   - 「初始化」裝好每 10 分鐘的 flushPerfQueue，重複執行不累積
  *
@@ -90,8 +90,10 @@ describe('效能紀錄排隊（D-4：不擋住回應）', () => {
     assert.equal(boot.line_id, ME);
     assert.ok(JSON.parse(boot.stages).auth >= 0, 'stages 照樣寫');
     assert.ok(rows.some((r) => r.client_ms === 4200));
-    assert.equal(queueKeys(e).length, 0, '寫完刪鍵');
-    assert.ok(rows.some((r) => r.action === 'perfFlush' && r.trigger === 'schedule' && r.rows === 2), '排程自己也記一列');
+    assert.ok(!rows.some((r) => r.action === 'perfFlush'), 'ADR-019 B-2：flush 自己那列也排隊，不在同一批');
+    assert.equal(queueKeys(e).length, 1, '寫完刪鍵，只剩 flush 自己那列');
+    e.call('flushPerfQueue');
+    assert.ok(perfRows(e).some((r) => r.action === 'perfFlush' && r.trigger === 'schedule' && r.rows === 2), '下一輪落地');
   });
 
   test('並行的請求各自一個鍵，不互蓋；落地依時間排序', () => {
@@ -132,18 +134,15 @@ describe('效能紀錄排隊（D-4：不擋住回應）', () => {
     assert.equal(e.properties.LINE_OA_ID, '@x');
   });
 
-  test('屬性放不進去（額度滿、唯讀）：退回直接寫，紀錄不掉', () => {
-    const e = env();                         // 預設唯讀
-    post(e, { token: TOK_ME, action: 'readMany', sheets: ['tasks'], trigger: 'poll' });
-    assert.equal(perfRows(e).filter((r) => r.action === 'readMany').length, 1);
-  });
+  // 「屬性放不進去 → 退回直接寫」已由 ADR-019 B-2 取代（先 flush 再放、仍不行就丟棄並寫 logs），
+  // 測試在 adr-019-perf.test.mjs「B-2 排隊放不進去」
 
   test('管理員看效能摘要前先 flush：剛排隊的也算進去', () => {
     const e = env({ propsWritable: true });
     post(e, { token: TOK_ME, action: 'boot', trigger: 'cold' });
     const s = post(e, { token: TOK_ME, action: 'perfSummary', trigger: 'manual' });
     assert.equal(s.server.find((g) => g.action === 'boot').count, 1);
-    assert.equal(queueKeys(e).length, 1, '只剩摘要自己這次的');
+    assert.equal(queueKeys(e).length, 2, '只剩摘要自己這次的＋flush 自己那列（ADR-019 B-2）');
   });
 
   test('「初始化」裝好每 10 分鐘的 flushPerfQueue；跑兩次也只有一個', () => {

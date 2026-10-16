@@ -26,7 +26,7 @@ const DAY = 86400000;
 
 const TASK_HEADERS = ['id', 'text', 'is_completed', 'created_at', 'priority', 'line_id', 'del', 'archive'];
 const PERF_HEADERS = ['id', 'ts', 'action', 'trigger', 'client_ms', 'server_ms', 'auth_ms', 'open_ms', 'read_ms',
-  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms', 'stages'];
+  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms', 'stages', 'request_id'];
 
 function env({ sheets = {}, cache = false } = {}) {
   const e = loadCodeGs({
@@ -49,7 +49,12 @@ function post(e, body) {
   return JSON.parse(e.call('handlePwaSync_', { postData: { contents: JSON.stringify(body) } }).body);
 }
 
-const perfRows = (e) => (e.sheets.performance ? e.sheets.performance.toRecords() : []);
+// ADR-019 B-2：紀錄先排隊，flushPerfQueue 落地後才在表上；flush 自己那列（perfFlush）不算進來
+const perfRows = (e) => {
+  e.call('flushPerfQueue');
+  const sh = e.ss.getSheetByName('performance');
+  return sh ? sh.toRecords().filter((r) => r.action !== 'perfFlush') : [];
+};
 
 /** 測試自己造的 performance 表：ts 以「現在」往回推 */
 function seededPerf(rows) {
@@ -68,9 +73,9 @@ describe('記錄規則：哪些請求會留一列', () => {
     const out = post(e, { token: TOK_ME, action: 'read', sheet: 'tasks', trigger: 'cold' });
     assert.equal(out.data.length, 1, '主流程照常');
 
+    const rows = perfRows(e);
     assert.ok(e.sheets.performance, 'performance 分頁要自己建出來');
     assert.deepEqual(e.sheets.performance.values[0], PERF_HEADERS, '表頭依票面欄序');
-    const rows = perfRows(e);
     assert.equal(rows.length, 1);
     const r = rows[0];
     assert.equal(r.action, 'read');
@@ -220,6 +225,7 @@ describe('不存 token、不存資料內容', () => {
       record: { id: '9', text: '秘密內容 9527', line_id: ME },
       perf: [{ action: 'upsert', trigger: 'write', client_ms: 120, text: '秘密內容 9527', token: TOK_ME }] });
 
+    e.call('flushPerfQueue');                     // ADR-019 B-2：排隊的紀錄落地後才在表上
     const dump = JSON.stringify(e.sheets.performance.values);
     const hash = createHash('sha256').update(TOK_ME, 'utf8').digest('hex');
     for (const needle of [TOK_ME, hash, '秘密內容', '9527', '買菜']) {
@@ -289,7 +295,8 @@ describe('perfSummary：雲端算好再送', () => {
     assert.equal(out.oldest, rows[0].ts);
 
     const cold = out.client.find((g) => g.trigger === 'cold');
-    assert.deepEqual(cold, { trigger: 'cold', count: 10, p50: 500, p90: 900 });
+    // paired／outside_p50：ADR-019 B-3 的「server 外的時間」；這批列沒有 request_id，對不到
+    assert.deepEqual(cold, { trigger: 'cold', count: 10, p50: 500, p90: 900, paired: 0, outside_p50: null });
 
     const read = out.server.find((g) => g.action === 'read');
     assert.equal(read.count, 4);
@@ -308,7 +315,7 @@ describe('perfSummary：雲端算好再送', () => {
       { ts: new Date(Date.now() - DAY), action: 'startup', trigger: 'poll', client_ms: 300 }
     ]) } });
     const out = post(e, { token: TOK_ME, action: 'perfSummary' });
-    assert.deepEqual(out.client, [{ trigger: 'poll', count: 1, p50: 300, p90: 300 }]);
+    assert.deepEqual(out.client, [{ trigger: 'poll', count: 1, p50: 300, p90: 300, paired: 0, outside_p50: null }]);
   });
 });
 
@@ -397,13 +404,17 @@ describe('門檻提醒的筆數：session 順便回給管理員', () => {
 /* ========================================================================== */
 describe('寫紀錄失敗不影響主流程', () => {
 
-  test('performance 寫入丟例外 → 讀取照常回資料', () => {
+  // ADR-019 B-2 起請求本身不寫 performance（只排隊），寫入只發生在 flushPerfQueue
+  test('performance 寫入丟例外 → 讀取照常回資料；flush 失敗寫 logs、紀錄留著', () => {
     const broken = new FakeSheet('performance', [PERF_HEADERS.slice()]);
     broken.appendRow = () => { throw new Error('配額用完'); };
+    broken.getRange = () => ({ setValues: () => { throw new Error('配額用完'); }, getValues: () => [PERF_HEADERS.slice()] });
     const e = env({ sheets: { performance: broken } });
     const out = post(e, { token: TOK_ME, action: 'read', sheet: 'tasks', trigger: 'cold' });
     assert.equal(out.data.length, 1);
-    assert.ok(e.logs.some((l) => l.includes('配額用完')), '失敗要記 console，不安靜吞掉');
+    assert.equal(e.call('flushPerfQueue').reason, 'error');
+    assert.ok(e.transactions.some((t) => t[0] === '效能' && String(t[4]).includes('配額用完')), '失敗要記 logs，不安靜吞掉');
+    assert.ok(Object.keys(e.properties).some((k) => k.indexOf('perfq_') === 0), '紀錄留在排隊區');
   });
 });
 
