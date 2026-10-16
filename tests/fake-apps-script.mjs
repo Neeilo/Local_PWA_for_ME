@@ -269,7 +269,7 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
   const transactions = [];      // logTransaction_ 收到的參數
   const pushes = [];            // linePush_ 收到的 (userId, text)
   const mails = [];             // MailApp.sendEmail 收到的參數
-  const lock = { held: false, busy: false };   // busy=true 模擬「另一個封存正在跑」
+  const lock = { held: false, busy: false, userHeld: false, userBusy: false };   // busy=true 模擬「另一個封存正在跑」；userBusy＝上一輪排程總管還在跑
   const triggers = [];          // ScriptApp 建出來的觸發器
   const scopeChecks = [];       // ScriptApp.requireScopes／requireAllScopes 被要求過的權限
   const counters = { opens: 0 }; // getActiveSpreadsheet 被呼叫的次數
@@ -378,6 +378,11 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
       getScriptLock: () => ({
         tryLock: () => { if (lock.busy) return false; lock.held = true; return true; },
         releaseLock: () => { lock.held = false; }
+      }),
+      // 排程總管專用（ADR-019 D-1）：跟 script lock 分開，總管包住整輪時，各工作內部照樣拿得到 script lock
+      getUserLock: () => ({
+        tryLock: () => { if (lock.userBusy) return false; lock.userHeld = true; return true; },
+        releaseLock: () => { lock.userHeld = false; }
       })
     },
     // line-router.gs 裡的函式，Code.gs 靠全域範圍看見它們
@@ -417,7 +422,8 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
   // 同一個 Apps Script 專案的其他檔案：線上是共用全域，這裡就載進同一個 context。
   // stock.gs 一律載入：Code.gs 的 boot／readMany／upsert 會呼叫它（ADR-015），線上它永遠在。
   // gmail.gs 同理：line-router.gs 的「初始化」會呼叫它（ADR-016）；ai.gs：「查/」與設定頁的 AI 出口（ADR-017）
-  const ALWAYS = ['stock.gs', 'gmail.gs', 'ai.gs'];
+  // scheduler.gs：「初始化」裝的唯一觸發器（ADR-019 D-1）
+  const ALWAYS = ['stock.gs', 'gmail.gs', 'ai.gs', 'scheduler.gs'];
   const files = ALWAYS.concat(extraFiles.filter((name) => ALWAYS.indexOf(name) === -1));
   files.forEach((name) => {
     runInContext(readFileSync(join(ROOT, 'apps-script', name), 'utf8'), context, { filename: name });

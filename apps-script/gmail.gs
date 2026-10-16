@@ -596,8 +596,8 @@ function installGmail_() {
     lines.push('⚠️ Gmail 還沒授權：' + GMAIL_AUTH_HINT);
   }
 
-  installGmailTrigger_();
-  lines.push('排程 ' + GMAIL_CONTROLLER_FUNCTION + '：已安裝（每天約 ' + GMAIL_CONTROLLER_HOUR + ' 點）');
+  // 觸發器由排程總管統一管（ADR-019 D-1），這裡不再自己裝
+  lines.push('排程：由排程總管每天 ' + GMAIL_CONTROLLER_HOUR + ' 點後第一輪執行');
   return { level: warn ? 'warn' : 'ok', text: lines.join('\n　') };
 }
 
@@ -625,23 +625,6 @@ function installGmailFeature_() {
   return { text: LINE_USERS_SHEET + ' 補上：feat_gmail（預設只開管理者 ' + admins + ' 人）' };
 }
 
-/** 獨立安裝／移除，不跟到期提醒綁在一起（T4）。先刪同名的再建，重跑不累積 */
-function installGmailTrigger_() {
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === GMAIL_CONTROLLER_FUNCTION) ScriptApp.deleteTrigger(t);
-  });
-  ScriptApp.newTrigger(GMAIL_CONTROLLER_FUNCTION).timeBased().atHour(GMAIL_CONTROLLER_HOUR).everyDays(1).create();
-}
-
-/** 編輯器手動執行：停掉控制員（表與資料都留著） */
-function uninstallGmailController() {
-  var removed = 0;
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === GMAIL_CONTROLLER_FUNCTION) { ScriptApp.deleteTrigger(t); removed++; }
-  });
-  console.log(removed ? '已移除 ' + removed + ' 個 ' + GMAIL_CONTROLLER_FUNCTION + ' 觸發器' : '沒有找到 ' + GMAIL_CONTROLLER_FUNCTION + ' 觸發器');
-  return { removed: removed };
-}
 
 /**
  * 授權——部署後在 GAS 編輯器選這支按「執行」一次（比照 authorizeArchiveMail）。

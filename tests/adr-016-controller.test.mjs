@@ -356,7 +356,7 @@ describe('T1／T4「初始化」', () => {
   const INIT_FILES = ['line-router.gs', 'sheet-guide.gs'];
   const groupsSheet = () => new FakeSheet('line_groups', [['group_id', 'name', 'is_active', 'cmd_expense', 'notify_due']]);
 
-  test('空試算表：建兩張表（表頭正確）、補三個欄、建 Drive 資料夾、裝排程', () => {
+  test('空試算表：建兩張表（表頭正確）、補三個欄、建 Drive 資料夾；排程交給總管（不自己裝觸發器）', () => {
     const e = env({ sheets: { line_users: usersSheet(), line_groups: groupsSheet() }, extraFiles: INIT_FILES });
     const r = e.call('installGmail_');
     assert.equal(r.level, 'ok', r.text);
@@ -366,7 +366,8 @@ describe('T1／T4「初始化」', () => {
     assert.deepEqual(e.sheets.line_users.toRecords().map((u) => u.feat_gmail), ['TRUE', ''], '只替管理員打勾');
     assert.deepEqual(e.sheets.line_groups.values[0].slice(-2), ['cmd_gmail', 'notify_gmail']);
     assert.deepEqual(e.drive.folders, ['Neil OS', 'Neil OS/Gmail 附件']);
-    assert.deepEqual(e.triggers.map((t) => [t.handler, t.hour, t.days]), [['runGmailController', 9, 1]]);
+    assert.deepEqual(e.triggers, [], 'ADR-019 D-1：觸發器只由「初始化」的排程總管裝');
+    assert.match(r.text, /排程：由排程總管每天 9 點後第一輪執行/);
     assert.match(r.text, /新建 gmail_rules/);
     assert.match(r.text, /新建 gmail_log/);
     assert.match(r.text, /line_users 補上：feat_gmail（預設只開管理者 1 人）/);
@@ -375,7 +376,7 @@ describe('T1／T4「初始化」', () => {
     assert.match(r.text, /Gmail 授權 ✅/);
   });
 
-  test('重跑三次：不重建、不動資料、資料夾只有一組、排程只有一個', () => {
+  test('重跑三次：不重建、不動資料、資料夾只有一組', () => {
     const e = env({ sheets: { line_users: usersSheet(), line_groups: groupsSheet() }, extraFiles: INIT_FILES });
     e.call('installGmail_');
     e.sheets.gmail_rules.values.push(RULE_HEADERS.map((h) => (BILL[h] === undefined ? '' : BILL[h])));
@@ -385,21 +386,14 @@ describe('T1／T4「初始化」', () => {
     const r = e.call('installGmail_');
     assert.equal(JSON.stringify([e.sheets.gmail_rules.values, e.sheets.line_users.values]), before);
     assert.deepEqual(e.drive.folders, ['Neil OS', 'Neil OS/Gmail 附件']);
-    assert.equal(e.triggers.filter((t) => t.handler === 'runGmailController').length, 1);
     assert.match(r.text, /gmail_rules 已存在（1 列規則）/);
     assert.match(r.text, /gmail_log 已存在/);
     assert.match(r.text, /Drive 資料夾 Neil OS\/Gmail 附件：已存在/);
   });
 
-  test('到期提醒等其他排程不受影響', () => {
-    const e = env({ sheets: { line_users: usersSheet(), line_groups: groupsSheet() }, extraFiles: INIT_FILES });
-    e.call('installAdr009Triggers');
-    e.call('installGmail_');
-    e.call('installGmail_');
-    assert.deepEqual(e.triggers.map((t) => t.handler).sort(), ['checkDueReminders', 'runGmailController']);
-  });
+  // ADR-019 D-1：排程只剩一個每 5 分鐘的總管，各自的安裝函式已刪；安裝與「該不該跑」的測試在 adr-019-scheduler.test.mjs
 
-  test('Drive／Gmail 還沒授權：照樣建表與排程，標 ⚠️ 並說去編輯器跑 authorizeGmailController', () => {
+  test('Drive／Gmail 還沒授權：照樣建表，標 ⚠️ 並說去編輯器跑 authorizeGmailController', () => {
     const e = env({ sheets: { line_users: usersSheet(), line_groups: groupsSheet() }, extraFiles: INIT_FILES, extra: {
       DriveApp: { getRootFolder: () => { throw new Error('You do not have permission to call DriveApp.getRootFolder'); } },
       GmailApp: { getUserLabelByName: () => { throw new Error('You do not have permission to call GmailApp'); } }
@@ -407,7 +401,6 @@ describe('T1／T4「初始化」', () => {
     const r = e.call('installGmail_');
     assert.equal(r.level, 'warn');
     assert.ok(e.sheets.gmail_log);
-    assert.equal(e.triggers.length, 1);
     assert.match(r.text, /⚠️ Drive 還沒授權/);
     assert.match(r.text, /⚠️ Gmail 還沒授權/);
     assert.match(r.text, /authorizeGmailController/);
@@ -417,7 +410,8 @@ describe('T1／T4「初始化」', () => {
     const e = loadCodeGs({ extraFiles: INIT_FILES });
     const labels = e.read('initSteps_().map(function (s) { return s.label; })');
     assert.ok(labels.includes('Gmail 控制員（ADR-016）'), labels.join('｜'));
-    assert.equal(e.read('scheduleHours_()').runGmailController, '每天約 9 點');
+    // ADR-019：時段在排程總管的登記表
+    assert.ok(e.read('schedulerJobList_()').includes('Gmail 控制員（每天 9 點後第一輪）'));
   });
 
   test('authorizeGmailController 要求全部權限（選擇性授權：任何一個沒勾就重新跳出授權畫面）', () => {
@@ -426,14 +420,7 @@ describe('T1／T4「初始化」', () => {
     assert.deepEqual(e.scopeChecks, [{ mode: 'FULL', scopes: 'all' }]);
     assert.deepEqual(e.drive.folders, [], '只讀：不建任何資料夾');
   });
-
-  test('移除排程有獨立入口，不動其他排程', () => {
-    const e = env({ sheets: { line_users: usersSheet(), line_groups: groupsSheet() }, extraFiles: INIT_FILES });
-    e.call('installAdr009Triggers');
-    e.call('installGmail_');
-    e.call('uninstallGmailController');
-    assert.deepEqual(e.triggers.map((t) => t.handler), ['checkDueReminders']);
-  });
+  // 「移除排程有獨立入口」已隨 uninstallGmailController 刪除（ADR-019：要停一個工作就從排程總管的登記表拿掉）
 });
 
 /* ========================================================================== */

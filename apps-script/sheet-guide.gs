@@ -207,34 +207,3 @@ function guideNotes_(guide) {
   return notes;
 }
 
-/**
- * 每天自動更新 _guide 的觸發器。做法比照 installAdr009Triggers()：先刪同名的
- * 再建，重複執行不會累積；只認自己的 handler，不會動到到期提醒那一個。
- * 安裝時順便立刻跑一次，不用等到明天才看得到。
- *
- * CI 只部署程式碼、不執行函式——merge 後要在編輯器手動執行一次這支。
- */
-function installGuideTrigger() {
-  var removed = removeGuideTriggers_();
-  if (removed) console.log('移除了 ' + removed + ' 個同名的舊觸發器');
-
-  ScriptApp.newTrigger(GUIDE_REFRESH_FUNCTION).timeBased().atHour(GUIDE_REFRESH_HOUR).everyDays(1).create();
-  console.log('✅ 已建立每日觸發器：' + GUIDE_REFRESH_FUNCTION + '，每天約 ' + GUIDE_REFRESH_HOUR + ' 點執行');
-  refreshGuide();
-  return { removed: removed, created: GUIDE_REFRESH_FUNCTION, hour: GUIDE_REFRESH_HOUR };
-}
-
-/** 移除 _guide 觸發器。_guide 分頁本身留著，只是不再自動更新 */
-function uninstallGuideTrigger() {
-  var removed = removeGuideTriggers_();
-  console.log(removed ? ('已移除 ' + removed + ' 個 _guide 觸發器') : '沒有找到 _guide 觸發器');
-  return { removed: removed };
-}
-
-function removeGuideTriggers_() {
-  var removed = 0;
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === GUIDE_REFRESH_FUNCTION) { ScriptApp.deleteTrigger(t); removed++; }
-  });
-  return removed;
-}

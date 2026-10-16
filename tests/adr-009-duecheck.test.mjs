@@ -158,39 +158,4 @@ describe('checkDueReminders — 背景跑的那一支', () => {
 });
 
 /* ========================================================================== */
-describe('觸發器安裝（待其他環境知道的事 #5）', () => {
-
-  test('建立一個每日觸發器', () => {
-    const { env } = envWith([]);
-    const out = env.call('installAdr009Triggers');
-
-    assert.equal(env.triggers.length, 1);
-    assert.equal(env.triggers[0].handler, 'checkDueReminders');
-    assert.equal(env.triggers[0].days, 1);
-    assert.equal(out.hour, 9, '到期提醒在半夜推沒有意義');
-  });
-
-  test('⚠️ 重複執行不會累積——三個同名觸發器就是一天推三次', () => {
-    const { env } = envWith([]);
-    env.call('installAdr009Triggers');
-    env.call('installAdr009Triggers');
-    const out = env.call('installAdr009Triggers');
-
-    assert.equal(env.triggers.length, 1);
-    assert.equal(out.removed, 1, '每次都先把同名的舊觸發器刪掉');
-  });
-
-  test('有乾淨的關法', () => {
-    const { env } = envWith([]);
-    env.call('installAdr009Triggers');
-    const out = env.call('uninstallAdr009Triggers');
-
-    assert.equal(out.removed, 1);
-    assert.equal(env.triggers.length, 0);
-  });
-
-  test('沒有觸發器時移除也不會爆', () => {
-    const { env } = envWith([]);
-    assert.equal(env.call('uninstallAdr009Triggers').removed, 0);
-  });
-});
+// ADR-019 D-1：排程只剩一個每 5 分鐘的總管，各自的安裝函式已刪；安裝與「該不該跑」的測試在 adr-019-scheduler.test.mjs

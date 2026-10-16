@@ -194,29 +194,7 @@ describe('refreshGuide — 自動偵測兩種落差', () => {
 });
 
 /* ========================================================================== */
-describe('觸發器 — 可重複安裝，且不碰到期提醒的那一個', () => {
-
-  test('安裝三次只剩一個，並立刻跑一次', () => {
-    const env = envWith(registeredSheets());
-    env.call('installGuideTrigger');
-    env.call('installGuideTrigger');
-    env.call('installGuideTrigger');
-    assert.equal(env.triggers.filter((t) => t.handler === 'refreshGuide').length, 1);
-    assert.ok(env.ss.getSheetByName('_guide'), '安裝時要順便產生一次');
-  });
-
-  test('安裝／移除 _guide 觸發器不影響到期提醒，反之亦然', () => {
-    const env = envWith(registeredSheets());
-    env.call('installAdr009Triggers');
-    env.call('installGuideTrigger');
-    env.call('uninstallGuideTrigger');
-    assert.deepEqual(env.triggers.map((t) => t.handler), ['checkDueReminders']);
-
-    env.call('installGuideTrigger');
-    env.call('uninstallAdr009Triggers');
-    assert.deepEqual(env.triggers.map((t) => t.handler), ['refreshGuide']);
-  });
-});
+// ADR-019 D-1：排程只剩一個每 5 分鐘的總管，各自的安裝函式已刪；安裝與「該不該跑」的測試在 adr-019-scheduler.test.mjs
 
 /* ========================================================================== */
 describe('寫入保護 — PWA 寫不進 _guide', () => {

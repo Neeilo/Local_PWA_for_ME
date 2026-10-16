@@ -1489,12 +1489,3 @@ function fetchStockDaily(arg) {
   return { written: rows.length, missing: missing, errors: errors, pending: notToday };
 }
 
-/** 兩個排程。先刪同名的再建，重跑不累積（比照 installAdr009Triggers） */
-function installStockTriggers_() {
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    var fn = t.getHandlerFunction();
-    if (fn === STOCK_RULES_FUNCTION || fn === STOCK_DAILY_FUNCTION) ScriptApp.deleteTrigger(t);
-  });
-  ScriptApp.newTrigger(STOCK_RULES_FUNCTION).timeBased().everyMinutes(STOCK_RULES_MINUTES).create();
-  ScriptApp.newTrigger(STOCK_DAILY_FUNCTION).timeBased().everyHours(1).create();
-}
