@@ -10,7 +10,7 @@
  *     ・拿不到鎖就跳過、鍵留著下一輪；排隊是空的就一列都不寫
  *     ・屬性放不進去 → ADR-019 B-2 起不再退回直接寫（見 adr-019-perf.test.mjs）
  *     ・管理員看效能摘要前先 flush，看到的是最新的
- *   - 「初始化」裝好每 10 分鐘的 flushPerfQueue，重複執行不累積
+ *   - （「初始化」裝排程：ADR-019 起改由排程總管，見 adr-019-scheduler.test.mjs）
  *
  * 跑法：npm test
  */
@@ -145,12 +145,5 @@ describe('效能紀錄排隊（D-4：不擋住回應）', () => {
     assert.equal(queueKeys(e).length, 2, '只剩摘要自己這次的＋flush 自己那列（ADR-019 B-2）');
   });
 
-  test('「初始化」裝好每 10 分鐘的 flushPerfQueue；跑兩次也只有一個', () => {
-    const e = env();
-    e.call('installPerfQueueTrigger');
-    e.call('installPerfQueueTrigger');
-    const t = e.triggers.filter((x) => x.handler === 'flushPerfQueue');
-    assert.equal(t.length, 1);
-    assert.equal(t[0].everyMinutes, 10);
-  });
+  // ADR-019 D-1：排程只剩一個每 5 分鐘的總管，各自的安裝函式已刪；安裝與「該不該跑」的測試在 adr-019-scheduler.test.mjs
 });

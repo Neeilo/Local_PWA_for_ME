@@ -1047,16 +1047,14 @@ describe('T7 盤後收盤價（fetchStockDaily）', () => {
 });
 
 describe('初始化：股票的兩個排程', () => {
-  test('跑三次：checkStockRules（每 5 分鐘）與 fetchStockDaily（R-1：每小時，時間窗在程式裡判斷）各只有一個', () => {
+  // ADR-019 D-1：排程只剩一個每 5 分鐘的總管，各自的安裝函式已刪；安裝與「該不該跑」的測試在 adr-019-scheduler.test.mjs
+  test('跑三次：只有排程總管一個觸發器；回覆列出股票提醒規則與盤後收盤價的時段', () => {
     const e = env();
     for (let i = 0; i < 3; i++) line(e, NEIL, '初始化');
-    const rules = e.triggers.filter((t) => t.handler === 'checkStockRules');
-    const daily = e.triggers.filter((t) => t.handler === 'fetchStockDaily');
-    assert.equal(rules.length, 1);
-    assert.equal(rules[0].everyMinutes, 5);
-    assert.equal(daily.length, 1);
-    assert.equal(daily[0].everyHours, 1);
-    assert.match(e.replies.pop(), /checkStockRules（每 5 分鐘，只在盤中動作）\n⏰ fetchStockDaily（交易日 14～19 點每小時，拿到當天收盤就停）/);
+    assert.deepEqual(e.triggers.map((t) => t.handler), ['runScheduler']);
+    const reply = e.replies.pop();
+    assert.match(reply, /股票提醒規則（盤中每輪）/);
+    assert.match(reply, /盤後收盤價（交易日 14～19 點每小時，拿到當天收盤就停）/);
   });
 });
 

@@ -1330,39 +1330,6 @@ var DUE_CHECK_FUNCTION = 'checkDueReminders';
 var DUE_CHECK_HOUR = 9;          // 早上九點。到期提醒在半夜推沒有意義
 
 /**
- * 安裝時間驅動觸發器（待其他環境知道的事 #5）。
- *
- * 為什麼寫成程式碼而不是在編輯器裡手動加：手動加的觸發器不在 repo 裡，
- * 換人接手時沒有任何線索告訴他「有個東西每天早上九點會自己跑」。這個專案的
- * 紀律是 GitHub 是唯一真相，那就不該有一段只存在於某個網頁設定畫面裡的行為。
- *
- * 先刪同名的舊觸發器再建：重複執行這支函式不會累積出三個觸發器、一天推三次。
- * 部署完成後在編輯器手動執行一次即可，之後不必再管。
- */
-function installAdr009Triggers() {
-  var removed = 0;
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === DUE_CHECK_FUNCTION) { ScriptApp.deleteTrigger(t); removed++; }
-  });
-  if (removed) console.log('移除了 ' + removed + ' 個同名的舊觸發器（避免一天推多次）');
-
-  ScriptApp.newTrigger(DUE_CHECK_FUNCTION).timeBased().atHour(DUE_CHECK_HOUR).everyDays(1).create();
-  console.log('✅ 已建立每日觸發器：' + DUE_CHECK_FUNCTION + '，每天約 ' + DUE_CHECK_HOUR + ' 點執行');
-  console.log('   這支函式可重複執行，不會累積出多個觸發器。');
-  return { removed: removed, created: DUE_CHECK_FUNCTION, hour: DUE_CHECK_HOUR };
-}
-
-/** 移除觸發器。決定不用這個功能時，有個乾淨的關法比留著讓它每天空跑好 */
-function uninstallAdr009Triggers() {
-  var removed = 0;
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === DUE_CHECK_FUNCTION) { ScriptApp.deleteTrigger(t); removed++; }
-  });
-  console.log(removed ? ('已移除 ' + removed + ' 個到期檢查觸發器') : '沒有找到到期檢查觸發器');
-  return { removed: removed };
-}
-
-/**
  * 挑出這一輪該推通知的列。純函式，與 Sheet 和 LINE 都無關——
  * 到期判斷是這個功能最容易出錯的地方，把它跟 I/O 分開才測得動。
  */
@@ -1443,7 +1410,7 @@ function reminderRollPlan_(records, todayKey) {
 }
 
 /**
- * 每天跑一次的到期檢查。由 installAdr009Triggers() 建立的觸發器呼叫。
+ * 每天跑一次的到期檢查。由排程總管（scheduler.gs，ADR-019 D-1）每天 9 點後第一輪呼叫。
  *
  * 推成功才標記 notified：推失敗就標記，等於這筆從此再也不會提醒，而使用者
  * 根本不知道有過這件事。寧可明天再推一次，也不要安靜地漏掉。
@@ -2589,16 +2556,6 @@ function flushPerfQueue() {
   return { written: rows.length };
 }
 
-/** 每 10 分鐘的排程。比照 installUnauthTrigger：先刪同名的再建，重複執行不累積 */
-function installPerfQueueTrigger() {
-  var removed = 0;
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === PERF_QUEUE_FUNCTION) { ScriptApp.deleteTrigger(t); removed++; }
-  });
-  ScriptApp.newTrigger(PERF_QUEUE_FUNCTION).timeBased().everyMinutes(PERF_QUEUE_MINUTES).create();
-  return { removed: removed, created: PERF_QUEUE_FUNCTION };
-}
-
 /**
  * 表頭；舊表沒有 reply_ms（2026-10-06 加的，LINE 用）、stages（ADR-018 PR-0）、request_id（ADR-019 B-3）
  * 就依序補在最右邊，舊列留空。
@@ -2762,16 +2719,6 @@ function flushUnauthPerf(nowMs) {
 function unauthAlert_() {
   var cache = scriptCache_();
   return cache ? cacheGetJson_(cache, UNAUTH_ALERT_KEY) : null;
-}
-
-/** 每小時排程。比照 installAdr009Triggers：先刪同名的再建，重複執行不累積 */
-function installUnauthTrigger() {
-  var removed = 0;
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === UNAUTH_FLUSH_FUNCTION) { ScriptApp.deleteTrigger(t); removed++; }
-  });
-  ScriptApp.newTrigger(UNAUTH_FLUSH_FUNCTION).timeBased().everyHours(1).create();
-  return { removed: removed, created: UNAUTH_FLUSH_FUNCTION };
 }
 
 /** 管理員開 App 時的門檻提醒用。讀不到就回 0：提醒不重要到要擋住開機 */

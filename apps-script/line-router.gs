@@ -627,8 +627,9 @@ function handleCategoryCommand_(text, userId) {
  * 初始化的步驟。每一步回 { level: 'ok'|'warn', text }；丟例外＝這一步失敗。
  * 新的 ADR 有部署後要跑的安裝函式，就往這裡加一步——它們本來就都要能重複執行。
  *
- * ADR-014 D-23：以前這裡沒有到期提醒的排程，installAdr009Triggers() 要人記得去編輯器跑，
+ * ADR-014 D-23：以前這裡沒有到期提醒的排程，安裝函式要人記得去編輯器跑，
  * 結果 9/30 上線後一次都沒跑過。現在「初始化」一次裝好全部排程。
+ * ADR-019 D-1：排程只剩一個入口——每 5 分鐘的排程總管（scheduler.gs），各工作的時段寫在它的登記表。
  */
 function initSteps_() {
   var adr013 = null;
@@ -671,13 +672,11 @@ function initSteps_() {
     } },
     { label: '股票（ADR-015）', run: installStock_ },
     { label: 'Gmail 控制員（ADR-016）', run: installGmail_ },
-    { label: '排程（到期提醒＋_guide＋未驗證彙總＋效能紀錄落地＋股票提醒＋盤後收盤價）', run: function () {
-      installAdr009Triggers();
-      installGuideTrigger();            // 裝好會順便更新一次 _guide
-      installUnauthTrigger();           // ADR-014 D-15：每小時把未驗證請求寫成一列
-      installPerfQueueTrigger();        // ADR-018 D-4：每 10 分鐘把排隊的效能紀錄寫進 Sheet
-      installStockTriggers_();          // ADR-015 T6／T7
-      return { level: 'ok', text: '已安裝（先刪同名的再建，不會累積）；_guide 已更新' };
+    { label: '排程總管（ADR-019）', run: function () {
+      var r = installScheduler_();      // 刪掉所有舊的時間觸發器，只裝每 5 分鐘的 runScheduler
+      refreshGuide();                   // 以前裝 _guide 觸發器時順便更新一次，這裡照舊
+      return { level: 'ok', text: '只留一個觸發器 ' + SCHEDULER_FUNCTION + '（每 ' + SCHEDULER_MINUTES + ' 分鐘，依序派工）；移除舊觸發器 ' +
+        r.removed + ' 個；_guide 已更新\n　登記的工作：\n　・' + schedulerJobList_().join('\n　・') };
     } },
     // 2026-10-08：原本要進編輯器跑的兩件事也併進來。都可重複執行，排在最後，失敗不擋前面的安裝
     { label: '日誌重複列清理', run: function () {
@@ -701,16 +700,15 @@ function initSteps_() {
   ];
 }
 
-/** 每個排程函式什麼時候跑。ScriptApp 的觸發器物件問不到時段，只能由這裡對照 */
+/**
+ * 每個觸發器什麼時候跑。ScriptApp 的觸發器物件問不到時段，只能由這裡對照。
+ * ADR-019 起只該有總管一個；各工作的時段在 scheduler.gs 的登記表（初始化的回覆會列出來）。
+ * 還看得到舊函式名，代表「初始化」還沒跑過——列出來時標「舊」，提醒要重跑
+ */
 function scheduleHours_() {
   var h = {};
-  h[DUE_CHECK_FUNCTION] = '每天約 ' + DUE_CHECK_HOUR + ' 點';
-  h[GUIDE_REFRESH_FUNCTION] = '每天約 ' + GUIDE_REFRESH_HOUR + ' 點';
-  h[UNAUTH_FLUSH_FUNCTION] = '每小時';
-  h[PERF_QUEUE_FUNCTION] = '每 ' + PERF_QUEUE_MINUTES + ' 分鐘';
-  h[STOCK_RULES_FUNCTION] = '每 ' + STOCK_RULES_MINUTES + ' 分鐘，只在盤中動作';
-  h[GMAIL_CONTROLLER_FUNCTION] = '每天約 ' + GMAIL_CONTROLLER_HOUR + ' 點';
-  h[STOCK_DAILY_FUNCTION] = '交易日 ' + STOCK_DAILY_HOUR + '～' + STOCK_DAILY_LAST_HOUR + ' 點每小時，拿到當天收盤就停';
+  h[SCHEDULER_FUNCTION] = '每 ' + SCHEDULER_MINUTES + ' 分鐘，排程總管';
+  schedulerOldHandlers_().forEach(function (fn) { h[fn] = '舊觸發器，傳「初始化」換成排程總管'; });
   return h;
 }
 
@@ -754,7 +752,7 @@ function runInstallSteps_() {
 
 /**
  * 總入口（ADR-014 T1）：編輯器裡選這支按「執行」＝在 LINE 傳「初始化」。
- * 原本各支（installAdr009Triggers、installGuideTrigger、installAdr013…）仍可單獨執行。
+ * 原本各支（installAdr013、installStock_…）仍可單獨執行；排程只能從這裡裝（ADR-019：舊的各自安裝函式已刪）。
  */
 function installAll() {
   var out = runInstallSteps_();

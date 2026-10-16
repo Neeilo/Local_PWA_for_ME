@@ -91,14 +91,15 @@ const btn = (msg, re) => actionsOf(msg).find((a) => re.test(a.label));
 /* ========================================================================== */
 describe('T1 排程修復：「初始化」一次裝好所有排程與欄位', () => {
 
-  test('跑三次：到期提醒與 _guide 觸發器各只有一個；回覆列出它們', () => {
+  // ADR-019 D-1：只剩排程總管一個觸發器，各工作的時段列在回覆的「登記的工作」
+  test('跑三次：只有排程總管一個觸發器；回覆列出到期提醒、_guide、未驗證彙總的時段', () => {
     const e = env();
     for (let i = 0; i < 3; i++) say(e, ME, '初始化', 'user');
-    const handlers = e.triggers.map((t) => t.handler).sort();
-    assert.deepEqual(handlers, ['checkDueReminders', 'checkStockRules', 'fetchStockDaily', 'flushPerfQueue', 'flushUnauthPerf', 'refreshGuide', 'runGmailController']);
-    assert.match(e.lastText(), /flushUnauthPerf（每小時）/);
-    assert.match(e.lastText(), /checkDueReminders/);
-    assert.match(e.lastText(), /refreshGuide/);
+    assert.deepEqual(e.triggers.map((t) => t.handler), ['runScheduler']);
+    assert.match(e.lastText(), /runScheduler（每 5 分鐘，排程總管）/);
+    assert.match(e.lastText(), /到期提醒（每天 9 點後第一輪）/);
+    assert.match(e.lastText(), /_guide 導覽（每天 6 點後第一輪）/);
+    assert.match(e.lastText(), /未驗證彙總（每小時）/);
     assert.doesNotMatch(e.lastText(), /初始化沒有完成/);
   });
 
@@ -120,7 +121,7 @@ describe('T1 排程修復：「初始化」一次裝好所有排程與欄位', (
     const e = env();
     e.call('installAll');
     e.call('installAll');
-    assert.deepEqual(e.triggers.map((t) => t.handler).sort(), ['checkDueReminders', 'checkStockRules', 'fetchStockDaily', 'flushPerfQueue', 'flushUnauthPerf', 'refreshGuide', 'runGmailController']);
+    assert.deepEqual(e.triggers.map((t) => t.handler), ['runScheduler']);
   });
 
   test('非管理者不能初始化（不變）', () => {
@@ -527,7 +528,7 @@ describe('2026-10-08：原本要進編輯器的也併進「初始化」', () => 
     say(e, ME, '初始化', 'user');
     assert.match(e.lastText(), /⚠️ 封存寄信\n　寄信權限還沒授權.*authorizeArchiveMail/);
     assert.doesNotMatch(e.lastText(), /初始化沒有完成/);
-    assert.ok(e.triggers.some((t) => t.handler === 'fetchStockDaily'), '排程照樣裝好');
+    assert.ok(e.triggers.some((t) => t.handler === 'runScheduler'), '排程照樣裝好');
   });
 
   test('在初始化裡不會因為搶不到自己拿著的鎖而停住（清理不另外拿鎖）', () => {

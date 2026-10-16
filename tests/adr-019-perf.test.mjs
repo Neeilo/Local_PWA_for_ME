@@ -183,7 +183,10 @@ describe('B-2 單一寫入者：其他路徑只排隊', () => {
       - (src.match(new RegExp('function ' + name + '\\(', 'g')) || []).length;
     assert.equal(calls('ensurePerformanceSheet_'), 1, '只有 writePerfRows_ 開 performance 來寫');
     assert.equal(calls('writePerfRows_'), 1, '只有 flushPerfQueue 呼叫 writePerfRows_');
-    const flush = src.slice(src.indexOf('function flushPerfQueue('), src.indexOf('function installPerfQueueTrigger('));
+    const from = src.indexOf('function flushPerfQueue(');
+    const to = src.indexOf('var PERF_LATE_HEADERS', from);
+    assert.ok(from !== -1 && to > from, '切得出 flushPerfQueue 的本體');
+    const flush = src.slice(from, to);
     assert.match(flush, /writePerfRows_\(/);
     const writer = src.slice(src.indexOf('function writePerfRows_('), src.indexOf('function writePerfRows_(') + 1200);
     assert.match(writer, /ensurePerformanceSheet_\(/);
