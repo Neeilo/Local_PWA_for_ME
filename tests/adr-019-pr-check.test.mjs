@@ -58,6 +58,3 @@ describe('ADR-019 E-1：PR 檢查 workflow', () => {
     assert.doesNotMatch(workflow, /:\s*write\b/, '不需要任何寫入權限');
   });
 });
-
-// 暫時：驗收 PR-1 紅燈用，下一個 commit 就 revert
-test('故意失敗：確認 pr-check 會亮紅燈', () => { assert.equal(1, 2); });
