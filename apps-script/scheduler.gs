@@ -59,6 +59,9 @@ function schedulerJobs_() {
     // ADR-020 C-1：每輪最多 5 篇；預算不夠一篇就不開始（ctx.budgetLeft）
     { name: 'clips', label: '收藏搜集', when: '每輪，最多 ' + CLIPS_PER_ROUND + ' 篇', rule: { kind: 'always' },
       run: function (now, ctx) { return runClipsJob_(now, ctx); } },
+    // RD-HF1 HF-C：Apify 本月用量＋近 3 天收藏成功率，給管理員頁看（ADR-020 的備案條件）
+    { name: 'apifyUsage', label: 'Apify 用量', when: '每天 ' + CLIPS_USAGE_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: CLIPS_USAGE_HOUR },
+      run: function (now) { return runApifyUsageJob_(now); } },
     { name: 'perfFlush', label: '效能紀錄落地', when: '每 ' + PERF_QUEUE_MINUTES + ' 分鐘', rule: { kind: 'every', minutes: PERF_QUEUE_MINUTES },
       run: function () { return flushPerfQueue(); } }
   ];

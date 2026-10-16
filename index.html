@@ -1185,6 +1185,7 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       <button class="fold-head" onclick="toggleFold('sys')"><h2>🗂️ 系統設定</h2>
         <span class="place-count" id="sysCount"></span><span class="fold-arrow" id="foldArrow-sys">▾</span></button>
       <div class="fold-body" id="fold-sys" hidden>
+        <div id="sysClipsUsage"></div>
         <div class="seg" id="sysTabs"></div>
         <div id="sysBody"></div>
         <p class="slot-hint">改動即時寫回 Sheet，每一筆都記在 LOG（來源「設定」）。</p>
@@ -1444,6 +1445,7 @@ const PERF_ALERT_ROWS=30000;
 let perfPending=[], perfRows=0, perfSummaryCache=null;
 let lastRequestId={};               // action → 最近一次請求的 request_id：開機／輪詢量完耗時時拿來配對（ADR-019 B-3）
 let unauthAlert=null;               // { ts, bad_token }：未驗證請求某一小時暴增（ADR-014 D-15）
+let clipsUsage=null;                // { usd, at, error, done, total, rate }：Apify 本月用量＋收藏成功率（RD-HF1，只有管理員會拿到）
 let groupNames={};                  // 群組 ID → 名稱：只含畫面上任務用到的群組，開機時帶回（任務列「👥 群組名」）
 
 /* request_id 只收雲端認得的形狀（英數、-、_，8～64 字）。有 crypto.randomUUID 就用；
@@ -1602,6 +1604,7 @@ async function runBoot(trigger){
   try{ localStorage.setItem(LINE_ID_KEY, myLineId); }catch(e){}
   perfRows = typeof j.perf_rows==='number' ? j.perf_rows : 0;   // 只有管理員會拿到
   unauthAlert = j.unauth_alert || null;                           // 同上：最近 24 小時有沒有一小時 bad_token 暴增
+  clipsUsage = j.clips_usage && typeof j.clips_usage==='object' ? j.clips_usage : null;   // 同上（RD-HF1）
   if(j.group_names && typeof j.group_names==='object') groupNames=j.group_names;
   // 首頁「今天」層（ADR-018）：自己的一段話只在開機帶（輪詢不帶，它只有自己會改）；郵件摘要只給管理者＋feat_gmail
   if(typeof j.self_note==='string' && !selfNoteEditing) selfNote=j.self_note;
@@ -2754,7 +2757,7 @@ function fmtMs(ms){ if(ms==null) return '—'; return ms<1000 ? Math.round(ms)+'
 
 /** 開機分段（ADR-018 PR-0）：各段的一般耗時，子段（含「.」）接在上一層後面、前面加 └ */
 const PERF_STAGE_LABEL={parse:'解析', auth:'驗證', device:'裝置', gate:'名單檢查', touch:'寫使用時間', open:'開表',
-  users:'名單', sheets:'讀表', groups:'群組名', perf_rows:'效能筆數', unauth_alert:'未驗證警示',
+  users:'名單', sheets:'讀表', groups:'群組名', perf_rows:'效能筆數', unauth_alert:'未驗證警示', clips_usage:'收藏用量',
   expense_config:'分類設定', installments:'分期', stock:'股票', quote:'報價', json:'打包回應'};
 function perfStagesRow(g){
   if(!g.stages || !g.stages.length) return '';
@@ -2942,6 +2945,8 @@ function renderSysCard(){
   if(!isAdmin()) return;
   const cnt=document.getElementById('sysCount');       // 摘要只用 boot 已有的資料，不為它多發請求
   if(cnt){ const n=installmentPlans.filter(p=>p.status==='active').length; cnt.textContent=n?'分期 '+n+' 筆進行中':''; }
+  const usage=document.getElementById('sysClipsUsage');
+  if(usage) usage.innerHTML=clipsUsageHtml(clipsUsage);
   document.getElementById('sysTabs').innerHTML=SYS_TABS.map(([k,l])=>
     `<button class="${sysTab===k?'sel':''}" onclick="openSysTab('${k}')">${l}</button>`).join('');
   const body=document.getElementById('sysBody');
@@ -2969,6 +2974,18 @@ async function openSysTab(tab){
   sysLoading=false;
   sysData[tab]=r||{success:false};
   renderSysCard();
+}
+/* Apify 本月金額＋近 3 天收藏成功率（RD-HF1 HF-C）。超過 US$3 或低於 80% 變紅，對應 ADR-020 的備案條件；不推播 */
+const CLIPS_USAGE_RED_USD=3, CLIPS_RATE_RED=0.8;
+function clipsUsageHtml(u){
+  if(!u || typeof u!=='object') return '';
+  const has=typeof u.usd==='number';
+  const money = has ? 'Apify 本月 US$'+u.usd.toFixed(2)+'（'+clipTpe(u.at).slice(5)+' 更新'+(u.error?'；這次沒讀到：'+u.error:'')+'）'
+                    : 'Apify 本月用量讀不到'+(u.error?'（'+u.error+'）':'');
+  const rate = u.rate==null ? '近 3 天沒有收藏' : '近 3 天收藏成功 '+u.done+'／'+u.total+'（'+Math.round(u.rate*100)+'%）';
+  const red = (has && u.usd>CLIPS_USAGE_RED_USD) || (u.rate!=null && u.rate<CLIPS_RATE_RED);
+  const text=esc('📚 '+money+'・'+rate);
+  return red ? `<div class="sys-warn">⚠️ ${text}</div>` : `<p class="perf-sub">${text}</p>`;
 }
 function sysWarnHtml(w){
   return (w&&w.length) ? `<div class="sys-warn">⚠️ ${w.map(esc).join('<br>⚠️ ')}</div>` : '';
@@ -4192,7 +4209,7 @@ function clipReaderHtml(c){
   const imgs=ids.map((x,i)=>`<img class="clip-img" src="${clipThumb(x,1200)}" alt="第 ${i+1} 張" loading="lazy" onerror="clipImgFallback(this,'${esc(x)}')">`).join('');
   return `<div class="clip-reader-head"><button class="btn-ghost" onclick="closeClip()">← 返回</button><b>${esc(c.author||'（作者不明）')}</b></div>
     ${ids.length ? `<div class="clip-strip">${imgs}</div>` : ''}
-    ${c.kind==='reel' ? '<p class="perf-sub">🎬 Reels：影片未保存，只有封面與全文</p>' : ''}
+    ${clipVideoLine(c)}
     <div class="clip-caption">${esc(c.caption||'')}</div>
     <p class="clip-times">發文 ${esc(clipTpe(c.posted_at)||'—')}・收藏 ${esc(clipTpe(c.collected_at))}</p>
     <div class="row">
@@ -4201,6 +4218,13 @@ function clipReaderHtml(c){
       <button class="btn-ghost danger" onclick="deleteClip('${id}')">刪除</button>
     </div>`;
 }
+/* Reels 的影片（RD-HF1）：存了就連到這篇的 Drive 資料夾（影片是私人的，PWA 這版不播放） */
+function clipVideoLine(c){
+  if(c.kind!=='reel') return '';
+  if(truthy(c.video_saved)) return `<p class="perf-sub">🎬 Reels：影片已保存（<a href="${clipFolderLink(c.drive_folder_id)}" target="_blank" rel="noopener">在 Drive 開啟</a>）</p>`;
+  return `<p class="perf-sub">🎬 Reels：${String(c.error)==='影片過大未保存' ? '影片過大未保存' : '影片未保存'}，只有封面與全文</p>`;
+}
+function clipFolderLink(id){ return 'https://drive.google.com/drive/folders/'+encodeURIComponent(id); }
 /* 圖片載不出來（Drive 縮圖網址不是正式介面，可能改）：換成「在 Drive 開啟」 */
 function clipImgFallback(img, id){
   if(!img || !img.parentNode) return;
