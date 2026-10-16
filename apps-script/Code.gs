@@ -481,6 +481,8 @@ function bootResponse_(caller, perf) {
     out.perf_rows = perfStage_(perf, 'perf_rows', perfRowCount_);
     var alert = perfStage_(perf, 'unauth_alert', unauthAlert_);
     if (alert) out.unauth_alert = alert;
+    var usage = perfStage_(perf, 'clips_usage', clipsUsage_);      // RD-HF1：讀一個指令碼屬性，不讀 Sheet
+    if (usage) out.clips_usage = usage;
   }
   return withExpenseConfig_(out, caller.user, ss, BOOT_SHEETS, perf);
 }

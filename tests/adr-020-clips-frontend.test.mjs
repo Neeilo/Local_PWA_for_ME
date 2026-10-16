@@ -250,3 +250,61 @@ describe('操作', () => {
     assert.ok(e.toasts.some((t) => /不是你的|只有收藏的人/.test(t)), e.toasts.join('|'));
   });
 });
+
+/* ========================================================================== */
+/* RD-HF1：Reels 影片、管理員頁的 Apify 用量                                      */
+/* ========================================================================== */
+describe('RD-HF1 閱讀頁：Reels 依 video_saved 顯示', () => {
+
+  test('video_saved＝TRUE：「影片已保存（在 Drive 開啟）」，連到這篇的資料夾', () => {
+    const html = env().call('clipReaderHtml', clip({ kind: 'reel', image_ids: '["c1"]', media_saved: 1, video_saved: 'TRUE', drive_folder_id: 'fdX' }));
+    assert.match(html, /影片已保存/);
+    assert.match(html, /href="https:\/\/drive\.google\.com\/drive\/folders\/fdX"[^>]*>在 Drive 開啟/);
+    assert.doesNotMatch(html, /影片未保存/);
+  });
+
+  test('沒存到：「影片未保存」；過大：講是太大', () => {
+    assert.match(env().call('clipReaderHtml', clip({ kind: 'reel', video_saved: '' })), /影片未保存/);
+    assert.match(env().call('clipReaderHtml', clip({ kind: 'reel', video_saved: '', error: '影片過大未保存' })), /影片過大未保存/);
+  });
+
+  test('貼文不顯示影片那一行', () => {
+    assert.doesNotMatch(env().call('clipReaderHtml', clip()), /影片/);
+  });
+});
+
+describe('RD-HF1 管理員頁：Apify 本月金額＋近 3 天成功率', () => {
+  const U = { usd: 0.1534, at: '2026-10-16T01:00:00.000Z', checked_at: '2026-10-16T01:00:00.000Z', error: '', done: 9, total: 10, rate: 0.9 };
+
+  test('一行：金額、更新時間（台北）、成功率；正常不變紅', () => {
+    const html = env().call('clipsUsageHtml', U);
+    assert.match(html, /Apify 本月 US\$0\.15/);
+    assert.match(html, /10-16 09:00/);
+    assert.match(html, /近 3 天收藏成功 9／10（90%）/);
+    assert.doesNotMatch(html, /sys-warn/);
+  });
+
+  test('超過 US$3 變紅；成功率低於 80% 變紅；沒有收藏不算低', () => {
+    assert.match(env().call('clipsUsageHtml', Object.assign({}, U, { usd: 3.01 })), /sys-warn/);
+    assert.doesNotMatch(env().call('clipsUsageHtml', Object.assign({}, U, { usd: 3 })), /sys-warn/);
+    assert.match(env().call('clipsUsageHtml', Object.assign({}, U, { done: 7, rate: 0.7 })), /sys-warn/);
+    assert.doesNotMatch(env().call('clipsUsageHtml', Object.assign({}, U, { done: 0, total: 0, rate: null })), /sys-warn/);
+  });
+
+  test('讀不到金額：講讀不到＋原因；沒有資料（還沒跑過）就不顯示', () => {
+    assert.match(env().call('clipsUsageHtml', Object.assign({}, U, { usd: null, at: '', error: 'HTTP 401' })), /讀不到[\s\S]*HTTP 401/);
+    assert.equal(env().call('clipsUsageHtml', null), '');
+  });
+
+  test('開機帶的 clips_usage 收進來、畫在系統設定卡', async () => {
+    const e = env();
+    e.set('fetch', ({}, init) => Promise.resolve(json({ session: { status: 'ok', line_id: ME, device_id: 'd', is_admin: true },
+      line_users: [{ line_id: ME, display_name: 'Neil', is_active: 'TRUE', is_admin: 'TRUE', feat_clips: 'TRUE' }],
+      data: { tasks: [], notes: [], expenses: [] }, denied: [], clips_usage: U })));
+    await e.callRaw('runBoot', 'cold');
+    await settle();
+    assert.equal(e.read('clipsUsage && clipsUsage.usd'), 0.1534);
+    e.callRaw('renderSysCard');
+    assert.match(e.els.sysClipsUsage.innerHTML, /Apify 本月 US\$0\.15/);
+  });
+});

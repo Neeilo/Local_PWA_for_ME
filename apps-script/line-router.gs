@@ -678,6 +678,19 @@ function initSteps_() {
     { label: '股票（ADR-015）', run: installStock_ },
     { label: 'Gmail 控制員（ADR-016）', run: installGmail_ },
     { label: '收藏搜集器（ADR-020）', run: installClips_ },
+    // RD-HF1：兩個補救都可重複執行；要在補欄（installClips_ 補 video_saved）之後
+    { label: '收藏 content.md 重產（RD-HF1）', run: function () {
+      var r = clipsRebuildContentMd_();
+      if (r.already) return { level: 'ok', text: '之前已重產過，略過' };
+      var lines = ['用 raw.json 重產 ' + r.fixed + ' 篇（舊檔在垃圾桶，沒有重抓 Apify）'];
+      r.failed.forEach(function (f) { lines.push('⚠️ ' + f); });
+      if (r.failed.length) lines.push('⚠️ 有沒重產到的，下次初始化會再試');
+      return { level: r.failed.length ? 'warn' : 'ok', text: lines.join('\n　') };
+    } },
+    { label: '收藏 Reels 補存影片（RD-HF1）', run: function () {
+      var r = clipsRequeueReels_();
+      return { level: 'ok', text: r.requeued ? '排回重抓 ' + r.requeued + ' 篇（排程總管會整篇重抓、存 video.mp4）' : '沒有要補的' };
+    } },
     { label: '排程總管（ADR-019）', run: function () {
       var r = installScheduler_();      // 刪掉所有舊的時間觸發器，只裝每 5 分鐘的 runScheduler
       refreshGuide();                   // 以前裝 _guide 觸發器時順便更新一次，這裡照舊

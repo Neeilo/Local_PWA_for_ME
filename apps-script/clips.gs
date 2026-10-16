@@ -10,14 +10,15 @@
  *  - 成功＝Apify 回的每一張圖都存進 Drive＋raw.json 存好；少一張就是失敗；沒有 caption 不算失敗（C-2）
  *  - 失敗重試：下一輪 → 30 分鐘後 → 2 小時後；再失敗：有存到部分 → partial，否則 failed。不推播（B-4、C-3）
  *  - 同一擁有者、同一網址：不重抓、合併；原本 failed／partial 的，再分享一次＝重跑（D-4）
- *  - 圖片檔「知道連結的人可檢視」（PWA 直接顯示）；資料夾、raw.json、content.md 維持私人（E-2）
+ *  - 圖片檔「知道連結的人可檢視」（PWA 直接顯示）；資料夾、raw.json、content.md、video.mp4 維持私人（E-2）
+ *  - Reels 也存影片 video.mp4（RD-HF1 修訂 A-3：IG 影片網址帶 oe= 到期參數，過幾天就抓不到）；太大不算失敗
  *
  * APIFY_TOKEN 只從指令碼屬性讀、只放 Authorization header，任何 log、Sheet、Drive 都不寫它。
  * 共用的 Apify 呼叫與欄位解析也給階段 0 探針（lab-clip.gs）用，不複製兩份。
  */
 var CLIPS_HEADERS = ['id', 'line_id', 'source_text', 'url', 'shortcode', 'kind', 'status', 'attempts', 'next_try_at', 'error',
   'author', 'posted_at', 'caption', 'media_expected', 'media_saved', 'drive_folder_id', 'image_ids', 'category',
-  'collected_at', 'last_collected_at', 'del', 'created_at', 'updated_at'];
+  'collected_at', 'last_collected_at', 'del', 'created_at', 'updated_at', 'video_saved'];
 var CLIPS_FEATURE = 'feat_clips';
 var CLIPS_LOG_SOURCE = '收藏';
 var CLIPS_PER_ROUND = 5;
@@ -30,6 +31,25 @@ var CLIPS_DRIVE_ROOT = ['Neil OS', '收藏'];
 /** 排程裡的 Apify 等待：總管一輪 4 分鐘，不能像探針那樣等 4 分鐘 */
 var CLIPS_APIFY_WAIT_SEC = 30;
 var CLIPS_APIFY_MAX_POLLS = 2;
+/**
+ * content.md 開頭的 UTF-8 BOM（RD-HF1 HF-A）。2026-10-16 實查：Drive 裡的檔案位元組本來就是正確的 UTF-8，
+ * 是預覽把沒標字元集的 text/markdown 當成 Latin-1 顯示，4 位元組 emoji 變亂碼、結尾少幾個字。BOM 讓檢視器認得是 UTF-8
+ */
+var CLIP_MD_BOM = '\uFEFF';
+/** 補救舊 content.md 做完的記號（指令碼屬性）；有失敗就不記，下次初始化再試 */
+var CLIPS_MD_FIX_KEY = 'clips_md_bom';
+/**
+ * 影片太大：UrlFetchApp 回應上限約 50MB、Drive createFile 也有上限，超過會丟例外。
+ * ⚠️ 例外訊息的確切文字未實測，先認這幾個字；認不得就當一般下載失敗（走重試，最後 partial）
+ */
+var CLIP_VIDEO_TOO_BIG = /too large|exceed|size|limit|過大|上限|大小/i;
+var CLIP_VIDEO_TOO_BIG_NOTE = '影片過大未保存';
+/** Apify 用量（RD-HF1 HF-C，ADR-020 的備案條件）：每天一次，結果存指令碼屬性給管理員頁看 */
+var CLIPS_USAGE_KEY = 'clips_usage';
+var CLIPS_USAGE_HOUR = 8;
+var CLIPS_USAGE_RED_USD = 3;
+var CLIPS_RATE_RED = 0.8;
+var CLIPS_RATE_DAYS = 3;
 
 /* -------------------------------------------------------------------------- */
 /* 共用：網址、Apify、欄位解析（探針 lab-clip.gs 也用）                             */
@@ -280,14 +300,18 @@ function clipsPatch_(sheet, id, patch) {
   try {
     var t = clipsTable_(sheet);
     var hit = t.rows.filter(function (x) { return String(x.rec.id) === String(id); })[0];
-    if (!hit) return null;
-    Object.keys(patch).forEach(function (k) { if (t.headers.indexOf(k) !== -1) hit.rec[k] = patch[k]; });
-    hit.rec.updated_at = new Date().toISOString();
-    sheet.getRange(hit.row, 1, 1, t.headers.length).setValues([t.headers.map(function (h) { return hit.rec[h] == null ? '' : hit.rec[h]; })]);
-    return hit.rec;
+    return hit ? clipsWriteRow_(sheet, t.headers, hit, patch) : null;
   } finally {
     lock.releaseLock();
   }
+}
+
+/** 把 patch 套到一列並整列寫回。不拿鎖：呼叫端負責（clipsPatch_ 自己拿；初始化由 handleInitCommand_ 拿著 script lock） */
+function clipsWriteRow_(sheet, headers, hit, patch) {
+  Object.keys(patch).forEach(function (k) { if (headers.indexOf(k) !== -1) hit.rec[k] = patch[k]; });
+  hit.rec.updated_at = new Date().toISOString();
+  sheet.getRange(hit.row, 1, 1, headers.length).setValues([headers.map(function (h) { return hit.rec[h] == null ? '' : hit.rec[h]; })]);
+  return hit.rec;
 }
 
 function clipDeleted_(rec) {
@@ -394,12 +418,8 @@ function clipCollectOne_(rec, apify, nowMs) {
   var item = clipItemFor_({ id: String(rec.shortcode), key: 'ig:' + rec.shortcode }, apify.items);
   if (!item) return { ok: false, error: 'Apify 結果裡找不到這篇（可能是私人帳號、已刪除，或網址打錯）' };
 
-  var info = {
-    author: String(clipPick_(item, ['ownerUsername', 'username', 'owner.username', 'author'])),
-    posted_at: String(clipPick_(item, ['timestamp', 'takenAt', 'taken_at', 'publishedAt', 'date'])),
-    caption: String(clipPick_(item, ['caption', 'text', 'description']))
-  };
-  // 要存的圖：貼文＝每一張（輪播裡的影片存封面）；Reels＝只有封面（不下載影片，A-3）
+  var info = clipInfo_(item);
+  // 要存的圖：貼文＝每一張（輪播裡的影片存封面）；Reels＝封面（影片另存 video.mp4，見下面）
   var media = clipMediaOf_(item);
   var urls = rec.kind === 'reel'
     ? (function () {
@@ -408,7 +428,7 @@ function clipCollectOne_(rec, apify, nowMs) {
         return cover ? [cover] : [];
       })()
     : media.map(function (m) { return m.type === 'video' ? m.cover_url : m.source_url; });
-  var out = Object.assign({ ok: false, error: '', media_expected: urls.length, media_saved: 0, drive_folder_id: '', image_ids: '[]' }, info);
+  var out = Object.assign({ ok: false, error: '', media_expected: urls.length, media_saved: 0, drive_folder_id: '', image_ids: '[]', video_saved: '' }, info);
   if (rec.kind !== 'reel' && !urls.length) { out.error = 'Apify 沒有回任何圖片'; return out; }
 
   var folder = clipsFolder_(rec, info.author);
@@ -442,19 +462,66 @@ function clipCollectOne_(rec, apify, nowMs) {
   out.media_saved = ids.length;
   out.image_ids = JSON.stringify(ids);
 
+  // Reels 要有 video.mp4 才算 done；太大不算失敗（done＋說明），下載失敗走既有重試
+  var video = rec.kind === 'reel' ? clipSaveVideo_(folder, clipVideoUrl_(item)) : null;
+  if (video && video.state === 'saved') out.video_saved = 'TRUE';
+  if (video && video.state === 'failed') errors.push(video.error);
+
   var rawOk = false;
   try {
     folder.createFile(Utilities.newBlob(JSON.stringify(item, null, 2), 'application/json', 'raw.json'));
     rawOk = true;
   } catch (err) { errors.push('raw.json 寫入失敗（' + String(err && err.message || err) + '）'); }
   try {
-    folder.createFile(Utilities.newBlob(clipContentMd_({ url: rec.url, kind: rec.kind, author: info.author, posted_at: info.posted_at,
-      collected_at: rec.collected_at, caption: info.caption, media_saved: ids.length, media_names: names }), 'text/markdown', 'content.md'));
+    folder.createFile(clipContentBlob_(clipContentMd_(clipMdInput_(rec, info, names, video ? video.state : '', item))));
   } catch (err) { errors.push('content.md 寫入失敗（' + String(err && err.message || err) + '）'); }
 
   out.ok = rawOk && !errors.length && out.media_saved === out.media_expected;
-  out.error = errors.join('；');
+  out.error = errors.length ? errors.join('；') : video && video.state === 'too_big' ? CLIP_VIDEO_TOO_BIG_NOTE : '';
   return out;
+}
+
+/** Apify 那一筆 → 作者、發文時間、全文（收藏與重產 content.md 共用） */
+function clipInfo_(item) {
+  return {
+    author: String(clipPick_(item, ['ownerUsername', 'username', 'owner.username', 'author'])),
+    posted_at: String(clipPick_(item, ['timestamp', 'takenAt', 'taken_at', 'publishedAt', 'date'])),
+    caption: String(clipPick_(item, ['caption', 'text', 'description']))
+  };
+}
+
+/** Reels 的影片網址：videoUrl，沒有就 videos[] 第一個（2026-10-16 實際回傳兩個都有） */
+function clipVideoUrl_(item) {
+  var v = clipPick_(item, ['videoUrl', 'video_url']);
+  var list = item && item.videos;
+  if (!v && Array.isArray(list) && list.length) v = typeof list[0] === 'string' ? list[0] : clipPick_(list[0] || {}, ['url', 'videoUrl']);
+  return String(v || '');
+}
+
+/** 下載影片存成 video.mp4（私人，不開分享）。回 { state: 'saved'｜'too_big'｜'failed', error } */
+function clipSaveVideo_(folder, url) {
+  if (!url) return { state: 'failed', error: '影片下載失敗（Apify 沒有回影片網址）' };
+  var r = clipFetch_(url);
+  if (r.error && CLIP_VIDEO_TOO_BIG.test(r.error)) return { state: 'too_big' };
+  if (r.status !== 200) return { state: 'failed', error: '影片下載失敗（' + clipHead_(r) + '）' };
+  try {
+    folder.createFile(r.res.getBlob().setName('video.mp4'));
+    return { state: 'saved' };
+  } catch (err) {
+    var m = String(err && err.message || err);
+    return CLIP_VIDEO_TOO_BIG.test(m) ? { state: 'too_big' } : { state: 'failed', error: '影片寫入 Drive 失敗（' + m + '）' };
+  }
+}
+
+/** clipContentMd_ 的輸入（收藏與重產共用）。video：'saved'｜'too_big'｜''（沒存到） */
+function clipMdInput_(rec, info, names, video, item) {
+  return { url: rec.url, kind: rec.kind, author: info.author, posted_at: info.posted_at, collected_at: rec.collected_at,
+    caption: info.caption, media_saved: names.length, media_names: names, video: video || '', video_sec: Number((item || {}).videoDuration) || 0 };
+}
+
+/** content.md 檔案本身：BOM＋產生器的輸出（產生器維持純函式、不含 BOM） */
+function clipContentBlob_(md) {
+  return Utilities.newBlob(CLIP_MD_BOM + md, 'text/markdown', 'content.md');
 }
 
 /** 圖片並行下載（UrlFetchApp.fetchAll）；整批丟例外（例如網路層）就全部當失敗，回傳形狀跟 clipFetch_ 一樣 */
@@ -495,6 +562,12 @@ function clipTpe_(v) {
   return new Date(t + 8 * 3600000).toISOString().slice(0, 16).replace('T', ' ');
 }
 
+function clipKindLine_(r) {
+  if (r.kind !== 'reel') return '貼文';
+  if (r.video === 'saved') return 'Reels，影片已保存（video.mp4' + (r.video_sec ? '，' + Math.round(r.video_sec) + ' 秒' : '') + '）';
+  return r.video === 'too_big' ? 'Reels，' + CLIP_VIDEO_TOO_BIG_NOTE : 'Reels，影片未保存';
+}
+
 /** content.md（D-2）：上半部資料欄位、下半部全文。給 AI 讀的原料。純函式 */
 function clipContentMd_(r) {
   var n = Number(r.media_saved) || 0;
@@ -506,7 +579,7 @@ function clipContentMd_(r) {
     '---',
     '來源: ' + r.url,
     '平台: Instagram',
-    '類型: ' + (r.kind === 'reel' ? 'Reels，影片未保存' : '貼文'),
+    '類型: ' + clipKindLine_(r),
     '作者: ' + (r.author || ''),
     '發文時間: ' + clipTpe_(r.posted_at),
     '收藏時間: ' + clipTpe_(r.collected_at),
@@ -523,8 +596,9 @@ function clipContentMd_(r) {
  */
 function clipsRecordResult_(sheet, rec, result, nowMs) {
   var attempts = (Number(rec.attempts) || 0) + 1;
-  var patch = { attempts: attempts, error: result.ok ? '' : (result.error || '失敗（原因不明）') };
-  ['author', 'posted_at', 'caption', 'media_expected', 'media_saved', 'drive_folder_id', 'image_ids'].forEach(function (k) {
+  // 成功也可能有一句說明（Reels 影片過大未保存）
+  var patch = { attempts: attempts, error: result.ok ? (result.error || '') : (result.error || '失敗（原因不明）') };
+  ['author', 'posted_at', 'caption', 'media_expected', 'media_saved', 'drive_folder_id', 'image_ids', 'video_saved'].forEach(function (k) {
     if (result[k] !== undefined) patch[k] = result[k];
   });
   var status;
@@ -535,7 +609,7 @@ function clipsRecordResult_(sheet, rec, result, nowMs) {
     status = 'pending';
     patch.next_try_at = new Date(nowMs + CLIPS_RETRY_DELAYS_MS[attempts - 1]).toISOString();
   } else {
-    status = (Number(result.media_saved) || 0) > 0 ? 'partial' : 'failed';
+    status = (Number(result.media_saved) || 0) > 0 || result.video_saved === 'TRUE' ? 'partial' : 'failed';
     patch.next_try_at = '';
   }
   patch.status = status;
@@ -629,4 +703,139 @@ function installClips_() {
     lines.push('⚠️ 還沒設 APIFY_TOKEN（專案設定 → 指令碼屬性），收藏會一直失敗');
   }
   return { level: warn ? 'warn' : 'ok', text: lines.join('\n　') };
+}
+
+/* -------------------------------------------------------------------------- */
+/* RD-HF1 補救（「初始化」的兩步，可重複執行）                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * HF-A：done 的列用 Drive 裡的 raw.json 重產 content.md（加 BOM），舊檔丟垃圾桶。不重抓 Apify、不改 Sheet。
+ * 全部成功才記 CLIPS_MD_FIX_KEY，之後不再做；有一篇失敗就不記，下次初始化整批再試（已修好的重做一次也一樣）。
+ * 回 { already, fixed, failed: ['代碼：原因'] }
+ */
+function clipsRebuildContentMd_() {
+  var props = PropertiesService.getScriptProperties();
+  var out = { already: false, fixed: 0, failed: [] };
+  if (props.getProperty(CLIPS_MD_FIX_KEY)) { out.already = true; return out; }
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CLIPS_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return out;           // 還沒有收藏：之後收的都已經有 BOM，不用記
+  clipsTable_(sheet).rows.forEach(function (x) {
+    var r = x.rec;
+    if (clipDeleted_(r) || r.status !== 'done') return;
+    try {
+      clipsRewriteMd_(r);
+      out.fixed++;
+    } catch (err) {
+      out.failed.push(r.shortcode + '：' + String(err && err.message || err));
+    }
+  });
+  if (!out.failed.length) {
+    try { props.setProperty(CLIPS_MD_FIX_KEY, new Date().toISOString()); }
+    catch (err) { out.failed.push('記不了「已做完」（下次初始化會再重產一次）：' + String(err && err.message || err)); }
+  }
+  return out;
+}
+
+/** 一篇：讀 raw.json → 照資料夾裡現有的圖片檔名與 video.mp4 重產 → 舊 content.md 丟垃圾桶 → 寫新的 */
+function clipsRewriteMd_(rec) {
+  if (!rec.drive_folder_id) throw new Error('沒有記資料夾');
+  var folder = DriveApp.getFolderById(String(rec.drive_folder_id));
+  var files = [];
+  var it = folder.getFiles();
+  while (it.hasNext()) files.push(it.next());
+  var named = function (n) { return files.filter(function (f) { return f.getName() === n; }); };
+  var raw = named('raw.json')[0];
+  if (!raw) throw new Error('找不到 raw.json');
+  var item = JSON.parse(raw.getBlob().getDataAsString('UTF-8'));
+  var names = files.map(function (f) { return f.getName(); }).filter(function (n) { return /^\d{2}\.[a-z0-9]+$/i.test(n); }).sort();
+  var video = named('video.mp4').length ? 'saved' : String(rec.error) === CLIP_VIDEO_TOO_BIG_NOTE ? 'too_big' : '';
+  var md = clipContentMd_(clipMdInput_(rec, clipInfo_(item), names, video, item));
+  named('content.md').forEach(function (f) { f.setTrashed(true); });
+  folder.createFile(clipContentBlob_(md));
+}
+
+/**
+ * HF-B：kind=reel、done、沒有影片（不含「影片過大未保存」）、未刪除的列 → pending、attempts=0，總管整篇重抓
+ * （舊影片網址可能已過期，所以重打 Apify）。已經在排隊的不是 done，不會再排一次。回 { requeued }
+ */
+function clipsRequeueReels_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CLIPS_SHEET);
+  var out = { requeued: 0 };
+  if (!sheet || sheet.getLastRow() < 2) return out;
+  var t = clipsTable_(sheet);
+  t.rows.forEach(function (x) {
+    var r = x.rec;
+    if (clipDeleted_(r) || r.kind !== 'reel' || r.status !== 'done' || truthy_(r.video_saved) || String(r.error) === CLIP_VIDEO_TOO_BIG_NOTE) return;
+    clipsWriteRow_(sheet, t.headers, x, { status: 'pending', attempts: 0, next_try_at: '', error: '' });
+    out.requeued++;
+  });
+  return out;
+}
+
+/* -------------------------------------------------------------------------- */
+/* RD-HF1 HF-C：Apify 用量（總管每天一次）                                           */
+/* -------------------------------------------------------------------------- */
+
+/** GET /users/me/limits 的本月已用金額；沒有這欄回 null（不猜別的欄位） */
+function clipApifyUsd_(json) {
+  var v = json && json.data && json.data.current && json.data.current.monthlyUsageUsd;
+  return typeof v === 'number' && isFinite(v) ? v : null;
+}
+
+/** 近 CLIPS_RATE_DAYS 天（照收藏時間）done ÷ 全部，排除刪除。純函式；沒有收藏 rate＝null */
+function clipsSuccessRate_(rows, nowMs) {
+  var since = nowMs - CLIPS_RATE_DAYS * 86400000;
+  var done = 0, total = 0;
+  (rows || []).forEach(function (r) {
+    if (clipDeleted_(r)) return;
+    var t = r.collected_at instanceof Date ? r.collected_at.getTime() : Date.parse(String(r.collected_at));
+    if (isNaN(t) || t < since) return;
+    total++;
+    if (r.status === 'done') done++;
+  });
+  return { done: done, total: total, rate: total ? Math.round(done / total * 1000) / 1000 : null };
+}
+
+/**
+ * 排程總管的 apifyUsage 工作。結果存指令碼屬性 CLIPS_USAGE_KEY：
+ * { usd, at（金額的時間）, checked_at, error, done, total, rate }。API 失敗保留上次的金額、記下錯誤，不丟例外。
+ * token 只放 Authorization header；log 只寫 HTTP 狀態，不寫回應本文。效能紀錄走排隊（recordSchedulePerf_）
+ */
+function runApifyUsageJob_(now) {
+  var started = Date.now();
+  var nowDate = now instanceof Date ? now : new Date();
+  var at = nowDate.toISOString();
+  var props = PropertiesService.getScriptProperties();
+  var prev = clipsUsage_() || {};
+  var cfg = clipApifyConfig_(props);
+  var usd = null, error = '';
+  if (!cfg.token) {
+    error = '沒設 APIFY_TOKEN';
+  } else {
+    var r = clipFetch_(CLIP_APIFY_BASE + '/users/me/limits', { headers: { Authorization: 'Bearer ' + cfg.token } });
+    usd = r.status === 200 ? clipApifyUsd_(clipJson_(r)) : null;
+    if (usd === null) error = r.status === 200 ? '回傳裡找不到 current.monthlyUsageUsd' : clipHead_(r);
+  }
+  var rate = { done: 0, total: 0, rate: null };
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CLIPS_SHEET);
+    if (sheet && sheet.getLastRow() >= 2) rate = clipsSuccessRate_(clipsTable_(sheet).rows.map(function (x) { return x.rec; }), nowDate.getTime());
+  } catch (err) { error = (error ? error + '；' : '') + '讀不到 clips（' + String(err && err.message || err) + '）'; }
+  var out = { usd: usd !== null ? usd : (typeof prev.usd === 'number' ? prev.usd : null), at: usd !== null ? at : (prev.at || ''),
+    checked_at: at, error: error, done: rate.done, total: rate.total, rate: rate.rate };
+  try { props.setProperty(CLIPS_USAGE_KEY, JSON.stringify(out)); } catch (err) { console.log('Apify 用量存不了：' + err); }
+  logTransaction_(CLIPS_LOG_SOURCE, error ? '失敗' : '成功', 'apifyUsage',
+    usd !== null ? 'Apify 本月 US$' + usd.toFixed(2) : 'Apify 本月用量讀不到',
+    (error ? error + '｜' : '') + '近 ' + CLIPS_RATE_DAYS + ' 天收藏成功 ' + rate.done + '／' + rate.total, '', '');
+  recordSchedulePerf_('apifyUsage', 1, Date.now() - started);
+  return { ok: !error, usd: usd, rate: rate.rate };
+}
+
+/** 上次存的用量（開機帶給管理員）；沒有或壞掉回 null */
+function clipsUsage_() {
+  try {
+    var v = JSON.parse(PropertiesService.getScriptProperties().getProperty(CLIPS_USAGE_KEY) || 'null');
+    return v && typeof v === 'object' ? v : null;
+  } catch (err) { return null; }
 }
