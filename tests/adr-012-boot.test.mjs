@@ -382,11 +382,15 @@ describe('canUse_ 與前端 featureAllowed 一字不差', () => {
       // ADR-015：股票三張表同一個功能
       stock_trades: 'feat_stock', stock_watch: 'feat_stock', stock_rules: 'feat_stock',
       // ADR-016：郵件列表
-      gmail_log: 'feat_gmail' });
+      gmail_log: 'feat_gmail',
+      // ADR-020：收藏
+      clips: 'feat_clips' });
     const byView = front.read('FEATURE_BY_VIEW');
     const uniq = (o) => [...new Set(Object.values(o))].sort();
     // reviews／moods 的資料還在、雲端的權限對照照留（舊佇列裡的寫入仍要過 canUse_）；前端已無那兩頁（ADR-018 C-3）
     const RETIRED = ['feat_mood', 'feat_review'];
-    assert.deepEqual(uniq(byView), uniq(bySheet).filter((f) => !RETIRED.includes(f)));
+    // 收藏不是獨立一頁，是雜記頁裡的分段（ADR-020 E-1，RD-2 做），導覽的 FEATURE_BY_VIEW 不會有它
+    const NO_OWN_VIEW = ['feat_clips'];
+    assert.deepEqual(uniq(byView), uniq(bySheet).filter((f) => !RETIRED.includes(f) && !NO_OWN_VIEW.includes(f)));
   });
 });

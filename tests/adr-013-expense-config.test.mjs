@@ -621,7 +621,8 @@ describe('LINE「初始化」：管理者在手機上跑部署後的安裝步驟
     reviews: new FakeSheet('reviews', [['review_date', 'line_id']]),
     moods: new FakeSheet('moods', [['id', 'level', 'line_id']])
   });
-  const initEnv = (over = {}) => env(Object.assign({}, over, { extraFiles: ['sheet-guide.gs'],
+  // APIFY_TOKEN：沒設的話收藏那一步（ADR-020）會如實標 ⚠️，這裡要測的是「全部齊備」的回覆
+  const initEnv = (over = {}) => env(Object.assign({ properties: { APIFY_TOKEN: 't' } }, over, { extraFiles: ['sheet-guide.gs'],
     sheets: Object.assign(DATA_SHEETS(), { expenses: OLD_EXPENSES() }, over.sheets || {}) }));
 
   test('管理者：補欄位、建設定表、遷移、更新 _guide，回覆逐步列出結果並寫 logs', () => {

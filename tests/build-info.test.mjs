@@ -37,6 +37,8 @@ function loadLineRouter(buildInfo) {
   if (buildInfo !== undefined) context.BUILD_INFO = buildInfo;
   runInContext(read('apps-script/line-router.gs'), context, { filename: 'line-router.gs' });
   context.logTransaction_ = () => {};
+  // clips.gs 的 IG 網址攔截（ADR-020）：這裡只載 line-router.gs，當成「不是收藏」
+  context.clipLineReply_ = () => null;
   return (name, ...args) => context[name].apply(null, args);
 }
 

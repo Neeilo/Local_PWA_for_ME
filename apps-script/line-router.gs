@@ -553,6 +553,11 @@ function routeLineMessage_(rawText, userId, chatId) {
   var route = ROUTE_TABLE[prefix];
 
   if (!route) {
+    // 不屬於任何指令的訊息才看是不是 IG 網址（ADR-020 B-1）：只在一對一（chatId 空白＝不是群組）
+    if (!chatId) {
+      var clipReply = clipLineReply_(text, userId);
+      if (clipReply !== null) return clipReply;
+    }
     return supportedPrefixesMessage_() + '\n' + versionLine_();
   }
 
@@ -672,6 +677,7 @@ function initSteps_() {
     } },
     { label: '股票（ADR-015）', run: installStock_ },
     { label: 'Gmail 控制員（ADR-016）', run: installGmail_ },
+    { label: '收藏搜集器（ADR-020）', run: installClips_ },
     { label: '排程總管（ADR-019）', run: function () {
       var r = installScheduler_();      // 刪掉所有舊的時間觸發器，只裝每 5 分鐘的 runScheduler
       refreshGuide();                   // 以前裝 _guide 觸發器時順便更新一次，這裡照舊
@@ -1672,7 +1678,8 @@ function supportedPrefixesMessage_() {
 /*  feat     : 要有哪個功能權限（空＝人人可用）；adminOnly：只有管理者                   */
 /* ========================================================================== */
 var HELP_COMMANDS = ['?', '？', '指令'];
-var COMMAND_GROUPS = ['任務', '記帳', '查詢', '股票', '帳號與裝置', '管理', '說明'];
+var CLIP_COMMAND_KEY = '（傳 IG 網址）';
+var COMMAND_GROUPS = ['任務', '記帳', '查詢', '收藏', '股票', '帳號與裝置', '管理', '說明'];
 var COMMANDS = [
   { key: '任務', group: '任務', usage: ROUTE_TABLE['任務'].usage, example: '任務/繳電話費/H',
     note: '建好會問到期日', scope: 'both', groupCmd: 'cmd_tasks', feat: 'feat_tasks' },
@@ -1686,6 +1693,9 @@ var COMMANDS = [
     scope: 'both', groupCmd: 'cmd_expense', feat: 'feat_expense' },
   { key: QUERY_PREFIX, group: '查詢', usage: QUERY_USAGE, example: '查/這個月花多少',
     note: '問題裡加 [類別] 只查那一類雜記，例：查/[文章] 最近存了什麼', scope: 'both', groupCmd: 'cmd_query', feat: '' },
+  // ADR-020：不是前綴、是「訊息裡有 IG 網址」；路由在 routeLineMessage_ 查不到前綴時才攔（clipLineReply_）
+  { key: CLIP_COMMAND_KEY, group: '收藏', usage: CLIP_COMMAND_KEY, example: 'https://www.instagram.com/p/…',
+    note: '自動收藏全文與每一張圖，幾分鐘後在 App 看', scope: 'private', feat: 'feat_clips' },
   { key: '買', group: '股票', usage: STOCK_TRADE_USAGE, example: '買/0050/1000/190.5', scope: 'private', feat: 'feat_stock' },
   { key: '賣', group: '股票', usage: '賣/代號/數量/價格[/持有者]', example: '賣/0050/500/195', scope: 'private', feat: 'feat_stock' },
   { key: '股', group: '股票', usage: STOCK_QUOTE_USAGE, example: '股/0050', note: '現價與你的持股', scope: 'private', feat: 'feat_stock' },
