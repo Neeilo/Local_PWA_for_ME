@@ -389,8 +389,7 @@ describe('canUse_ 與前端 featureAllowed 一字不差', () => {
     const uniq = (o) => [...new Set(Object.values(o))].sort();
     // reviews／moods 的資料還在、雲端的權限對照照留（舊佇列裡的寫入仍要過 canUse_）；前端已無那兩頁（ADR-018 C-3）
     const RETIRED = ['feat_mood', 'feat_review'];
-    // 收藏不是獨立一頁，是雜記頁裡的分段（ADR-020 E-1，RD-2 做），導覽的 FEATURE_BY_VIEW 不會有它
-    const NO_OWN_VIEW = ['feat_clips'];
-    assert.deepEqual(uniq(byView), uniq(bySheet).filter((f) => !RETIRED.includes(f) && !NO_OWN_VIEW.includes(f)));
+    // 收藏（ADR-020）雖然是雜記頁裡的分段、不是導覽格，前端照樣登記 clips:'feat_clips'，兩邊一樣對齊
+    assert.deepEqual(uniq(byView), uniq(bySheet).filter((f) => !RETIRED.includes(f)));
   });
 });
