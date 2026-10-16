@@ -335,17 +335,21 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
     },
     // 開了幾次試算表（ADR-012：boot 要「只開一次」，這裡數得出來）
     SpreadsheetApp: { getActiveSpreadsheet: () => { counters.opens++; return ss; }, flush: () => {} },
-    // 指令碼屬性預設唯讀：setProperty 丟例外（效能紀錄排隊放不進去 → 退回直接寫 performance，
-    // 既有測試照舊在表上看得到列）。propsWritable 才開放寫，測 ADR-018 的效能紀錄排隊
+    // 指令碼屬性預設唯讀：setProperty 丟例外。propsWritable 才開放寫。
+    // 例外是效能紀錄的排隊鍵（perfq_）：ADR-019 B-2 起它是寫 performance 的唯一途徑（不再退回直接寫），
+    // 照真的行為一律可寫。測試要看 performance 的列，先呼叫 flushPerfQueue（跟上線後排程落地一樣）
     PropertiesService: {
       getScriptProperties: () => ({
         getProperty: (k) => (k in properties ? properties[k] : null),
         setProperty: (k, v) => {
-          if (!propsWritable) throw new Error('測試的指令碼屬性是唯讀的');
+          if (!propsWritable && String(k).indexOf('perfq_') !== 0) throw new Error('測試的指令碼屬性是唯讀的');
           properties[k] = String(v);
         },
         getProperties: () => Object.assign({}, properties),
-        deleteProperty: (k) => { if (!propsWritable) throw new Error('測試的指令碼屬性是唯讀的'); delete properties[k]; }
+        deleteProperty: (k) => {
+          if (!propsWritable && String(k).indexOf('perfq_') !== 0) throw new Error('測試的指令碼屬性是唯讀的');
+          delete properties[k];
+        }
       })
     },
     CacheService: {

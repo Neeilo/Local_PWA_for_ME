@@ -321,6 +321,7 @@ describe('每次執行都留紀錄', () => {
     e.run();
     const tx = e.transactions.find((x) => /^Gmail 控制員/.test(x[2]));
     assert.match(tx[3], /處理 0 封/);
+    e.call('flushPerfQueue');   // ADR-019 B-2：排隊的紀錄落地後才在表上
     const perf = e.sheets.performance.toRecords();
     assert.equal(perf.length, 1);
     assert.equal(perf[0].action, 'gmailController');

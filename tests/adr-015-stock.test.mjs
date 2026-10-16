@@ -256,6 +256,7 @@ describe('T1 報價層', () => {
   test('每次外部呼叫寫 performance：action=quote、sheets＝來源×檔數', () => {
     const e = env({ net: network({ fail: { fugle: true } }) });
     e.call('quote_', ['2330', '0050'], { now: OPEN, trigger: 'poll', line_id: NEIL });
+    e.call('flushPerfQueue');   // ADR-019 B-2：排隊的紀錄落地後才在表上
     const rows = e.sheets.performance.toRecords().filter((r) => r.action === 'quote');
     assert.deepEqual(rows.map((r) => r.sheets), ['fugle×2', 'mis×2']);
     assert.ok(rows.every((r) => r.trigger === 'poll' && r.line_id === NEIL));
@@ -873,6 +874,7 @@ describe('T6 自動推播（checkStockRules）', () => {
       rule('r2', '2330', 'price_above', { price: 1 }, MOM, { auto_push: 'TRUE', enabled: '' })]) } });
     assert.equal(run(e).candidates, 0);
     assert.equal(e.net.calls.all.length, 0);
+    e.call('flushPerfQueue');   // ADR-019 B-2：排隊的紀錄落地後才在表上
     assert.ok(e.sheets.performance.toRecords().some((r) => r.action === 'stockRules' && r.trigger === 'schedule'));
   });
 
@@ -960,6 +962,7 @@ describe('T7 盤後收盤價（fetchStockDaily）', () => {
     assert.equal(tsmc.close, 2560);
     assert.equal(tsmc.prev_close, 2585);
     assert.equal(rows.find((r) => r.symbol === '6488').source, 'tpex');
+    e.call('flushPerfQueue');   // ADR-019 B-2：排隊的紀錄落地後才在表上
     assert.ok(e.sheets.performance.toRecords().some((r) => r.action === 'stockDaily' && r.trigger === 'schedule'));
     assert.equal(dailyLogs(e).length, 0, '拿到當天的、全部都有：不寫 logs');
   });

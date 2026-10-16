@@ -120,6 +120,7 @@ describe('LINE 效能紀錄', () => {
     say(e, '記帳/300');
     const data = e.replies.at(-1).quickReply.items.find((i) => i.action.label === '日常用品').action.data;
     tap(e, data);
+    e.call('flushPerfQueue');   // ADR-019 B-2：排隊的紀錄落地後才在表上
     const rows = e.ss.getSheetByName('performance').toRecords();
     assert.deepEqual(rows.map((r) => [r.action, r.trigger, r.line_id]), [['lineMessage', 'line', ME], ['linePostback', 'line', ME]]);
     for (const r of rows) assert.ok(typeof r.reply_ms === 'number' && r.reply_ms <= r.server_ms);
@@ -142,11 +143,12 @@ describe('LINE 效能紀錄', () => {
     assert.ok(!s.server.some((g) => /^line/.test(g.action)));
   });
 
-  test('舊的 performance 表沒有 reply_ms 欄：自動補在最右邊（ADR-018 的 stages 接在它後面）', () => {
+  test('舊的 performance 表沒有 reply_ms 欄：自動補在最右邊（ADR-018 的 stages、ADR-019 的 request_id 接在它後面）', () => {
     const e = env();
     e.sheets.performance = new FakeSheet('performance', [['id', 'ts', 'action', 'trigger', 'client_ms', 'server_ms', 'auth_ms', 'open_ms', 'read_ms', 'sheets', 'rows', 'device_id', 'line_id']]);
     say(e, '記帳/120/外食');
-    assert.deepEqual(e.sheets.performance.values[0].slice(-2), ['reply_ms', 'stages']);
+    e.call('flushPerfQueue');   // ADR-019 B-2：排隊的紀錄落地後才在表上
+    assert.deepEqual(e.sheets.performance.values[0].slice(-3), ['reply_ms', 'stages', 'request_id']);
     assert.ok(e.sheets.performance.toRecords()[0].reply_ms >= 0);
   });
 });

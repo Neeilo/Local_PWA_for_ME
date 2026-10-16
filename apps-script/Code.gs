@@ -2387,12 +2387,14 @@ function authorizeArchiveMail() {
  *  - 手機列：手機量的 client_ms（含網路與 GAS 冷啟動），夾在**下一個**請求的 body.perf
  *    裡送上來，另寫一列；server 那幾欄空白。不回頭補同一列：要先找到那一列，
  *    找錯就是寫錯人的數字，另寫一列沒有這個風險
+ *  - 兩種列靠 request_id 對起來（ADR-019 B-3）：手機每個請求產生一個 ID 放進 body，server 列記下它；
+ *    手機量完那次的耗時，也帶著同一個 ID 與「實際發生時間」（at）送上來。摘要用它算「server 外的時間」
  *
- * 寫入時機不在 server_ms 裡：GAS 不能先回應再做事。ADR-018 起先放進排隊區（指令碼屬性），
- * 每 10 分鐘的排程才寫進 Sheet（見 queuePerfRows_）；落地時用 appendRow 一列一列寫，並行才不互蓋。
+ * 寫入時機不在 server_ms 裡：GAS 不能先回應再做事。所有路徑（PWA、LINE、排程）都先放進排隊區
+ * （指令碼屬性），**只有 flushPerfQueue 寫 performance**，一次 setValues 整批寫（ADR-019 B-2）。
  */
 var PERFORMANCE_HEADERS = ['id', 'ts', 'action', 'trigger', 'client_ms', 'server_ms', 'auth_ms', 'open_ms', 'read_ms',
-  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms', 'stages'];
+  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms', 'stages', 'request_id'];
 
 /** 觸發情境。不在清單裡的一律不記——欄位裡只會出現這幾個字 */
 var PERF_TRIGGERS = ['cold', 'foreground', 'poll', 'manual', 'write', 'line', 'schedule', 'zone', 'hourly'];
@@ -2402,6 +2404,8 @@ var PERF_SUMMARY_DAYS = 7;
 var PERF_PURGE_DEFAULT_DAYS = 30;
 var PERF_LOCK_MS = 10000;
 var PERF_DAY_MS = 86400000;
+var PERF_REQUEST_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;   // crypto.randomUUID() 或「時間戳-亂數」；其他形狀一律留空
+var PERF_AT_FUTURE_MS = 300000;                      // 手機時鐘快一點可以，快超過 5 分鐘就不信
 
 /** 建表方式比照 ensureLineUsersSheet_：只建表頭 */
 function ensurePerformanceSheet_() {
@@ -2427,9 +2431,25 @@ function clientPerfRows_(list) {
     if (!/^[A-Za-z]{1,32}$/.test(action)) return;
     if (PERF_TRIGGERS.indexOf(p.trigger) === -1) return;
     if (typeof ms !== 'number' || !isFinite(ms) || ms < 0 || ms > PERF_CLIENT_MS_MAX) return;
-    out.push({ action: action, trigger: p.trigger, client_ms: Math.round(ms) });
+    out.push({ action: action, trigger: p.trigger, client_ms: Math.round(ms),
+               request_id: perfRequestId_(p.request_id), at: p.at });
   });
   return out;
+}
+
+/** 手機產生的 ID 只收形狀對的：它會被寫進 Sheet，不能讓任何內容夾帶進來 */
+function perfRequestId_(v) {
+  return typeof v === 'string' && PERF_REQUEST_ID_RE.test(v) ? v : '';
+}
+
+/**
+ * 手機列的 ts 用手機端「實際發生時間」（ADR-019 B-3），不再用上傳時間代替——手機列是搭**下一個**
+ * 請求上來的，晚多久不一定。不合理的（不是數字、比現在快 5 分鐘以上、早於 7 天前的摘要範圍）退回上傳時間。
+ */
+function perfClientTs_(at, now) {
+  var t = typeof at === 'number' && isFinite(at) ? at : NaN;
+  if (isNaN(t) || t > now + PERF_AT_FUTURE_MS || t < now - PERF_SUMMARY_DAYS * PERF_DAY_MS) t = now;
+  return new Date(t).toISOString();
 }
 
 /**
@@ -2450,7 +2470,7 @@ function recordPerf_(body, perf, serverMs) {
         action: String(body.action || ''), trigger: trigger, server_ms: serverMs,
         auth_ms: perf.auth_ms, open_ms: perf.open_ms, read_ms: perf.read_ms,
         sheets: perf.sheets || (typeof body.sheet === 'string' ? body.sheet : ''), rows: perf.rows,
-        stages: perfStagesText_(perf.stages)
+        stages: perfStagesText_(perf.stages), request_id: perfRequestId_(body.request_id)
       });
     }
     rows = rows.concat(clientPerfRows_(body.perf));
@@ -2459,42 +2479,68 @@ function recordPerf_(body, perf, serverMs) {
     var now = Date.now();
     rows.forEach(function (r, i) {
       r.id = String(now + i);
-      r.ts = new Date(now).toISOString();
+      r.ts = 'at' in r ? perfClientTs_(r.at, now) : new Date(now).toISOString();
+      delete r.at;
       r.device_id = perf.who.device_id || '';
       r.line_id = perf.who.line_id || '';
     });
-    if (!queuePerfRows_(rows)) writePerfRows_(rows);
+    queuePerfRows_(rows);
   } catch (err) {
     console.log('寫效能紀錄失敗（主流程不受影響）：' + err);
   }
 }
 
-/** 直接寫進 performance（排隊區放不進去時的備援、flushPerfQueue 的落地）。一次 appendRow 一列：並行時不互蓋 */
+/**
+ * 寫進 performance——**只有 flushPerfQueue 會呼叫**（ADR-019 B-2，測試守門）。
+ * 一次 setValues 整批寫：10/15 逐列 appendRow 37 列花了 150 秒。並行互蓋的顧慮由 flush 的鎖處理
+ * （所有寫入都排隊、只剩這一個寫入者），不再靠 appendRow。列數超過分頁上限先補列（比照 stock.gs）。
+ */
 function writePerfRows_(rows) {
   var sheet = ensurePerformanceSheet_();
   var headers = perfHeaders_(sheet);
-  rows.forEach(function (r) {
-    sheet.appendRow(headers.map(function (h) {
-      return (r[h] === undefined || r[h] === null) ? '' : r[h];
-    }));
+  var matrix = rows.map(function (r) {
+    return headers.map(function (h) { return (r[h] === undefined || r[h] === null) ? '' : r[h]; });
   });
+  var start = sheet.getLastRow() + 1;
+  var overflow = start + matrix.length - 1 - sheet.getMaxRows();
+  if (overflow > 0) sheet.insertRowsAfter(sheet.getMaxRows(), overflow);
+  sheet.getRange(start, 1, matrix.length, headers.length).setValues(matrix);
 }
 
-/* ---------- 效能紀錄排隊（ADR-018 D-4：不擋住回應） ----------
-   GAS 不能先回應再做事：寫 performance（開表、讀表頭、appendRow）的時間使用者都在等，
-   而且 server_ms 量不到它。改成每個請求只在指令碼屬性放一個**自己的鍵**（perfq_＜id＞_＜亂數＞），
-   每 10 分鐘的排程 flushPerfQueue 一次寫進 Sheet、寫完刪鍵。
-   - 並行不互蓋：每個請求一個鍵，沒有「讀出來 → 加一筆 → 寫回去」的競爭
-   - 放不進去（屬性額度、容量 500KB 滿了、沒有權限）→ 退回直接寫，紀錄不會因為排隊而掉
+/* ---------- 效能紀錄排隊（ADR-018 D-4：不擋住回應；ADR-019 B-2：單一寫入者） ----------
+   GAS 不能先回應再做事：寫 performance（開表、讀表頭、寫列）的時間使用者都在等，
+   而且 server_ms 量不到它。所以每一筆紀錄（PWA、LINE、排程、未驗證彙總）只在指令碼屬性放一個
+   **自己的鍵**（perfq_＜id＞_＜亂數＞），由排程 flushPerfQueue 一次寫進 Sheet、寫完刪鍵。
+   - 並行不互蓋：每筆一個鍵，沒有「讀出來 → 加一筆 → 寫回去」的競爭
+   - 放不進去（容量 500KB 滿了、額度）→ 立刻 flush 一次（同一把鎖）再放一次；仍放不進去就丟棄
+     該筆並寫 logs。效能紀錄不是使用者資料，可以丟，但不可無聲（取代 ADR-018 的「退回直接寫」）
    - 管理員看效能摘要前先 flush，看到的是最新的 */
 var PERF_QUEUE_PREFIX = 'perfq_';
 var PERF_QUEUE_FUNCTION = 'flushPerfQueue';
 var PERF_QUEUE_MINUTES = 10;
 
-function queuePerfRows_(rows) {
+/** noFlush：flush 記自己那列時用，放不進去不再回頭叫 flush（免得繞圈） */
+function queuePerfRows_(rows, noFlush) {
+  if (!rows || !rows.length) return true;
+  var key = PERF_QUEUE_PREFIX + rows[0].id + '_' + Math.floor(Math.random() * 1e9);
+  var text = JSON.stringify(rows);
+  if (perfQueuePut_(key, text)) return true;
+  if (!noFlush) {
+    try { flushPerfQueue(); } catch (err) { console.log('排隊區滿了，flush 也失敗：' + err); }
+    if (perfQueuePut_(key, text)) return true;
+  }
   try {
-    var key = PERF_QUEUE_PREFIX + rows[0].id + '_' + Math.floor(Math.random() * 1e9);
-    PropertiesService.getScriptProperties().setProperty(key, JSON.stringify(rows));
+    logTransaction_('效能', '失敗', 'perfQueue', '排隊區放不進去，丟棄 ' + rows.length + ' 筆效能紀錄',
+      String(rows[0].action || ''), '', '');
+  } catch (err) {
+    console.log('效能紀錄丟棄 ' + rows.length + ' 筆，寫 logs 也失敗：' + err);
+  }
+  return false;
+}
+
+function perfQueuePut_(key, text) {
+  try {
+    PropertiesService.getScriptProperties().setProperty(key, text);
     return true;
   } catch (err) {
     return false;
@@ -2502,33 +2548,45 @@ function queuePerfRows_(rows) {
 }
 
 /**
- * 排程（每 10 分鐘）：把排隊的效能紀錄寫進 Sheet。先寫、寫成功才刪鍵——中途失敗頂多下次重寫幾列，
- * 不會掉。拿不到鎖（另一個 flush 在跑）就跳過，下一輪再來。依 id 排序，表上照時間先後。
- * 排隊是空的就什麼都不寫（每 10 分鐘一列「0 筆」只會把表灌大）。
+ * 排程（每 10 分鐘）：把排隊的效能紀錄寫進 Sheet。**整個專案唯一寫 performance 的地方**（ADR-019 B-2）。
+ * 先寫、寫成功才刪鍵——寫失敗一個鍵都不刪，下一輪整批重寫，不會掉也不會重複（寫是一次 setValues，
+ * 沒有「寫了一半」）。失敗寫 logs，不可無聲。拿不到鎖（另一個 flush 在跑）就跳過，下一輪再來。
+ * 依 id 排序，表上照時間先後。排隊是空的就什麼都不寫（每 10 分鐘一列「0 筆」只會把表灌大）。
+ *
+ * 自己那列（perfFlush）也排隊、下一輪才落地，耗時才量得到寫 Sheet 那一段。只寫了 perfFlush 列的那一輪
+ * 不再記自己：否則每一輪都會留一列給下一輪，排隊區永遠不空。
  */
 function flushPerfQueue() {
   var started = Date.now();
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(PERF_LOCK_MS)) return { written: 0, reason: 'busy' };
+  var rows = [];
   try {
     var props = PropertiesService.getScriptProperties();
     var all = props.getProperties();
     var keys = Object.keys(all).filter(function (k) { return k.indexOf(PERF_QUEUE_PREFIX) === 0; });
     if (!keys.length) return { written: 0 };
-    var rows = [];
     keys.forEach(function (k) {
       var list = null;
       try { list = JSON.parse(all[k]); } catch (err) { list = null; }
       if (Array.isArray(list)) rows = rows.concat(list);
     });
-    rows.sort(function (a, b) { return Number(a.id) - Number(b.id); });
-    writePerfRows_(rows);
+    // parseInt：報價列的 id 是「時間戳＋來源名」（stock.gs recordQuotePerf_），Number() 會變 NaN
+    rows.sort(function (a, b) { return parseInt(a.id, 10) - parseInt(b.id, 10); });
+    try {
+      if (rows.length) writePerfRows_(rows);
+    } catch (err) {
+      try { logTransaction_('效能', '失敗', 'perfFlush', '寫進 performance 失敗，' + rows.length + ' 筆留在排隊區下一輪重寫', String(err), '', ''); }
+      catch (e2) { console.log('效能紀錄落地失敗：' + err); }
+      return { written: 0, reason: 'error' };
+    }
     keys.forEach(function (k) { props.deleteProperty(k); });
-    recordSchedulePerf_('perfFlush', rows.length, Date.now() - started);
-    return { written: rows.length };
   } finally {
     lock.releaseLock();
   }
+  var real = rows.some(function (r) { return r.action !== 'perfFlush'; });
+  if (real) recordSchedulePerf_('perfFlush', rows.length, Date.now() - started, true);
+  return { written: rows.length };
 }
 
 /** 每 10 分鐘的排程。比照 installUnauthTrigger：先刪同名的再建，重複執行不累積 */
@@ -2542,10 +2600,11 @@ function installPerfQueueTrigger() {
 }
 
 /**
- * 表頭；舊表沒有 reply_ms（2026-10-06 加的，LINE 用）、stages（ADR-018 PR-0）就依序補在最右邊。
+ * 表頭；舊表沒有 reply_ms（2026-10-06 加的，LINE 用）、stages（ADR-018 PR-0）、request_id（ADR-019 B-3）
+ * 就依序補在最右邊，舊列留空。
  * 本來每次寫紀錄就要讀一次表頭，這裡沒有多讀，只有缺欄的那一次多寫一格。
  */
-var PERF_LATE_HEADERS = ['reply_ms', 'stages'];
+var PERF_LATE_HEADERS = ['reply_ms', 'stages', 'request_id'];
 function perfHeaders_(sheet) {
   var headers = sheetHeaders_(sheet);
   if (!headers.length) return headers;
@@ -2589,7 +2648,7 @@ function perfJsonOut_(perf, obj) {
 
 /**
  * LINE 的一次 webhook（2026-10-06）。本來只有 PWA 的請求有效能紀錄，LINE 完全沒記——
- * 「按鈕很慢」查不到數字。在**回覆之後**才寫，不讓使用者多等。
+ * 「按鈕很慢」查不到數字。在**回覆之後**才記，不讓使用者多等；只排隊，由 flushPerfQueue 落地（ADR-019 B-2）。
  *  - server_ms：整個 webhook 跑完（含回覆後才寫的 logs）
  *  - reply_ms ：從收到事件到送出回覆——使用者實際等的時間
  * 只記名單上啟用中的人（比照 PWA：沒通過驗證的請求一列都不寫，免得陌生人灌爆這張表）。
@@ -2598,13 +2657,10 @@ function recordLinePerf_(action, userId, serverMs, replyMs, stages) {
   try {
     var user = lineUserById_(userId);
     if (!user || !truthy_(user.is_active)) return;
-    var sheet = ensurePerformanceSheet_();
-    var headers = perfHeaders_(sheet);
     var now = Date.now();
-    var r = { id: String(now), ts: new Date(now).toISOString(), action: action, trigger: 'line',
+    queuePerfRows_([{ id: String(now), ts: new Date(now).toISOString(), action: action, trigger: 'line',
               server_ms: serverMs, reply_ms: replyMs == null ? '' : replyMs, line_id: String(userId || '').trim(),
-              stages: perfStagesText_(stages) };
-    sheet.appendRow(headers.map(function (h) { return r[h] === undefined || r[h] === null ? '' : r[h]; }));
+              stages: perfStagesText_(stages) }]);
   } catch (err) {
     console.log('寫 LINE 效能紀錄失敗（主流程不受影響）：' + err);
   }
@@ -2613,15 +2669,13 @@ function recordLinePerf_(action, userId, serverMs, replyMs, stages) {
 /**
  * 排程的一次執行（ADR-014 D-16）。排程沒有人、沒有裝置，line_id／device_id 留白——
  * 只有這條路可以留白寫入；PWA 的 recordPerf_ 照舊「沒通過驗證一列都不寫」。
+ * 只排隊，由 flushPerfQueue 落地（ADR-019 B-2）。noFlush 只給 flush 記自己那列用（見 queuePerfRows_）。
  */
-function recordSchedulePerf_(action, rows, serverMs) {
+function recordSchedulePerf_(action, rows, serverMs, noFlush) {
   try {
-    var sheet = ensurePerformanceSheet_();
-    var headers = perfHeaders_(sheet);
     var now = Date.now();
-    var r = { id: String(now), ts: new Date(now).toISOString(), action: action, trigger: 'schedule',
-              server_ms: serverMs, rows: rows };
-    sheet.appendRow(headers.map(function (h) { return r[h] === undefined || r[h] === null ? '' : r[h]; }));
+    queuePerfRows_([{ id: String(now), ts: new Date(now).toISOString(), action: action, trigger: 'schedule',
+              server_ms: serverMs, rows: rows }], noFlush);
   } catch (err) {
     console.log('寫排程效能紀錄失敗（主流程不受影響）：' + err);
   }
@@ -2629,7 +2683,7 @@ function recordSchedulePerf_(action, rows, serverMs) {
 
 /* ---------- 未驗證請求每小時彙總（ADR-014 D-15） ----------
    配對、續期、token 錯誤／過期／撤銷的請求不寫 performance（陌生人可以無限打），
-   只在 CacheService 裡依小時累加；每小時排程（flushUnauthPerf）寫成**一列**。
+   只在 CacheService 裡依小時累加；每小時排程（flushUnauthPerf）整理成**一列**排進效能紀錄排隊區（ADR-019 B-2）。
    不論被打幾次，一小時最多一列；計數不碰 Sheet。
    ⚠️ 已知限制：拿不到鎖（同一瞬間很多請求）的那幾次不計——數字是「至少這麼多」。 */
 var UNAUTH_PREFIX = 'adr014_unauth_';
@@ -2679,7 +2733,7 @@ function flushUnauthPerf(nowMs) {
   var cache = scriptCache_();
   if (!cache) return { written: 0 };
   var cur = Math.floor(now / HOUR_MS);
-  var written = 0;
+  var out = [];
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(PERF_LOCK_MS)) return { written: 0, reason: 'busy' };
   try {
@@ -2687,14 +2741,11 @@ function flushUnauthPerf(nowMs) {
       var key = UNAUTH_PREFIX + h;
       var b = cacheGetJson_(cache, key);
       if (!b || !b.n) continue;
-      var sheet = ensurePerformanceSheet_();
-      var headers = perfHeaders_(sheet);
       var r = { id: String(h * HOUR_MS), ts: new Date(h * HOUR_MS).toISOString(), action: 'unauth', trigger: 'hourly',
                 rows: b.n, server_ms: Math.round(b.ms / b.n),
                 sheets: Object.keys(b.by).sort().map(function (k) { return k + ' ' + b.by[k]; }).join('・') };
-      sheet.appendRow(headers.map(function (x) { return r[x] === undefined || r[x] === null ? '' : r[x]; }));
+      out.push(r);
       cache.remove(key);
-      written++;
       if ((b.by.bad_token || 0) > UNAUTH_BAD_TOKEN_ALERT) {
         cache.put(UNAUTH_ALERT_KEY, JSON.stringify({ ts: r.ts, bad_token: b.by.bad_token }), UNAUTH_ALERT_TTL);
       }
@@ -2702,7 +2753,9 @@ function flushUnauthPerf(nowMs) {
   } finally {
     lock.releaseLock();
   }
-  return { written: written };
+  // 放鎖之後才排隊：排隊區滿了會叫 flushPerfQueue，它要拿同一把鎖
+  out.forEach(function (r) { queuePerfRows_([r]); });
+  return { written: out.length };
 }
 
 /** 最近 24 小時內有哪一小時 bad_token 暴增（boot 帶給管理員；沒有就回 null） */
@@ -2788,6 +2841,10 @@ function perfCollectStages_(g, raw, serverMs) {
  *  - server：雲端內部時間，依 action 分組，附各分段佔比（%）
  * 依 trigger 分手機那組，是因為改版前後 action 名稱會變（3 輪流程 → boot），
  * 「開 App 要等多久」這個問題本身不變，比較基準才對得起來。
+ *
+ * server 外的時間（ADR-019 B-3）：同一 request_id 的手機列與 server 列對起來，client − server
+ * 就是網路＋GAS 冷啟動＋手機自己處理的時間。對得上的數字掛在手機那組（paired、outside_p50）；
+ * 對不到的列（舊列沒有 ID、另一半還在排隊或已過 7 天）照舊分開算，不硬配。
  */
 function perfSummary_(caller, now) {
   if (!truthy_((caller.user || {}).is_admin)) return perfForbidden_(caller, 'perfSummary');
@@ -2800,17 +2857,22 @@ function perfSummary_(caller, now) {
   var client = {};
   var server = {};
   var line = {};
+  var clientById = {};       // request_id → { trigger, ms }（同一個 ID 只取第一筆）
+  var serverById = {};       // request_id → server_ms
   data.rows.forEach(function (r) {
     var t = toTime_(r.ts);
     if (!isNaN(t) && (isNaN(oldest) || t < oldest)) oldest = t;
     if (isNaN(t) || t < since) return;
+    var rid = perfRequestId_(String(r.request_id == null ? '' : r.request_id));
 
     var c = perfNum_(r.client_ms);
     if (c !== null) {
       var ck = String(r.trigger || '');
       (client[ck] = client[ck] || []).push(c);
+      if (rid && !clientById[rid]) clientById[rid] = { trigger: ck, ms: c };
     }
     var s = perfNum_(r.server_ms);
+    if (s !== null && rid && !(rid in serverById) && String(r.trigger || '') !== 'line') serverById[rid] = s;
     // LINE 另外一張表：使用者等的是「多久回覆」，不是整個 webhook 跑多久
     if (String(r.trigger || '') === 'line') {
       var lk = String(r.action || '');
@@ -2834,6 +2896,12 @@ function perfSummary_(caller, now) {
 
   var asc = function (a, b) { return a - b; };
   var pct = function (part, total) { return total > 0 ? Math.round(part / total * 100) : 0; };
+  var outside = {};          // trigger → [client − server]
+  Object.keys(clientById).forEach(function (rid) {
+    if (!(rid in serverById)) return;
+    var cm = clientById[rid];
+    (outside[cm.trigger] = outside[cm.trigger] || []).push(Math.max(cm.ms - serverById[rid], 0));
+  });
   return {
     success: true,
     days: PERF_SUMMARY_DAYS,
@@ -2841,7 +2909,9 @@ function perfSummary_(caller, now) {
     oldest: isNaN(oldest) ? '' : new Date(oldest).toISOString(),
     client: Object.keys(client).map(function (k) {
       var ms = client[k].sort(asc);
-      return { trigger: k, count: ms.length, p50: perfPercentile_(ms, 0.5), p90: perfPercentile_(ms, 0.9) };
+      var out = (outside[k] || []).sort(asc);
+      return { trigger: k, count: ms.length, p50: perfPercentile_(ms, 0.5), p90: perfPercentile_(ms, 0.9),
+        paired: out.length, outside_p50: out.length ? perfPercentile_(out, 0.5) : null };
     }),
     server: Object.keys(server).map(function (k) {
       var g = server[k];

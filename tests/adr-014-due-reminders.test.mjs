@@ -65,7 +65,12 @@ function env({ tasks = [], groups = [groupRow()], taskHeaders = TASK_H, users = 
   return e;
 }
 const tasksOf = (e) => e.sheets.tasks.toRecords();
-const perfRows = (e) => (e.ss.getSheetByName('performance') ? e.ss.getSheetByName('performance').toRecords() : []);
+// ADR-019 B-2：紀錄先排隊，flushPerfQueue 落地後才在表上；flush 自己那列（perfFlush）不算進來
+const perfRows = (e) => {
+  e.call('flushPerfQueue');
+  const sh = e.ss.getSheetByName('performance');
+  return sh ? sh.toRecords().filter((r) => r.action !== 'perfFlush') : [];
+};
 
 const src = (userId, type = 'group') => (type === 'user' ? { type, userId } : { type, groupId: GROUP, userId });
 function say(e, userId, text, type = 'group') {
