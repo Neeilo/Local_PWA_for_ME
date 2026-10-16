@@ -227,6 +227,24 @@
 
   /* 雜記 */
   .note-item{padding:10px 4px; border-bottom:1px solid var(--line);}
+  /* 📚 收藏（ADR-020 RD-2）：雜記頁的分段。顏色全用變數，亮／暗跟著主題走 */
+  .clip-head{display:flex; align-items:center; justify-content:space-between; gap:8px;}
+  .clip-item{display:flex; gap:10px; padding:10px 4px; border-bottom:1px solid var(--line); cursor:pointer;}
+  .clip-item.bad{border-left:3px solid var(--danger); padding-left:8px;}
+  .clip-thumb{width:64px; height:64px; flex:none; border-radius:10px; object-fit:cover; background:var(--line);}
+  .clip-thumb-empty{display:flex; align-items:center; justify-content:center; font-size:22px;}
+  .clip-body{flex:1; min-width:0;}
+  .clip-meta{display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:12px; color:var(--muted);}
+  .clip-meta b{color:var(--ink); font-weight:600;}
+  .clip-lines{font-size:14px; color:var(--ink); margin-top:4px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;}
+  .clip-tag{font-size:11px; padding:1px 8px; border-radius:999px; background:var(--line); color:var(--muted);}
+  .clip-tag.clip-bad{background:var(--danger-soft); color:var(--danger);}
+  .clip-err{font-size:12px; color:var(--danger); margin:4px 0;}
+  .clip-reader-head{display:flex; align-items:center; gap:10px; margin-bottom:8px;}
+  .clip-strip{display:flex; gap:8px; overflow-x:auto; scroll-snap-type:x mandatory; -webkit-overflow-scrolling:touch; margin:0 -4px 10px; padding:0 4px;}
+  .clip-img{flex:none; width:100%; max-height:70vh; object-fit:contain; scroll-snap-align:center; border-radius:12px; background:var(--line);}
+  .clip-caption{white-space:pre-wrap; word-break:break-word; font-size:15px; line-height:1.6; color:var(--ink);}
+  .clip-times{font-size:12px; color:var(--muted); margin:10px 0;}
   .note-item:last-child{border-bottom:none;}
   .note-txt{white-space:pre-wrap; word-break:break-word;}
   .note-meta{display:flex; justify-content:space-between; align-items:center; margin-top:4px;}
@@ -392,6 +410,9 @@
   }
   nav button .ico{font-size:19px;}
   nav button.active{color:var(--accent); font-weight:600;}
+  nav button{position:relative;}
+  /* 收藏有失敗／缺圖時，雜記那格的紅點（ADR-020 E-4；這次開 App 點開過收藏才知道） */
+  nav button .nav-dot{position:absolute; top:6px; left:calc(50% + 8px); width:9px; height:9px; border-radius:50%; background:var(--danger); border:2px solid var(--card);}
   nav button[hidden]{display:none;} /* 需明寫，否則 nav button 的 display:flex 會蓋掉 [hidden] */
   nav .nav-slot{flex:1;}          /* 這一區沒有的格子留空佔位：任務在兩區永遠是同一格（D-4） */
   nav .home-btn{
@@ -1075,6 +1096,12 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
   </section>
 
   <section class="view" id="view-notes">
+    <!-- ADR-020 E-1：雜記頁頭分段「✏️ 雜記｜📚 收藏」；沒有 feat_clips 的人整排藏起來。底部導覽不動 -->
+    <div class="seg" id="noteSeg" hidden>
+      <button data-val="notes" class="sel" onclick="pickNoteSeg('notes')">✏️ 雜記</button>
+      <button data-val="clips" onclick="pickNoteSeg('clips')">📚 收藏</button>
+    </div>
+    <div id="noteCards">
     <div class="card">
       <textarea id="noteInput" placeholder="任何想法、待辦靈感、雜項…"></textarea>
       <!-- 類別選填：選了就在內容前面加上 [類別]，不選就是純雜記 -->
@@ -1085,6 +1112,14 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       <h2>雜記清單</h2>
       <div class="scope-bar" id="scopeNotes" hidden></div>
       <div id="noteList"></div>
+    </div>
+    </div>
+    <div id="clipCards" hidden>
+      <div class="card" id="clipListCard">
+        <div class="clip-head"><h2>📚 收藏</h2><button class="btn-ghost" onclick="loadClips('manual')">重新整理</button></div>
+        <div id="clipList"></div>
+      </div>
+      <div class="card" id="clipReader" hidden></div>
     </div>
   </section>
 
@@ -1237,7 +1272,9 @@ const FEATURE_ITEMS = [
   { view:'tasks',    icon:'☑️', label:'任務' },
   // 日誌（feat_review）與心情（feat_mood）已退場（ADR-018 C-3）：設定頁不再顯示，欄位與資料留在雲端
   { view:'stocks',   icon:'📈', label:'股票' },
-  { view:'mail',     icon:'📬', label:'郵件' }
+  { view:'mail',     icon:'📬', label:'郵件' },
+  // 收藏（ADR-020）不是導覽格，是雜記頁的分段；登記在這裡是為了成員與權限的開關與 featureAllowed('clips')
+  { view:'clips',    icon:'📚', label:'收藏' }
 ];
 
 /* ---------- 兩區（ADR-014 D-1～D-8） ----------
@@ -1282,12 +1319,12 @@ const LINE_USERS_SHEET = 'line_users';
 /* 分頁 ↔ 功能欄。首頁刻意不在表上：它是進 App 的第一頁，關掉沒意義（D-1）。 */
 const FEATURE_BY_VIEW = {
   expenses:'feat_expense', notes:'feat_notes', tasks:'feat_tasks',
-  stocks:'feat_stock', mail:'feat_gmail'
+  stocks:'feat_stock', mail:'feat_gmail', clips:'feat_clips'
 };
 // 標籤直接沿用 FEATURE_ITEMS，避免同一個名字在兩個地方各寫一次、改了一邊忘了另一邊
 const FEATURE_KEYS = FEATURE_ITEMS.map(function(it){ return FEATURE_BY_VIEW[it.view]; });
 /* 導覽頁 ↔ 雲端分頁。雲端回的 denied 是分頁名（ADR-012 D-4） */
-const SHEET_BY_VIEW = { expenses:'expenses', notes:'notes', tasks:'tasks' };
+const SHEET_BY_VIEW = { expenses:'expenses', notes:'notes', tasks:'tasks', clips:'clips' };
 /* 開機與輪詢讀的表。reviews／moods 已退場（ADR-018 C-3）：雲端不再送，這裡也不再收 */
 const DATA_SHEETS = ['tasks','notes','expenses'];
 /* 雲端明說「沒權限」的分頁。跟讀取失敗是兩件事：這裡的會被清空、待送的會被丟掉 */
@@ -3749,7 +3786,8 @@ function renderNav(){
     // 任務頁看的是提醒分段時，亮「🔔 提醒」那格（這一區有放的話），不亮任務
     const onRem = cur==='tasks' && taskSeg==='reminder' && ZONES[z].nav.includes('reminders');
     const active = v==='reminders' ? onRem : v==='tasks' ? (cur==='tasks' && !onRem) : cur===v;
-    return `<button data-view="${v}" class="${active?'active':''}" onclick="goView('${v}')"><span class="ico">${VIEW_NAV[v][0]}</span>${VIEW_NAV[v][1]}</button>`;
+    const dot = v==='notes' && clipsAlert() ? '<i class="nav-dot" aria-label="有收藏沒收齊"></i>' : '';
+    return `<button data-view="${v}" class="${active?'active':''}" onclick="goView('${v}')"><span class="ico">${VIEW_NAV[v][0]}</span>${VIEW_NAV[v][1]}${dot}</button>`;
   }).join('');
 }
 /* 捲動時只改首頁鈕的小字，不重畫整列 */
@@ -4057,6 +4095,7 @@ function delNote(id){
   renderNotes();
 }
 function renderNotes(){
+  renderNoteSeg();
   const el=document.getElementById('noteList');
   const list=state.notes.filter(inScope);
   if(!list.length){el.innerHTML='<div class="empty-hint">雜項、靈感、備忘都丟這裡</div>'; return;}
@@ -4069,6 +4108,134 @@ function renderNotes(){
         <button class="del" onclick="delNote(${n.id})" aria-label="刪除">✕</button>
       </div>
     </div>`).join('');
+}
+
+/* ---------- 📚 收藏（ADR-020 RD-2） ----------
+   資料在雲端 clips 表（RD-1）：LINE 私訊貼 IG 網址登記、排程總管收齊全文與圖片存 Drive。
+   **開機與輪詢都不讀**（Neil 2026-10-16：先不載入，避免干擾 ADR-019 D-3 的開機基準數據）：
+   點開「📚 收藏」那一次才打 readMany(['clips'])，之後要看新的按「重新整理」。
+   所以紅點也是「點開過才亮」（Neil 同日裁示）：還沒讀過＝不知道，不亮。
+   圖片：用 Drive 檔案 ID 組縮圖網址（非正式介面，RD-1 已把圖片檔設成知道連結可檢視）；載不出來退回「在 Drive 開啟」 */
+let noteSeg='notes';
+let clipsData=null;          // null＝這次開 App 還沒讀過收藏
+let clipsLoading=null;
+let clipOpenId=null;
+
+function renderNoteSeg(){
+  const ok=featureAllowed('clips');
+  setHidden('noteSeg', !ok);
+  if(!ok && noteSeg==='clips') pickNoteSeg('notes');
+}
+function pickNoteSeg(seg){
+  noteSeg = seg==='clips' && featureAllowed('clips') ? 'clips' : 'notes';
+  document.querySelectorAll('#noteSeg button').forEach(b=>b.classList.toggle('sel', b.dataset.val===noteSeg));
+  setHidden('noteCards', noteSeg==='clips');
+  setHidden('clipCards', noteSeg!=='clips');
+  if(noteSeg!=='clips') return Promise.resolve(false);
+  renderClips();
+  return clipsData===null ? loadClips('manual') : Promise.resolve(true);
+}
+/* 讀不到就原地不動（ADR-009：不拿空陣列蓋掉畫面），講一聲 */
+function loadClips(trigger){
+  if(clipsLoading) return clipsLoading;
+  clipsLoading=(async()=>{
+    let j=null;
+    try{ j=await cloudPost({action:'readMany', sheets:['clips'], trigger:trigger||'manual'}); }catch(e){ j=null; }
+    if(!j || j.error){ toast('讀不到收藏，稍後再試'); return false; }
+    if(Array.isArray(j.denied) && j.denied.includes('clips')) clipsData=[];
+    else if(j.data && Array.isArray(j.data.clips)) clipsData=j.data.clips;
+    else { toast('讀不到收藏，稍後再試'); return false; }
+    renderClips(); renderNav();
+    return true;
+  })().finally(()=>{ clipsLoading=null; });
+  return clipsLoading;
+}
+function clipBad(c){ return !!c && (c.status==='failed' || c.status==='partial'); }
+function clipsAlert(){ return Array.isArray(clipsData) && clipsData.some(clipBad); }
+/* 失敗／缺圖置頂，其餘新的在上（兩群內都依收藏時間新到舊） */
+function clipsSorted(list){
+  const t=(c)=>Date.parse(c.collected_at)||0;
+  return (list||[]).slice().sort((a,b)=>(clipBad(b)-clipBad(a)) || (t(b)-t(a)));
+}
+function clipImages(c){
+  try{ const a=JSON.parse(c.image_ids||'[]'); return Array.isArray(a) ? a.filter(x=>typeof x==='string' && x) : []; }catch(e){ return []; }
+}
+function clipThumb(id, w){ return 'https://drive.google.com/thumbnail?id='+encodeURIComponent(id)+'&sz=w'+w; }
+function clipDriveLink(id){ return 'https://drive.google.com/file/d/'+encodeURIComponent(id)+'/view'; }
+/* 台北時間 'YYYY-MM-DD HH:mm'（跟後端 clipTpe_ 同一套：固定 UTC+8，不看手機時區） */
+function clipTpe(v){
+  if(v===''||v==null) return '';
+  const t = typeof v==='number' ? (v<1e12 ? v*1000 : v) : Date.parse(String(v));
+  if(isNaN(t)) return String(v);
+  return new Date(t+8*3600000).toISOString().slice(0,16).replace('T',' ');
+}
+function clipsListHtml(list){
+  if(!list || !list.length) return '<div class="empty-hint">在 LINE 私訊 bot 貼 IG 網址（分享到 LINE 也可以），幾分鐘後就收進這裡</div>';
+  return clipsSorted(list).map(c=>{
+    const ids=clipImages(c), bad=clipBad(c), id=esc(c.id);
+    const lines=String(c.caption||'').split('\n').map(s=>s.trim()).filter(Boolean).slice(0,2);
+    const tag = bad ? `<span class="clip-tag clip-bad">${c.status==='failed'?'失敗':'缺圖'}</span>`
+      : c.status==='pending' ? '<span class="clip-tag">處理中</span>' : '';
+    const thumb = ids[0] ? `<img class="clip-thumb" src="${clipThumb(ids[0],400)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
+      : '<div class="clip-thumb clip-thumb-empty">📚</div>';
+    const day=clipTpe(c.collected_at).slice(5,10).replace('-','/');
+    return `<div class="clip-item${bad?' bad':''}" onclick="openClip('${id}')">${thumb}
+      <div class="clip-body">
+        <div class="clip-meta">${tag}<b>${esc(c.author||'（作者不明）')}</b><span>${esc(day)}</span><span>${Number(c.media_saved)||0} 張</span></div>
+        <div class="clip-lines">${lines.length ? lines.map(esc).join('<br>') : (c.status==='pending' ? '等排程收齊…' : '（沒有內文）')}</div>
+        ${bad ? `<div class="clip-err">${esc(c.error||'')}</div><button class="btn-ghost danger" onclick="event.stopPropagation(); retryClip('${id}')">重跑</button>` : ''}
+      </div></div>`;
+  }).join('');
+}
+function clipReaderHtml(c){
+  const ids=clipImages(c), id=esc(c.id);
+  const imgs=ids.map((x,i)=>`<img class="clip-img" src="${clipThumb(x,1200)}" alt="第 ${i+1} 張" loading="lazy" onerror="clipImgFallback(this,'${esc(x)}')">`).join('');
+  return `<div class="clip-reader-head"><button class="btn-ghost" onclick="closeClip()">← 返回</button><b>${esc(c.author||'（作者不明）')}</b></div>
+    ${ids.length ? `<div class="clip-strip">${imgs}</div>` : ''}
+    ${c.kind==='reel' ? '<p class="perf-sub">🎬 Reels：影片未保存，只有封面與全文</p>' : ''}
+    <div class="clip-caption">${esc(c.caption||'')}</div>
+    <p class="clip-times">發文 ${esc(clipTpe(c.posted_at)||'—')}・收藏 ${esc(clipTpe(c.collected_at))}</p>
+    <div class="row">
+      <a class="btn" href="${esc(c.url)}" target="_blank" rel="noopener">開啟原文</a>
+      <button class="btn-ghost" onclick="retryClip('${id}')">重跑</button>
+      <button class="btn-ghost danger" onclick="deleteClip('${id}')">刪除</button>
+    </div>`;
+}
+/* 圖片載不出來（Drive 縮圖網址不是正式介面，可能改）：換成「在 Drive 開啟」 */
+function clipImgFallback(img, id){
+  if(!img || !img.parentNode) return;
+  const a=document.createElement('a');
+  a.className='btn-ghost'; a.href=clipDriveLink(id); a.target='_blank'; a.rel='noopener'; a.textContent='在 Drive 開啟';
+  img.parentNode.replaceChild(a, img);
+}
+function renderClips(){
+  const list=document.getElementById('clipList');
+  if(list) list.innerHTML = clipsData===null ? '<div class="empty-hint">讀取中…</div>' : clipsListHtml(clipsData);
+  const open = clipOpenId && Array.isArray(clipsData) ? clipsData.find(c=>String(c.id)===String(clipOpenId)) : null;
+  const reader=document.getElementById('clipReader');
+  if(reader) reader.innerHTML = open ? clipReaderHtml(open) : '';
+  setHidden('clipReader', !open);
+  setHidden('clipListCard', !!open);
+}
+function openClip(id){ clipOpenId=id; renderClips(); window.scrollTo(0,0); }
+function closeClip(){ clipOpenId=null; renderClips(); }
+function retryClip(id){ return clipAction('clipRetry', id, '已排進重跑，幾分鐘後按「重新整理」看'); }
+function deleteClip(id){
+  if(!confirm('刪除這篇收藏？（Drive 裡的檔案會留著）')) return Promise.resolve(false);
+  return clipAction('clipDelete', id, '已刪除');
+}
+/* 直接送雲端、不進待送佇列（比照股票寫入）：離線就講連不上。不是擁有者＝永久拒絕，講清楚、不重送 */
+async function clipAction(action, id, okMsg){
+  let j=null;
+  try{ j=await cloudPost({action, id, trigger:'write'}); }catch(e){ toast('連不上雲端，這次沒有改到'); return false; }
+  if(j && j.success){
+    toast(okMsg);
+    if(action==='clipDelete' && String(clipOpenId)===String(id)) clipOpenId=null;
+    await loadClips('manual');
+    return true;
+  }
+  toast(j && j.permanent ? '這篇不是你的收藏，只有收藏的人能改' : '沒有改到，稍後再試');
+  return false;
 }
 
 /* ---------- 週回顧 ---------- */
