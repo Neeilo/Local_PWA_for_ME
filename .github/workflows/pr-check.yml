@@ -1,0 +1,44 @@
+name: PR check
+
+# ADR-019 E-1：開 PR／推新 commit 就跑測試，壞 PR 在 merge 前就看得到紅燈。
+# 搭配 main 的分支保護（E-2，Neil 手動設定）選這個 job 當必要檢查。
+#
+# 只檢查、不部署：這裡跑的是還沒審過的程式碼，不可以摸到任何 secret。
+# clasp 憑證與 CLOUD_URL 只留在 deploy.yml（push 到 main 才跑）。
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# 同一張 PR 連推好幾次時，只留最新那次，舊的取消
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # 分支保護是用這個名稱選它的，改名會讓保護默默失效（tests/adr-019-pr-check.test.mjs 守門）
+  pr-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the tests
+        run: npm test
+
+      - name: Fail if a secret got hardcoded into the sources
+        run: npm run scan
+
+      # 與 deploy.yml 的 Pages job 同一支腳本：白名單裡的檔案少了，這裡就紅燈。
+      # 只收到暫存目錄看會不會失敗，不上傳。
+      - name: Check the site whitelist can be collected
+        run: node scripts/site-files.mjs "$RUNNER_TEMP/_site"
