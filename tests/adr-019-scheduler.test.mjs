@@ -190,7 +190,7 @@ describe('登記表：既有的排程全部收進來、順序對', () => {
     assert.equal(names[1], 'dueCheck');
     assert.equal(names[2], 'gmail');
     assert.equal(names.at(-1), 'perfFlush');
-    assert.deepEqual(names.slice().sort(), ['dueCheck', 'gmail', 'guide', 'perfFlush', 'stockDaily', 'stockRules', 'unauthFlush']);
+    assert.deepEqual(names.slice().sort(), ['clips', 'dueCheck', 'gmail', 'guide', 'perfFlush', 'stockDaily', 'stockRules', 'unauthFlush']);
   });
 
   test('實際呼叫的是原本的那幾支函式（行為不變，只是誰叫它變了）', () => {

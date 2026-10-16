@@ -24,14 +24,11 @@ var CLIP_TEST_POST = 'https://www.instagram.com/p/DdsyziaiROW/';
 /** 交棒頁指定的測試貼文：10 張輪播、重點在第 2～10 張 */
 var CLIP_PROBE_POSTS = [{ url: CLIP_TEST_POST, expected: 10, note: '10 張輪播（交棒頁指定）' }];
 
-var CLIP_APIFY_BASE = 'https://api.apify.com/v2';
-var CLIP_APIFY_DEFAULT_ACTOR = 'dami_studio~instagram-post-scraper';
-var CLIP_APIFY_DEFAULT_FIELD = 'postUrls';
+// Apify 網址、預設 actor／欄位、網址正規化、clipFetch_、欄位解析：共用在 clips.gs（ADR-020 RD-1 搬過去，探針與排程同一份）
 /** 每次請求請 Apify 最多等幾秒；留在 UrlFetchApp 逾時之下 */
 var CLIP_APIFY_WAIT_SEC = 45;
 /** 啟動後最多再輪詢幾次（加上啟動那次約 4 分鐘，整支探針還在 GAS 的 6 分鐘內） */
 var CLIP_APIFY_MAX_POLLS = 4;
-var CLIP_APIFY_DONE = ['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT'];
 var CLIP_JINA_BASE = 'https://r.jina.ai/';
 var CLIP_DRIVE_FOLDER = 'Neil OS 探針｜收藏 MVP（驗完可整個刪）';
 var CLIP_MONTHLY_POSTS = 300;
@@ -69,17 +66,6 @@ function probeClipSources_(now) {
 /* V6 網址正規化                                                               */
 /* -------------------------------------------------------------------------- */
 
-/**
- * IG 分享出來的網址常帶 ?igsh=、?img_index=，也可能是 m.、沒有 www.、帶帳號前綴（/帳號/p/代碼/）。
- * 收成 https://www.instagram.com/{p|reel|tv}/{代碼}/，key 用代碼（同一篇不會存兩次）。認不得就回 null，不猜。
- */
-function clipNormalizeUrl_(raw) {
-  var m = String(raw || '').trim().match(/^https?:\/\/(?:www\.|m\.)?instagram\.com\/(?:[A-Za-z0-9._]+\/)?(p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i);
-  if (!m) return null;
-  var kind = m[1].toLowerCase() === 'reels' ? 'reel' : m[1].toLowerCase();
-  return { key: 'ig:' + m[2], url: 'https://www.instagram.com/' + kind + '/' + m[2] + '/', kind: kind };
-}
-
 /** 預設測試貼文＋指令碼屬性 CLIP_PROBE_URLS；同一篇（不同參數）只留第一筆 */
 function clipProbeList_(extra) {
   var lines = CLIP_PROBE_POSTS.map(function (p) { return [p.url, String(p.expected), p.note].join('|'); });
@@ -104,135 +90,42 @@ function clipProbeList_(extra) {
 /* V1／V2／V5 Apify                                                            */
 /* -------------------------------------------------------------------------- */
 
-/** 一次請求：網路層例外也收成結果，不讓一個環節中斷其他環節 */
-function clipFetch_(url, opts) {
-  var started = Date.now();
-  try {
-    var o = Object.assign({ muteHttpExceptions: true }, opts || {});
-    var res = UrlFetchApp.fetch(url, o);
-    return { status: res.getResponseCode(), ms: Date.now() - started, res: res };
-  } catch (err) {
-    return { status: 0, ms: Date.now() - started, res: null, error: String(err && err.message || err) };
-  }
-}
-
-function clipJson_(r) {
-  if (!r.res) return null;
-  try { return JSON.parse(r.res.getContentText()); } catch (e) { return null; }
-}
-
-function clipText_(r, max) {
-  var s = r.res ? String(r.res.getContentText()) : '';
-  return max && s.length > max ? s.slice(0, max) + '…' : s;
-}
-
-function clipHead_(r) {
-  return r.error ? '連線失敗（' + r.error + '）' : 'HTTP ' + r.status;
-}
-
+/** Apify 跑一次（共用的 clipApifyRun_），探針這邊只負責印執行記錄與組 V1／V2 的結論 */
 function clipApify_(props, posts) {
-  var token = props.getProperty('APIFY_TOKEN');
+  var cfg = clipApifyConfig_(props);
   var out = { ok: false, verdict: '', ms: 0, usd: null, runStatus: '', items: [], keys: [] };
-  if (!token) {
+  if (!cfg.token) {
     out.verdict = '沒設 APIFY_TOKEN，未測（專案設定 → 指令碼屬性 補上後重跑）';
     console.log('[Apify] ❌ ' + out.verdict);
     return out;
   }
-  var actor = props.getProperty('APIFY_ACTOR') || CLIP_APIFY_DEFAULT_ACTOR;
-  var field = props.getProperty('APIFY_INPUT_FIELD') || CLIP_APIFY_DEFAULT_FIELD;
-  // 2026-10-16 實測：這格被填成貼文網址，actor 不認得 input 就回範例資料。欄位名不會有 / 或 :
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(field)) {
+  if (cfg.fieldRejected) {
     console.log('⚠️ 指令碼屬性 APIFY_INPUT_FIELD 的值不像欄位名，先不採用、改用 ' + CLIP_APIFY_DEFAULT_FIELD + '（測試網址請放 CLIP_PROBE_URLS）');
-    field = CLIP_APIFY_DEFAULT_FIELD;
   }
-  var headers = { Authorization: 'Bearer ' + token };
-  // 按篇計費：上限就是要測的篇數，input 出錯時也不會多扣
-  var input = { maxItems: posts.length };
-  input[field] = posts.map(function (p) { return p.url; });
-  var started = Date.now();
-  console.log('[Apify] actor=' + actor + '｜input 欄位=' + field + '｜' + posts.length + ' 篇併成一次 run');
-
-  var r = clipFetch_(CLIP_APIFY_BASE + '/acts/' + encodeURIComponent(actor) + '/runs?waitForFinish=' + CLIP_APIFY_WAIT_SEC,
-    { method: 'post', contentType: 'application/json', payload: JSON.stringify(input), headers: headers });
-  var run = (clipJson_(r) || {}).data;
-  for (var i = 0; run && run.id && CLIP_APIFY_DONE.indexOf(run.status) === -1 && i < CLIP_APIFY_MAX_POLLS; i++) {
-    console.log('[Apify] 狀態 ' + run.status + '，再等 ' + CLIP_APIFY_WAIT_SEC + ' 秒…');
-    r = clipFetch_(CLIP_APIFY_BASE + '/actor-runs/' + encodeURIComponent(run.id) + '?waitForFinish=' + CLIP_APIFY_WAIT_SEC, { headers: headers });
-    run = (clipJson_(r) || {}).data || run;
-  }
-  if (!run || !run.id) {
-    out.ms = Date.now() - started;
-    out.verdict = '啟動失敗：' + clipHead_(r) + '｜' + clipText_(r, 300);
+  console.log('[Apify] actor=' + cfg.actor + '｜input 欄位=' + cfg.field + '｜' + posts.length + ' 篇併成一次 run');
+  var r = clipApifyRun_(cfg, posts.map(function (p) { return p.url; }), {
+    waitSec: CLIP_APIFY_WAIT_SEC, maxPolls: CLIP_APIFY_MAX_POLLS,
+    onPoll: function (status) { console.log('[Apify] 狀態 ' + status + '，再等 ' + CLIP_APIFY_WAIT_SEC + ' 秒…'); }
+  });
+  out.ms = r.ms;
+  out.usd = r.usd;
+  out.runStatus = r.runStatus;
+  out.keys = r.keys;
+  if (r.stage === 'start') out.verdict = '啟動失敗：' + r.detail;
+  else if (r.stage === 'run') out.verdict = 'run 狀態 ' + r.runStatus + (r.timedOut ? '（等太久，探針先停；到 Apify 後台看結果）' : '');
+  else if (r.stage === 'dataset') out.verdict = '讀 dataset 失敗：' + r.detail;
+  if (r.stage !== 'ok') {
     console.log('[Apify] ❌ ' + out.verdict);
     return out;
   }
-  out.runStatus = run.status;
-  out.usd = typeof run.usageTotalUsd === 'number' ? run.usageTotalUsd : null;
-  if (run.status !== 'SUCCEEDED') {
-    out.ms = Date.now() - started;
-    out.verdict = 'run 狀態 ' + run.status + (CLIP_APIFY_DONE.indexOf(run.status) === -1 ? '（等太久，探針先停；到 Apify 後台看結果）' : '');
-    console.log('[Apify] ❌ ' + out.verdict);
-    return out;
-  }
-  var d = clipFetch_(CLIP_APIFY_BASE + '/datasets/' + encodeURIComponent(run.defaultDatasetId) + '/items?clean=true&format=json', { headers: headers });
-  out.ms = Date.now() - started;
-  var items = clipJson_(d);
-  if (!Array.isArray(items)) {
-    out.verdict = '讀 dataset 失敗：' + clipHead_(d) + '｜' + clipText_(d, 300);
-    console.log('[Apify] ❌ ' + out.verdict);
-    return out;
-  }
-  items.forEach(function (it) { Object.keys(it || {}).forEach(function (k) { if (out.keys.indexOf(k) === -1) out.keys.push(k); }); });
-  // actor 沒認得 input 時會回帶 _sample 的範例資料（2026-10-16 實測回了一篇 nasa），不能當成要測的貼文
-  var samples = items.filter(function (it) { return it && it._sample; });
-  out.items = items.filter(function (it) { return it && !it._sample; });
+  out.items = r.items;
   out.ok = out.items.length > 0;
   out.verdict = out.items.length + ' 筆結果｜' + out.ms + 'ms' + (out.usd === null ? '' : '｜US$' + out.usd) +
-    (samples.length ? '｜另有 ' + samples.length + ' 筆是 actor 的範例資料（input 沒被認得，檢查 APIFY_INPUT_FIELD），已排除' : '');
+    (r.samples ? '｜另有 ' + r.samples + ' 筆是 actor 的範例資料（input 沒被認得，檢查 APIFY_INPUT_FIELD），已排除' : '');
   console.log('[Apify] ' + (out.ok ? '✅ ' : '❌ ') + out.verdict);
   // 欄位對應是照常見格式寫的（actor 沒實測過）；這行回貼回來才知道要不要改 clipMediaOf_
   console.log('[Apify] 回傳欄位：' + out.keys.join(','));
   return out;
-}
-
-function clipPick_(obj, names) {
-  for (var i = 0; i < names.length; i++) {
-    var v = names[i].split('.').reduce(function (o, k) { return o && o[k]; }, obj);
-    if (v !== undefined && v !== null && v !== '') return v;
-  }
-  return '';
-}
-
-/** 一張圖／一段影片 → { type, source_url, cover_url } */
-function clipMediaEntry_(x) {
-  if (typeof x === 'string') return { type: 'image', source_url: x, cover_url: '' };
-  var video = /video/i.test(String(clipPick_(x, ['type', 'mediaType', 'media_type']))) || !!clipPick_(x, ['videoUrl', 'video_url']);
-  return video
-    ? { type: 'video', source_url: String(clipPick_(x, ['videoUrl', 'video_url', 'url'])), cover_url: String(clipPick_(x, ['displayUrl', 'imageUrl', 'image_url', 'thumbnailUrl'])) }
-    : { type: 'image', source_url: String(clipPick_(x, ['displayUrl', 'imageUrl', 'image_url', 'url', 'src'])), cover_url: '' };
-}
-
-/** 輪播優先讀子項目；沒有才當單張／單支影片 */
-function clipMediaOf_(item) {
-  var lists = ['childPosts', 'carouselMedia', 'carousel_media', 'sidecarMedia', 'media', 'mediaItems', 'images', 'imageUrls'];
-  for (var i = 0; i < lists.length; i++) {
-    var arr = item[lists[i]];
-    if (Array.isArray(arr) && arr.length) return arr.map(clipMediaEntry_);
-  }
-  var single = clipMediaEntry_(item);
-  return single.source_url ? [single] : [];
-}
-
-/** 只認代碼或網址對得上的那筆；不因「剛好只回一筆」就硬配（2026-10-16 就是這樣把範例資料當成測試貼文） */
-function clipItemFor_(post, items) {
-  for (var i = 0; i < items.length; i++) {
-    var it = items[i] || {};
-    var code = clipPick_(it, ['shortCode', 'shortcode', 'code']);
-    if (code === post.id) return it;
-    var n = clipNormalizeUrl_(clipPick_(it, ['url', 'inputUrl', 'postUrl']));
-    if (n && n.key === post.key) return it;
-  }
-  return null;
 }
 
 /** 照交棒頁的 PoC JSON 欄位約定（與 lab/clip-poc 的 Python 版同一份格式） */
@@ -264,8 +157,6 @@ function clipFolder_() {
   var it = root.getFoldersByName(CLIP_DRIVE_FOLDER);
   return it.hasNext() ? it.next() : root.createFolder(CLIP_DRIVE_FOLDER);
 }
-
-var CLIP_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/heic': 'heic', 'image/gif': 'gif' };
 
 /**
  * IG 圖片網址帶 oe= 過期簽章，取得當下就要下載。影片不下載（V7 只看回了什麼，收不收由 grill-me 決定）。

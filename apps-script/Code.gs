@@ -36,6 +36,8 @@ var LINE_GROUPS_SHEET = 'line_groups';
 var STOCK_TRADES_SHEET = 'stock_trades';
 var STOCK_WATCH_SHEET = 'stock_watch';
 var STOCK_RULES_SHEET = 'stock_rules';
+/** IG 收藏（ADR-020，clips.gs）。一般讀寫碰不到：讀只回自己的列、寫只走 clipRetry／clipDelete */
+var CLIPS_SHEET = 'clips';
 var STOCK_DAILY_SHEET = 'stock_daily';
 var STOCK_CONFIG_SHEET = '_stock_config';
 /** GOOGLEFINANCE 備援的公式暫存頁（第三順位報價，見 stock.gs） */
@@ -62,7 +64,7 @@ var SELF_NOTES_SHEET = 'self_notes';
 var GUIDE_SHEET = '_guide';
 var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET,
                     LINE_GROUPS_SHEET, STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET,
-                    SELF_NOTES_SHEET];
+                    SELF_NOTES_SHEET, CLIPS_SHEET];
 
 /**
  * PWA 連讀都不准讀的分頁（ADR-010 D-8）。
@@ -93,7 +95,7 @@ var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET, LINE_GROUPS_SHEET,
  * 用在「建表」與「註冊」；權限判斷走下面的 canUse_（ADR-012 D-3）。
  */
 var LINE_USERS_FEATURES = ['feat_expense', 'feat_tasks', 'feat_review',
-                           'feat_notes', 'feat_mood', 'feat_stock', 'feat_gmail'];
+                           'feat_notes', 'feat_mood', 'feat_stock', 'feat_gmail', 'feat_clips'];
 /* feat_log 於 ADR-014 退場（Neil 2026-10-07）：logs 是全家所有人的 LINE 輸入（含金額），
    改成只有管理員讀得到（見 canUseSheet_）。Sheet 上既有的 feat_log 欄不刪，只是不再被讀。 */
 
@@ -107,13 +109,15 @@ var FEATURE_BY_SHEET = {
   stock_trades: 'feat_stock', stock_watch: 'feat_stock', stock_rules: 'feat_stock',
   // ADR-016：gmail_* 在 NO_PWA_READ，一般讀取本來就碰不到；登記在這裡是讓前後端的功能清單對得起來。
   // 實際把關在 gmail.gs 的 gmailForbidden_（管理者＋feat_gmail）
-  gmail_log: 'feat_gmail'
+  gmail_log: 'feat_gmail',
+  // ADR-020：clips 讀只回自己的列（clipsVisibleTo_）、寫只走 clipRetry／clipDelete（NO_PWA_WRITE）
+  clips: 'feat_clips'
 };
 
 /** LINE 回覆與「查/」的提示詞要講人話。名稱與前端導覽列一致 */
 var FEATURE_LABEL = {
   feat_tasks: '任務', feat_expense: '記帳', feat_review: '日誌',
-  feat_notes: '雜記', feat_mood: '心情', feat_stock: '股票', feat_gmail: '郵件'
+  feat_notes: '雜記', feat_mood: '心情', feat_stock: '股票', feat_gmail: '郵件', feat_clips: '收藏'
 };
 
 /**
@@ -382,7 +386,12 @@ function readSheetResponse_(sheetName, perf, user) {
   if (read.error) return read;
   const rows = read.rows;
 
-  return { data: withoutTombstones_(rows) };
+  return { data: pwaVisibleRows_(sheetName, withoutTombstones_(rows), user) };
+}
+
+/** 有些表的列只給本人看（ADR-020 clips）。read 與 readMany 共用，兩條路不會一條漏掉 */
+function pwaVisibleRows_(sheetName, rows, user) {
+  return sheetName === CLIPS_SHEET ? clipsVisibleTo_(rows, user) : rows;
 }
 
 /**
@@ -423,7 +432,7 @@ function readManyFrom_(ss, user, sheets, perf) {
     if (typeof name !== 'string' || data.hasOwnProperty(name) || denied.indexOf(name) !== -1) return;
     if (NO_PWA_READ.indexOf(name) !== -1 || isBackupSheet_(name) || !canUseSheet_(user, name)) { denied.push(name); return; }
     var read = perfStage_(perf, 'sheets.' + name, function () { return sheetRecords_(ss, name, perf); });
-    data[name] = read.error ? [] : withoutTombstones_(read.rows);
+    data[name] = read.error ? [] : pwaVisibleRows_(name, withoutTombstones_(read.rows), user);
   });
   return { data: data, denied: denied };
 }
@@ -677,6 +686,8 @@ function routePwaSync_(body, perf) {
   if (body.action === 'aiConfigGet') return jsonOut(aiConfigGet_(caller));
   if (body.action === 'aiConfigSet') return jsonOut(aiConfigSet_(caller, body.provider, body.model));
   if (body.action === 'commandDict') return jsonOut(commandDictForPwa_(caller));
+  // 收藏的重跑／刪除（ADR-020）：只限擁有者，不走一般 upsert
+  if (body.action === 'clipRetry' || body.action === 'clipDelete') return jsonOut(clipPwaAction_(caller, body.action, body.id));
 
   if (NO_PWA_WRITE.indexOf(body.sheet) !== -1 || isBackupSheet_(body.sheet)) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');

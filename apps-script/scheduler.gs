@@ -56,6 +56,9 @@ function schedulerJobs_() {
       rule: { kind: 'trading_hours', from: STOCK_DAILY_HOUR, to: STOCK_DAILY_LAST_HOUR },
       run: function (now) { return fetchStockDaily(now); },
       done: function (r) { return !!r && (r.reason === 'done' || (Array.isArray(r.pending) && !r.pending.length && !(r.errors || []).length)); } },
+    // ADR-020 C-1：每輪最多 5 篇；預算不夠一篇就不開始（ctx.budgetLeft）
+    { name: 'clips', label: '收藏搜集', when: '每輪，最多 ' + CLIPS_PER_ROUND + ' 篇', rule: { kind: 'always' },
+      run: function (now, ctx) { return runClipsJob_(now, ctx); } },
     { name: 'perfFlush', label: '效能紀錄落地', when: '每 ' + PERF_QUEUE_MINUTES + ' 分鐘', rule: { kind: 'every', minutes: PERF_QUEUE_MINUTES },
       run: function () { return flushPerfQueue(); } }
   ];
@@ -79,6 +82,8 @@ function schedulerDue_(rule, nowMs, st) {
   var last = typeof st.last === 'number' && isFinite(st.last) ? st.last : null;
   var newHour = last === null || Math.floor(last / HOUR_MS) !== Math.floor(nowMs / HOUR_MS);   // UTC+8 整點對齊，UTC 的小時就是台北的小時
   switch (rule && rule.kind) {
+    case 'always':
+      return true;
     case 'market':
       return isTwTradingTime_(now);
     case 'daily':
@@ -164,8 +169,10 @@ function schedulerRound_(nowMs) {
 
     var t0 = schedulerClock_();
     var result;
+    // 這一輪還剩多少時間：會一次做好幾件事的工作（收藏）自己看，不夠就留給下一輪
+    var ctx = { budgetLeft: function () { return SCHEDULER_BUDGET_MS - (schedulerClock_() - started); } };
     try {
-      result = job.run(now);
+      result = job.run(now, ctx);
     } catch (err) {
       failed.push(job.name);
       schedulerLog_('失敗', job.name, (job.label || job.name) + ' 丟例外，後面的工作照跑', String(err && err.stack || err));
