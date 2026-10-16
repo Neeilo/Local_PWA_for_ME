@@ -13,7 +13,7 @@
  *   APIFY_TOKEN（必填，沒有就跳過 Apify）／JINA_API_KEY（選填）
  * 選填設定（也是指令碼屬性，免改程式重部署）：
  *   APIFY_ACTOR        預設 dami_studio~instagram-post-scraper（交棒頁指定的那支；actor 代號未實測）
- *   APIFY_INPUT_FIELD  送網址清單用的欄位名，預設 urls（actor 若回 input 錯誤，照它的 Input 頁改這裡）
+ *   APIFY_INPUT_FIELD  送網址清單用的欄位名，預設 postUrls（2026-10-16 查 actor Input 頁確認；換 actor 才要改）
  *   CLIP_PROBE_URLS    額外測試貼文，一行一篇：網址|預期張數|備註（後兩欄可省略）
  *
  * Apify 用「啟動＋輪詢」而不是 run-sync：UrlFetchApp 單一請求有逾時上限，同步端點最長要等 5 分鐘，
@@ -26,6 +26,7 @@ var CLIP_PROBE_POSTS = [{ url: CLIP_TEST_POST, expected: 10, note: '10 張輪播
 
 var CLIP_APIFY_BASE = 'https://api.apify.com/v2';
 var CLIP_APIFY_DEFAULT_ACTOR = 'dami_studio~instagram-post-scraper';
+var CLIP_APIFY_DEFAULT_FIELD = 'postUrls';
 /** 每次請求請 Apify 最多等幾秒；留在 UrlFetchApp 逾時之下 */
 var CLIP_APIFY_WAIT_SEC = 45;
 /** 啟動後最多再輪詢幾次（加上啟動那次約 4 分鐘，整支探針還在 GAS 的 6 分鐘內） */
@@ -48,7 +49,7 @@ function probeClipSources_(now) {
   posts.forEach(function (p) { console.log('  · ' + p.url + '（' + (p.note || '') + (p.expected ? '，預期 ' + p.expected + ' 張' : '，沒給預期張數') + '）'); });
 
   report.apify = clipApify_(props, posts);
-  report.posts = posts.map(function (p) { return clipPostRecord_(p, report.apify, posts.length); });
+  report.posts = posts.map(function (p) { return clipPostRecord_(p, report.apify); });
   var folder = null;
   if (report.posts.some(function (r) { return r.media.length; })) folder = clipFolder_();
   report.posts.forEach(function (r) { clipSaveMedia_(r, folder); clipFinish_(r); });
@@ -138,9 +139,15 @@ function clipApify_(props, posts) {
     return out;
   }
   var actor = props.getProperty('APIFY_ACTOR') || CLIP_APIFY_DEFAULT_ACTOR;
-  var field = props.getProperty('APIFY_INPUT_FIELD') || 'urls';
+  var field = props.getProperty('APIFY_INPUT_FIELD') || CLIP_APIFY_DEFAULT_FIELD;
+  // 2026-10-16 實測：這格被填成貼文網址，actor 不認得 input 就回範例資料。欄位名不會有 / 或 :
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(field)) {
+    console.log('⚠️ 指令碼屬性 APIFY_INPUT_FIELD 的值不像欄位名，先不採用、改用 ' + CLIP_APIFY_DEFAULT_FIELD + '（測試網址請放 CLIP_PROBE_URLS）');
+    field = CLIP_APIFY_DEFAULT_FIELD;
+  }
   var headers = { Authorization: 'Bearer ' + token };
-  var input = {};
+  // 按篇計費：上限就是要測的篇數，input 出錯時也不會多扣
+  var input = { maxItems: posts.length };
   input[field] = posts.map(function (p) { return p.url; });
   var started = Date.now();
   console.log('[Apify] actor=' + actor + '｜input 欄位=' + field + '｜' + posts.length + ' 篇併成一次 run');
@@ -175,11 +182,14 @@ function clipApify_(props, posts) {
     console.log('[Apify] ❌ ' + out.verdict);
     return out;
   }
-  out.items = items;
   items.forEach(function (it) { Object.keys(it || {}).forEach(function (k) { if (out.keys.indexOf(k) === -1) out.keys.push(k); }); });
-  out.ok = true;
-  out.verdict = items.length + ' 筆結果｜' + out.ms + 'ms' + (out.usd === null ? '' : '｜US$' + out.usd);
-  console.log('[Apify] ✅ ' + out.verdict);
+  // actor 沒認得 input 時會回帶 _sample 的範例資料（2026-10-16 實測回了一篇 nasa），不能當成要測的貼文
+  var samples = items.filter(function (it) { return it && it._sample; });
+  out.items = items.filter(function (it) { return it && !it._sample; });
+  out.ok = out.items.length > 0;
+  out.verdict = out.items.length + ' 筆結果｜' + out.ms + 'ms' + (out.usd === null ? '' : '｜US$' + out.usd) +
+    (samples.length ? '｜另有 ' + samples.length + ' 筆是 actor 的範例資料（input 沒被認得，檢查 APIFY_INPUT_FIELD），已排除' : '');
+  console.log('[Apify] ' + (out.ok ? '✅ ' : '❌ ') + out.verdict);
   // 欄位對應是照常見格式寫的（actor 沒實測過）；這行回貼回來才知道要不要改 clipMediaOf_
   console.log('[Apify] 回傳欄位：' + out.keys.join(','));
   return out;
@@ -213,7 +223,8 @@ function clipMediaOf_(item) {
   return single.source_url ? [single] : [];
 }
 
-function clipItemFor_(post, items, total) {
+/** 只認代碼或網址對得上的那筆；不因「剛好只回一筆」就硬配（2026-10-16 就是這樣把範例資料當成測試貼文） */
+function clipItemFor_(post, items) {
   for (var i = 0; i < items.length; i++) {
     var it = items[i] || {};
     var code = clipPick_(it, ['shortCode', 'shortcode', 'code']);
@@ -221,18 +232,18 @@ function clipItemFor_(post, items, total) {
     var n = clipNormalizeUrl_(clipPick_(it, ['url', 'inputUrl', 'postUrl']));
     if (n && n.key === post.key) return it;
   }
-  return total === 1 && items.length === 1 ? items[0] : null;
+  return null;
 }
 
 /** 照交棒頁的 PoC JSON 欄位約定（與 lab/clip-poc 的 Python 版同一份格式） */
-function clipPostRecord_(post, apify, total) {
+function clipPostRecord_(post, apify) {
   var rec = {
     source: 'instagram', post_id: post.id, source_url: post.url, author: '', published_at: '', caption: '',
     media: [], media_count_expected: post.expected, media_count_saved: 0,
     extractor: 'apify', status: 'failed', errors: [], ms: 0
   };
   if (!apify.ok) { rec.errors.push('Apify 未取得：' + apify.verdict); return rec; }
-  var item = clipItemFor_(post, apify.items, total);
+  var item = clipItemFor_(post, apify.items);
   if (!item) { rec.errors.push('Apify 結果裡找不到這篇'); return rec; }
   rec.author = String(clipPick_(item, ['ownerUsername', 'username', 'owner.username', 'author']));
   rec.published_at = String(clipPick_(item, ['timestamp', 'takenAt', 'taken_at', 'publishedAt', 'date']));

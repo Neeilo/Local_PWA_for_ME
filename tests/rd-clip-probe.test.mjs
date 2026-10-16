@@ -249,7 +249,9 @@ describe('Apify 流程（V2／V5）', () => {
     assert.match(report.verdicts.V5.verdict, /300 篇/);
     const start = net.calls.find((c) => c.url.startsWith('https://api.apify.com/v2/acts/'));
     assert.equal(start.opts.method, 'post');
-    assert.ok(JSON.parse(start.opts.payload).urls.includes(TEST_POST), '送給 Apify 的是正規化後的網址');
+    const input = JSON.parse(start.opts.payload);
+    assert.deepEqual(input.postUrls, [TEST_POST], '欄位是 postUrls（2026-10-16 查 actor Input 頁），送正規化後的網址');
+    assert.equal(input.maxItems, 1, '按篇計費：上限設成要測的篇數');
   });
 
   test('Apify 跑失敗（FAILED）→ 判失敗並附狀態，Jina 照跑、不打 CDN', () => {
@@ -276,6 +278,34 @@ describe('Apify 流程（V2／V5）', () => {
       ? { status: 201, body: { data: { id: 'run1', status: 'SUCCEEDED', defaultDatasetId: 'ds1' } } } : base(url, o)) });
     assert.equal(report.verdicts.V5.ok, false);
     assert.match(report.verdicts.V5.verdict, /後台/);
+  });
+});
+
+describe('2026-10-16 實測：input 沒被認得時 actor 回範例資料', () => {
+  /** 實測回來的那筆：作者 nasa、帶 _sample，不是要測的貼文 */
+  const SAMPLE = { _sample: true, note: 'sample', shortCode: 'Cnasa000', url: 'https://www.instagram.com/p/Cnasa000/', caption: 'NASA sample caption', ownerUsername: 'nasa', displayUrl: 'https://cdn.example/nasa.jpg' };
+
+  test('只有一篇、只回一筆但代碼對不上 → 不能硬配成那一篇，判 failed、不下載', () => {
+    const { report, net } = run({ responder: happy([SAMPLE]) });
+    const p = report.posts[0];
+    assert.equal(p.status, 'failed');
+    assert.equal(p.author, '');
+    assert.equal(net.calls.filter((c) => c.url.startsWith('https://cdn.example/')).length, 0);
+    assert.equal(report.verdicts.V1.ok, false);
+  });
+
+  test('_sample 的那筆要點名：總結說 input 沒被認得，Apify 判失敗', () => {
+    const { report, env } = run({ responder: happy([SAMPLE]) });
+    assert.equal(report.apify.ok, false);
+    assert.match(report.apify.verdict, /範例資料/);
+    assert.ok(env.logs.some((l) => l.includes('範例資料') && l.includes('APIFY_INPUT_FIELD')));
+  });
+
+  test('APIFY_INPUT_FIELD 被誤填成網址 → 不採用、改回 postUrls，並在記錄裡提醒', () => {
+    const { net, env } = run({ properties: { APIFY_TOKEN: TOKEN, APIFY_INPUT_FIELD: TEST_POST + '?rpxt=MTly' } });
+    const start = net.calls.find((c) => c.url.startsWith('https://api.apify.com/v2/acts/'));
+    assert.deepEqual(Object.keys(JSON.parse(start.opts.payload)).sort(), ['maxItems', 'postUrls']);
+    assert.ok(env.logs.some((l) => l.includes('APIFY_INPUT_FIELD') && l.includes('不像欄位名')));
   });
 });
 
