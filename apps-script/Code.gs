@@ -715,82 +715,19 @@ function routePwaSync_(body, perf) {
   perf.open_ms = Date.now() - opened;
   if (!sheet) return jsonOut({ error: 'sheet_not_found' });
 
-  if (body.action === 'upsert') {
-    const headers = sheetHeaders_(sheet);
-    // key_field 可以是字串或陣列：line_users 用 'line_id'，reviews 用
-    // ['review_date','line_id']（那張表沒有 id 欄，ADR-009 §一.5）
-    var record = body.sheet === TASKS_SHEET ? guardReminderDone_(keepOriginChat_(sheet, headers, body.record || {}), caller)
-      : (body.record || {});
-    var keyField = body.key_field;
-    // 股票（ADR-015 D-8／D-9）：持有者、誰能改、賣超、自選上限都由後端決定
-    if (body.sheet === STOCK_TRADES_SHEET || body.sheet === STOCK_WATCH_SHEET || body.sheet === STOCK_RULES_SHEET) {
-      var guarded = body.sheet === STOCK_TRADES_SHEET ? guardStockTrade_(caller, record)
-        : body.sheet === STOCK_RULES_SHEET ? guardStockRule_(caller, record) : guardStockWatch_(caller, record);
-      if (guarded.error) {
-        logTransaction_(STOCK_LOG_SOURCE, '失敗', 'PWA upsert → ' + body.sheet, '被擋下：' + guarded.error,
-          JSON.stringify(guarded), '', caller.line_id);
-        return jsonOut(guarded);
-      }
-      record = guarded.record;
-      keyField = body.sheet === STOCK_WATCH_SHEET ? 'symbol' : 'id';
-      // 0050 不能被 Sheet 轉成 50：不走 upsertRow_（它新增時用 appendRow，不管欄位格式），見 stock.gs writeStockRow_
-      var stockOut = writeStockRow_(sheet, headers, record, keyField);
-      stockOut.record = plainRecord_(record, headers);
-      if (guarded.overridden) stockOut.owner_overridden = true;
-      return jsonOut(stockOut);
-    }
-    const out = upsertRow_(sheet, headers, record, body.sheet, keyField);
-    if (body.sheet === LINE_USERS_SHEET) invalidateLineUsersCache_();
-    return jsonOut(out);
-  }
-
   /**
-   * 週期任務完成：原列收尾、新增一列接手下一期（ADR-009 §四）。
-   *
-   * ⚠️ ADR 沒寫到、但不處理就會出事的地方：**重複打勾會不會生出兩列。**
-   * 使用者把已完成的週期任務取消打勾再重新打勾，天真的實作會再生一列下一期。
-   *
-   * 解法不需要新欄位：生出下一期的同時，把**週期設定搬到新的那一列**、從原列
-   * 清掉。原列從此不是週期任務，再怎麼打勾都不會再生。週期本來就該跟著「還沒
-   * 做的那一期」走，這不是為了防呆而扭曲的設計，是本來就該長的樣子。
+   * 一般寫入（ADR-019 B-4）：「找列 → 新增／修改」整段包一把 script lock。
+   * 不鎖的話，同一筆幾乎同時送兩次（兩台裝置、佇列重送撞上 LINE）都找不到列，就各 append 一列。
+   * 拿不到鎖回 busy：前端佇列當成「這次沒送到」，下一輪自己重送，不用另外處理
    */
-  if (body.action === 'completeRecurring') {
-    const headers = sheetHeaders_(sheet);
-    const rec = keepOriginChat_(sheet, headers, body.record || {});
-    // ADR-018 A-2：提醒沒有「完成」，週期跟著時間走（9 點排程翻頁）。前端被拒會退回一般 upsert，那裡也會擋
-    if (isReminder_(rec)) return jsonOut({ error: 'reminder_not_completable' });
-    const next = nextDueDate_(rec.due_date, rec.recur_interval, rec.recur_unit,
-                              keyValue_(body.today) || keyValue_(new Date()));
-
-    // 算不出下一期（沒設週期、單位不認得、日期壞掉）就當一般完成處理，不硬生
-    if (!next) {
-      const plain = upsertRow_(sheet, headers, rec, body.sheet, body.key_field);
-      return jsonOut({ success: true, spawned: false, reason: 'not_recurring', row: plain.row });
+  if (body.action === 'upsert' || body.action === 'completeRecurring') {
+    var writeLock = LockService.getScriptLock();
+    if (!writeLock.tryLock(UPSERT_LOCK_MS)) return jsonOut({ error: 'busy' });
+    try {
+      return jsonOut(body.action === 'upsert' ? pwaUpsert_(body, caller, sheet) : completeRecurring_(body, caller, sheet));
+    } finally {
+      writeLock.releaseLock();
     }
-
-    // 下一期：新的 id、接手週期設定、到期日換成下一期，notified 天生為空
-    const child = {};
-    headers.forEach(function (h) { child[h] = rec[h] == null ? '' : rec[h]; });
-    child.id = String(body.next_id || Date.now());
-    child.is_completed = '';
-    child.due_date = next;
-    child.notified = '';
-    child.del = '';
-
-    // 原列：標完成，並把週期設定交出去——它不再是週期任務
-    const done = {};
-    headers.forEach(function (h) { done[h] = rec[h] == null ? '' : rec[h]; });
-    done.is_completed = 'TRUE';
-    done.recur_interval = '';
-    done.recur_unit = '';
-
-    upsertRow_(sheet, headers, done, body.sheet, body.key_field);
-    const added = upsertRow_(sheet, headers, child, body.sheet, body.key_field);
-
-    logCleanup_('週期任務 ' + body.sheet + ' id=' + rec.id,
-      '完成並接手下一期 ' + next,
-      '新列 id=' + child.id + '；週期設定已從原列移交，重複打勾不會再生');
-    return jsonOut({ success: true, spawned: true, next_due: next, next_id: child.id, row: added.row });
   }
 
   /**
@@ -813,6 +750,91 @@ function routePwaSync_(body, perf) {
   }
 
   return jsonOut({ error: 'unknown_action' });
+}
+
+var UPSERT_LOCK_MS = 10000;
+
+/** PWA 單筆 upsert。呼叫端（routePwaSync_）已拿著寫入鎖 */
+function pwaUpsert_(body, caller, sheet) {
+  const headers = sheetHeaders_(sheet);
+  // key_field 可以是字串或陣列：line_users 用 'line_id'，reviews 用
+  // ['review_date','line_id']（那張表沒有 id 欄，ADR-009 §一.5）
+  var record = body.sheet === TASKS_SHEET ? guardReminderDone_(keepOriginChat_(sheet, headers, body.record || {}), caller)
+    : (body.record || {});
+  var keyField = body.key_field;
+  var notOwner = boardOwnerDenied_(sheet, headers, record, body.sheet, caller, 'upsert');
+  if (notOwner) return notOwner;
+  // 股票（ADR-015 D-8／D-9）：持有者、誰能改、賣超、自選上限都由後端決定
+  if (body.sheet === STOCK_TRADES_SHEET || body.sheet === STOCK_WATCH_SHEET || body.sheet === STOCK_RULES_SHEET) {
+    var guarded = body.sheet === STOCK_TRADES_SHEET ? guardStockTrade_(caller, record)
+      : body.sheet === STOCK_RULES_SHEET ? guardStockRule_(caller, record) : guardStockWatch_(caller, record);
+    if (guarded.error) {
+      logTransaction_(STOCK_LOG_SOURCE, '失敗', 'PWA upsert → ' + body.sheet, '被擋下：' + guarded.error,
+        JSON.stringify(guarded), '', caller.line_id);
+      return guarded;
+    }
+    record = guarded.record;
+    keyField = body.sheet === STOCK_WATCH_SHEET ? 'symbol' : 'id';
+    // 0050 不能被 Sheet 轉成 50：不走 upsertRow_（它新增時用 appendRow，不管欄位格式），見 stock.gs writeStockRow_
+    var stockOut = writeStockRow_(sheet, headers, record, keyField);
+    stockOut.record = plainRecord_(record, headers);
+    if (guarded.overridden) stockOut.owner_overridden = true;
+    return stockOut;
+  }
+  const out = upsertRow_(sheet, headers, record, body.sheet, keyField);
+  if (body.sheet === LINE_USERS_SHEET) invalidateLineUsersCache_();
+  return out;
+}
+
+/**
+ * 週期任務完成：原列收尾、新增一列接手下一期（ADR-009 §四）。
+ *
+ * ⚠️ ADR 沒寫到、但不處理就會出事的地方：**重複打勾會不會生出兩列。**
+ * 使用者把已完成的週期任務取消打勾再重新打勾，天真的實作會再生一列下一期。
+ *
+ * 解法不需要新欄位：生出下一期的同時，把**週期設定搬到新的那一列**、從原列
+ * 清掉。原列從此不是週期任務，再怎麼打勾都不會再生。週期本來就該跟著「還沒
+ * 做的那一期」走，這不是為了防呆而扭曲的設計，是本來就該長的樣子。
+ */
+function completeRecurring_(body, caller, sheet) {
+  const headers = sheetHeaders_(sheet);
+  const rec = keepOriginChat_(sheet, headers, body.record || {});
+  var notOwner = boardOwnerDenied_(sheet, headers, rec, body.sheet, caller, 'completeRecurring');
+  if (notOwner) return notOwner;
+  // ADR-018 A-2：提醒沒有「完成」，週期跟著時間走（9 點排程翻頁）。前端被拒會退回一般 upsert，那裡也會擋
+  if (isReminder_(rec)) return { error: 'reminder_not_completable' };
+  const next = nextDueDate_(rec.due_date, rec.recur_interval, rec.recur_unit,
+                            keyValue_(body.today) || keyValue_(new Date()));
+
+  // 算不出下一期（沒設週期、單位不認得、日期壞掉）就當一般完成處理，不硬生
+  if (!next) {
+    const plain = upsertRow_(sheet, headers, rec, body.sheet, body.key_field);
+    return { success: true, spawned: false, reason: 'not_recurring', row: plain.row };
+  }
+
+  // 下一期：新的 id、接手週期設定、到期日換成下一期，notified 天生為空
+  const child = {};
+  headers.forEach(function (h) { child[h] = rec[h] == null ? '' : rec[h]; });
+  child.id = String(body.next_id || Date.now());
+  child.is_completed = '';
+  child.due_date = next;
+  child.notified = '';
+  child.del = '';
+
+  // 原列：標完成，並把週期設定交出去——它不再是週期任務
+  const done = {};
+  headers.forEach(function (h) { done[h] = rec[h] == null ? '' : rec[h]; });
+  done.is_completed = 'TRUE';
+  done.recur_interval = '';
+  done.recur_unit = '';
+
+  upsertRow_(sheet, headers, done, body.sheet, body.key_field);
+  const added = upsertRow_(sheet, headers, child, body.sheet, body.key_field);
+
+  logCleanup_('週期任務 ' + body.sheet + ' id=' + rec.id,
+    '完成並接手下一期 ' + next,
+    '新列 id=' + child.id + '；週期設定已從原列移交，重複打勾不會再生');
+  return { success: true, spawned: true, next_due: next, next_id: child.id, row: added.row };
 }
 
 /* ========================================================================== */
@@ -1170,6 +1192,40 @@ function guardReminderDone_(record, caller) {
   logTransaction_('任務', '失敗', 'PWA upsert → ' + TASKS_SHEET + ' id=' + keyValue_(record.id),
     '提醒不能標完成，完成已改回空白（其他欄照寫）', 'ADR-018 A-2', '', caller.line_id);
   return out;
+}
+
+/** 有白板欄的三張表（ADR-009 §三 標籤式白板） */
+var BOARD_SHEETS = ['tasks', 'expenses', 'notes'];
+
+/**
+ * 白板只能由建立者維護（ADR-019 B-5，修訂 ADR-009「家人共同編輯」）。回 null＝放行，否則回拒絕的回應。
+ *
+ * 判斷全用雲端那一列現有的值，不信 PWA 送上來的：
+ *  - 白板項目＝雲端那列已釘白板，或這次要把它釘上去（不能把別人的東西釘上／拿下白板）
+ *  - 建立者＝雲端那列的 line_id。新項目（雲端還沒有）放行；line_id 空白的舊資料誰都能改（Neil 2026-10-19）
+ *  - 沒釘白板的項目不管（Neil 2026-10-19：只管白板）；管理員不例外
+ *
+ * 回 permanent:true（格式比照 clips 的 clipRetry／clipDelete）：不是建立者，重送幾次都一樣，
+ * 前端收到就把這筆移出待送佇列、還原畫面——不能讓它永遠重試卡住後面的（ADR-018 實作差異 A-2 的教訓）。
+ */
+function boardOwnerDenied_(sheet, headers, record, sheetName, caller, action) {
+  if (BOARD_SHEETS.indexOf(sheetName) === -1) return null;
+  var idCol = headers.indexOf('id') + 1;
+  var ownerCol = headers.indexOf('line_id') + 1;
+  var boardCol = headers.indexOf('board') + 1;
+  var id = keyValue_(record && record.id);
+  if (!idCol || !ownerCol || !boardCol || !id) return null;
+  var rows = findRowsByKey_(sheet, [idCol], id);
+  if (!rows.length) return null;
+  var line = sheet.getRange(rows[0], 1, 1, headers.length).getValues()[0];
+  var owner = keyValue_(line[ownerCol - 1]);
+  if (!owner || owner === caller.line_id) return null;
+  if (!truthy_(line[boardCol - 1]) && !truthy_(record.board)) return null;
+  var ownerUser = lineUserById_(owner);
+  var ownerName = String((ownerUser && ownerUser.display_name) || '').trim() || '建立者';
+  logTransaction_('同步', '失敗', 'PWA ' + action + ' → ' + sheetName + ' id=' + id,
+    '白板項目只有建立者能改，拒絕', 'code=not_owner｜owner=' + owner, '', caller.line_id);
+  return { error: 'forbidden', permanent: true, reason: 'not_owner', sheet: sheetName, id: id, owner_name: ownerName };
 }
 
 /* ========================================================================== */
