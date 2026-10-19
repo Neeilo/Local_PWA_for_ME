@@ -98,7 +98,9 @@ var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET, LINE_GROUPS_SHEET,
  * 用在「建表」與「註冊」；權限判斷走下面的 canUse_（ADR-012 D-3）。
  */
 var LINE_USERS_FEATURES = ['feat_expense', 'feat_tasks', 'feat_review',
-                           'feat_notes', 'feat_mood', 'feat_stock', 'feat_gmail', 'feat_clips'];
+                           'feat_notes', 'feat_mood', 'feat_stock', 'feat_gmail', 'feat_clips', 'feat_ui_v2'];
+/* feat_ui_v2（ADR-021 D-20）：能不能切到 2.0 介面。不對應任何分頁、雲端不擋任何讀寫——
+   1.0／2.0 讀寫的是同一份資料，它只決定前端畫哪一套；前端要明確勾了才算（見 uiV2Allowed） */
 /* feat_log 於 ADR-014 退場（Neil 2026-10-07）：logs 是全家所有人的 LINE 輸入（含金額），
    改成只有管理員讀得到（見 canUseSheet_）。Sheet 上既有的 feat_log 欄不刪，只是不再被讀。 */
 
@@ -120,7 +122,7 @@ var FEATURE_BY_SHEET = {
 /** LINE 回覆與「查/」的提示詞要講人話。名稱與前端導覽列一致 */
 var FEATURE_LABEL = {
   feat_tasks: '任務', feat_expense: '記帳', feat_review: '日誌',
-  feat_notes: '雜記', feat_mood: '心情', feat_stock: '股票', feat_gmail: '郵件', feat_clips: '收藏'
+  feat_notes: '雜記', feat_mood: '心情', feat_stock: '股票', feat_gmail: '郵件', feat_clips: '收藏', feat_ui_v2: '2.0 介面'
 };
 
 /**

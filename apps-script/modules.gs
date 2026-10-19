@@ -227,3 +227,28 @@ function ensureModuleRegistry_() {
   if (added.length) invalidateModuleCache_();
   return { sheet: sheet, created: created, added: added };
 }
+
+/**
+ * 「初始化」的一步：line_users 補 feat_ui_v2（ADR-021 D-20）。**這一次才新增**時只替管理者打勾，
+ * 之後誰的勾都不動（比照 installGmailFeature_）。可重複執行
+ */
+var UI_V2_FEATURE = 'feat_ui_v2';
+function installUiV2Feature_() {
+  var users = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LINE_USERS_SHEET);
+  if (!users) return { warn: true, text: '⚠️ 找不到 ' + LINE_USERS_SHEET + '，沒有補 ' + UI_V2_FEATURE };
+  var u = ensureColumnsOnSheet_(users, [UI_V2_FEATURE]);
+  if (u.reason) return { warn: true, text: '⚠️ ' + LINE_USERS_SHEET + ' 沒有表頭，沒有補 ' + UI_V2_FEATURE };
+  if (!u.added.length) return { text: LINE_USERS_SHEET + ' 已有 ' + UI_V2_FEATURE };
+  var headers = sheetHeaders_(users);
+  var admins = 0;
+  if (users.getLastRow() >= 2) {
+    users.getRange(2, 1, users.getLastRow() - 1, headers.length).getValues().forEach(function (row, i) {
+      if (truthy_(row[headers.indexOf('is_admin')])) {
+        users.getRange(i + 2, headers.indexOf(UI_V2_FEATURE) + 1, 1, 1).setValues([['TRUE']]);
+        admins++;
+      }
+    });
+  }
+  invalidateLineUsersCache_();
+  return { text: LINE_USERS_SHEET + ' 補上：' + UI_V2_FEATURE + '（預設只開管理者 ' + admins + ' 人）' };
+}

@@ -762,6 +762,26 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
   position:absolute; top:14px; right:58px; width:36px; height:36px; border-radius:50%;
   border:none; background:var(--accent); color:var(--on-accent); font-size:15px; font-weight:700; line-height:1;
 }
+/* 1.0 → 2.0 切換鈕（ADR-021 D-20）：只有 feat_ui_v2 的人看得到，在頭像左邊 */
+.ui-switch{
+  position:absolute; top:18px; right:102px; height:28px; padding:0 10px; border-radius:14px;
+  border:1px solid var(--accent); background:none; color:var(--accent); font-size:12px; font-weight:700;
+}
+.ui-switch[hidden]{display:none;}
+/* 2.0：設定由 Tab 進入，頭像入口退場（D-4）；Tab 不用中間的圓鈕 */
+:root[data-ui="v2"] .avatar-btn{display:none;}
+.v2-empty{text-align:center; padding:40px 16px; color:var(--muted);}
+.v2-empty .big{font-size:32px; display:block; margin-bottom:8px;}
+.apps-cat{margin:4px 0 16px;}
+.apps-cat h2{font-size:13px; color:var(--muted); font-weight:600; margin:0 0 8px;}
+.apps-grid{display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:10px;}
+.app-tile{
+  background:var(--card); border:1px solid var(--line); border-radius:14px; padding:12px 4px 10px;
+  display:flex; flex-direction:column; align-items:center; gap:4px; font-size:12px; color:var(--text); cursor:pointer;
+}
+.app-tile:active{transform:scale(.96);}
+.app-tile .ico{font-size:24px;}
+.mod-row{display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0;}
 .avatar-dot{position:absolute; top:0; right:0; width:10px; height:10px; border-radius:50%; background:var(--danger); border:2px solid var(--bg);}
 .avatar-dot[hidden]{display:none;}
 .settings{
@@ -812,6 +832,7 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
   <div class="boot-progress-msg" id="bootProgressMsg" hidden></div>
   <button class="refresh-btn" id="refreshBtn" onclick="manualRefresh()" title="重新整理">↻</button>
   <!-- 設定頁入口（ADR-014 D-9）：名字首字；管理員有待辦時右上角小紅點（取代首頁的「效能紀錄該清了」卡） -->
+  <button class="ui-switch" id="uiSwitchBtn" hidden onclick="switchUi('v2')" aria-label="切換到 2.0 介面">2.0</button>
   <button class="avatar-btn" id="avatarBtn" onclick="openSettings()" aria-label="設定"><span id="avatarChar">·</span><i class="avatar-dot" id="avatarDot" hidden></i></button>
 </header>
 
@@ -882,6 +903,16 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
   </section>
 
   <!-- 分期（ADR-014 D-7）：進行中的計畫。轉成分期仍從記帳明細點一筆進去；記帳月清單的分期列照舊顯示 -->
+  <!-- 2.0（ADR-021）：只有 isV2() 時進得來。總覽 PR-A 先放骨架（Neil 2026-10-19：純空骨架），Widget 在 PR-B -->
+  <section class="view" id="view-overview">
+    <div class="card"><div class="dash-sub">給自己的一段話</div><div id="v2SelfNote"></div></div>
+    <div class="v2-empty"><span class="big">🧩</span>首頁 Widget 即將上線</div>
+  </section>
+  <section class="view" id="view-apps"><div id="appsGrid"></div></section>
+  <section class="view" id="view-search">
+    <div class="v2-empty"><span class="big">🔎</span>搜尋即將上線<br><small>任務、提醒、雜記、圖書館、記帳備註</small></div>
+  </section>
+
   <section class="view" id="view-plans">
     <div class="card">
       <h2>進行中的分期</h2>
@@ -1159,6 +1190,12 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       </div>
       <p class="slot-hint">「自動」跟著手機的深淺色設定。只存這支手機，不同步雲端。</p>
     </div>
+    <!-- 介面版本（ADR-021 D-20）：只在 2.0 出現；1.0 的入口是右上角的「2.0」鈕 -->
+    <div class="slot-card" id="uiCard" hidden>
+      <div class="place-head"><h2>🧭 介面</h2></div>
+      <p class="slot-hint">現在用的是 2.0。只記在這台裝置，換回去會整頁重新載入，資料是同一份。</p>
+      <button class="btn" onclick="switchUi('v1')">回到 1.0</button>
+    </div>
     <!-- 📖 指令字典（ADR-018 B-3）：跟 LINE 的 ? 同一份登記表（雲端 COMMANDS）。點開才抓（commandDict），不進開機 -->
     <div class="slot-card fold" id="dictCard">
       <button class="fold-head" onclick="toggleFold('dict')"><h2>📖 指令字典</h2>
@@ -1171,6 +1208,12 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
   </div>
 
   <div id="setAdmin" hidden>
+    <!-- 🧩 模組總開關（ADR-021 D-9 ①）：只在 2.0。關掉＝所有人、1.0／2.0 都停用，雲端讀寫都擋 -->
+    <div class="slot-card" id="moduleCard" hidden>
+      <div class="place-head"><h2>🧩 模組總開關</h2></div>
+      <div id="moduleRows"></div>
+      <p class="slot-hint">關掉＝對所有人停用（1.0 也一樣），資料讀不到也寫不進；打開就回來，資料不會少。誰能用還是看「成員與權限」。</p>
+    </div>
     <!-- 🔐 成員與權限（ADR-008 D-4）。範圍刻意只到「勾選白名單與功能權限」，不含刪除他人資料。 -->
     <div class="slot-card fold" id="adminCard" hidden>
       <button class="fold-head" onclick="toggleFold('members')"><h2>🔐 成員與權限</h2>
@@ -1277,7 +1320,10 @@ const FEATURE_ITEMS = [
   { view:'stocks',   icon:'📈', label:'股票' },
   { view:'mail',     icon:'📬', label:'郵件' },
   // 收藏（ADR-020）不是導覽格，是雜記頁的分段；登記在這裡是為了成員與權限的開關與 featureAllowed('clips')
-  { view:'clips',    icon:'📚', label:'收藏' }
+  { view:'clips',    icon:'📚', label:'收藏' },
+  // 2.0 介面（ADR-021 D-20）不是頁、不對應雲端分頁（不進 FEATURE_BY_VIEW）：只為了成員與權限的開關，直接寫明欄位。
+  // 要明確勾了才算（uiV2Allowed）
+  { key:'feat_ui_v2', icon:'✨', label:'2.0 介面' }
 ];
 
 /* ---------- 兩區（ADR-014 D-1～D-8） ----------
@@ -1325,7 +1371,7 @@ const FEATURE_BY_VIEW = {
   stocks:'feat_stock', mail:'feat_gmail', clips:'feat_clips'
 };
 // 標籤直接沿用 FEATURE_ITEMS，避免同一個名字在兩個地方各寫一次、改了一邊忘了另一邊
-const FEATURE_KEYS = FEATURE_ITEMS.map(function(it){ return FEATURE_BY_VIEW[it.view]; });
+const FEATURE_KEYS = FEATURE_ITEMS.map(function(it){ return it.key || FEATURE_BY_VIEW[it.view]; });
 /* 導覽頁 ↔ 雲端分頁。雲端回的 denied 是分頁名（ADR-012 D-4） */
 const SHEET_BY_VIEW = { expenses:'expenses', notes:'notes', tasks:'tasks', clips:'clips' };
 /* 開機與輪詢讀的表。reviews／moods 已退場（ADR-018 C-3）：雲端不再送，這裡也不再收 */
@@ -1347,7 +1393,7 @@ function applyModules(list){
   else document.documentElement.removeAttribute('data-mod-off');
 }
 const FEATURE_LABEL = {};
-FEATURE_ITEMS.forEach(function(it){ FEATURE_LABEL[FEATURE_BY_VIEW[it.view]] = it.icon + ' ' + it.label; });
+FEATURE_ITEMS.forEach(function(it){ FEATURE_LABEL[it.key || FEATURE_BY_VIEW[it.view]] = it.icon + ' ' + it.label; });
 
 let deviceToken = null;
 let myLineId = null;
@@ -3777,10 +3823,13 @@ function renderDashStocks(){
 }
 
 /* ---------- 導覽 ---------- */
-const TITLES={home:'首頁',expenses:'記帳',plans:'分期',tasks:'任務',notes:'雜記',stocks:'股票',mail:'郵件'};
+const TITLES={home:'首頁',expenses:'記帳',plans:'分期',tasks:'任務',notes:'雜記',stocks:'股票',mail:'郵件',
+              overview:'總覽',apps:'Apps',search:'搜尋'};
+const V2_VIEWS=['overview','apps','search'];
 /* 分頁能不能進。股票看 feat_stock（ADR-015）。「提醒」不是一頁，是任務頁的一段（ADR-018 C-6） */
 function viewAllowed(name){
   if(!TITLES[name] && name!=='reminders') return false;          // 退場或不存在的頁（例如 ADR-018 的日誌）
+  if(V2_VIEWS.includes(name)) return isV2();                     // 2.0 的頁，1.0 進不來（ADR-021）
   if(name==='plans') return featureAllowed('expenses') && moduleOn('plans');     // 分期就是記帳的一部分（各期是 expenses 的列）
   if(name==='reminders') return featureAllowed('tasks') && moduleOn('reminders');
   if(name==='mail') return featureAllowed('mail') && isAdmin();   // 雲端也一樣：非管理者就算被勾了也讀不到（ADR-016 D-7）
@@ -3797,6 +3846,8 @@ function switchView(name){
   document.getElementById('view-'+name).classList.add('active');
   document.getElementById('viewTitle').textContent= name==='home' ? homeGreeting() : TITLES[name];
   if(name==='home') renderDashboard();
+  if(name==='overview') renderOverview();
+  if(name==='apps') renderApps();
   if(name==='expenses'){ renderExpenseView(); renderExpenseDonut(); }
   if(name==='plans') renderPlansView();
   if(name==='stocks') renderStocksView();
@@ -3813,6 +3864,7 @@ function homeGreeting(){
 }
 /* 首頁卡片上的捷徑與導覽按鈕共用。「提醒」直開任務頁的提醒分段 */
 function goView(name){
+  if(name==='home') name=homeView();                             // 2.0 的首頁是總覽（ADR-021）
   if(name==='reminders'){ openTasksSeg('reminder'); return; }
   if(name==='tasks' && taskSeg!=='todo') pickTaskSeg('todo');
   switchView(name);
@@ -3848,8 +3900,10 @@ function homeLabel(){
 function renderNav(){
   const nav=document.getElementById('nav');
   if(!nav) return;
+  if(isV2()){ renderNavV2(nav); return; }
   const z=effectiveZone(), cur=currentView();
   if(document.documentElement) document.documentElement.setAttribute('data-zone', z);
+  if(uiV2Applied){ uiV2Applied=false; document.documentElement.removeAttribute('data-ui'); }   // 權限被關掉、從 2.0 退回
   nav.innerHTML=ZONES[z].nav.map(v=>{
     if(v==='home'){
       return `<button data-view="home" class="home-btn${cur==='home'?' active':''}" id="homeBtn"
@@ -3908,17 +3962,126 @@ function setZone(z){
 function applyZone(){
   renderNav();
   renderZoneCard();
-  if(!viewAllowed(currentView())) goView('home');
+  if(!viewAllowed(currentView()) || (isV2() && currentView()==='home')) goView('home');
   maybeZoneHint();
 }
 /* 第一次有兩區可切時提示一次（D-3）。記在 localStorage，只提示一次 */
 function maybeZoneHint(){
-  if(!canSwitchZone() || !myUser()) return;
+  if(!canSwitchZone() || !myUser() || isV2()) return;            // 2.0 沒有兩區（ADR-021 D-2）
   let seen=false;
   try{ seen=localStorage.getItem(ZONE_HINT_KEY)==='1'; }catch(e){ seen=true; }
   if(seen) return;
   try{ localStorage.setItem(ZONE_HINT_KEY,'1'); }catch(e){}
   toast('首頁頂端再點 🧭 就能切換財務／生產力');
+}
+
+/* ---------- 2.0 殼（ADR-021 PR-A：D-2、D-3、D-4、D-9、D-20） ----------
+   1.0／2.0 並存：同一份程式、同一份雲端資料，只換導覽與首頁。用哪一版是這台裝置的偏好（localStorage，
+   D-20 唯一存本機的設定）；能不能用看 feat_ui_v2，而且要**明確勾了**才算——「這一列沒有任何 feat_ 欄＝全開」
+   那條舊規則不套在它身上（矩陣還沒佈上去時，家人不該被丟進還沒做完的 2.0）。權限被關掉時本機記的不算數。 */
+const UI_KEY='personal-os-ui';
+function uiV2Allowed(){ return truthy((myUser()||{}).feat_ui_v2); }
+function wantsV2(){ try{ return localStorage.getItem(UI_KEY)==='v2'; }catch(e){ return false; } }
+function isV2(){ return wantsV2() && uiV2Allowed(); }
+function homeView(){ return isV2() ? 'overview' : 'home'; }
+/* 切換＝寫本機＋整頁重載（D-20）。不打雲端：兩版讀的是同一份資料 */
+function switchUi(v){
+  try{ if(v==='v2') localStorage.setItem(UI_KEY,'v2'); else localStorage.removeItem(UI_KEY); }catch(e){}
+  location.reload();
+}
+/* 5 格 Tab（D-4）。設定是蓋版、不是一頁；圖書館先接既有的收藏列表（雜記頁的收藏分段，PR-E 才搬家）。
+   沒權限的格子留空佔位，其他格不移位。主色固定金黃（D-3：沿用財務區的 data-zone） */
+const V2_TABS=[
+  { key:'overview', ico:'🧭', label:'總覽', tap:"goView('overview')" },
+  { key:'apps',     ico:'🧩', label:'Apps', tap:"goView('apps')" },
+  { key:'search',   ico:'🔎', label:'搜尋', tap:"goView('search')" },
+  { key:'library',  ico:'📚', label:'圖書館', tap:'openLibrary()' },
+  { key:'settings', ico:'⚙️', label:'設定', tap:'openSettings()' }
+];
+function v2ActiveTab(){
+  const cur=currentView();
+  if(cur==='notes' && noteSeg==='clips') return 'library';
+  return ['overview','search'].includes(cur) ? cur : 'apps';     // 從 Apps 點進去的模組頁，亮 Apps
+}
+let uiV2Applied=false;
+function renderNavV2(nav){
+  uiV2Applied=true;
+  if(document.documentElement){
+    document.documentElement.setAttribute('data-zone','finance');
+    document.documentElement.setAttribute('data-ui','v2');
+  }
+  const active=v2ActiveTab();
+  nav.innerHTML=V2_TABS.map(t=>{
+    if(t.key==='library' && !featureAllowed('clips')) return '<span class="nav-slot" aria-hidden="true"></span>';
+    return `<button data-tab="${t.key}" class="${active===t.key?'active':''}" onclick="${t.tap}"><span class="ico">${t.ico}</span><span class="tab-label">${t.label}</span></button>`;
+  }).join('');
+}
+function openLibrary(){
+  if(!featureAllowed('clips')){ toast('這個功能還沒對你開放'); return; }
+  goView('notes');
+  pickNoteSeg('clips');
+  renderNav();
+}
+/* 總覽骨架：給自己的一段話（只顯示，改在 1.0 首頁或 PR-B 的總覽）＋ Widget 即將上線 */
+function renderOverview(){
+  const el=document.getElementById('v2SelfNote');
+  if(el) el.textContent = selfNote || '（還沒寫）';
+}
+/* Apps Grid（D-9 ①②）：依登記表的 sort、分類分組；總開關關掉的、沒權限的不出現。
+   白板沒有獨立頁，等 PR-B 的 Tasks Widget 再放（Neil 2026-10-19） */
+const APP_VIEW={ expenses:'expenses', plans:'plans', stocks:'stocks', tasks:'tasks', reminders:'reminders',
+  notes:'notes', mail:'mail', library:'library' };
+function appAllowed(m){
+  const v=APP_VIEW[m.module_id];
+  if(!v || m.enabled===false) return false;
+  return v==='library' ? featureAllowed('clips') : viewAllowed(v);
+}
+function appsGridItems(){
+  const groups=[];
+  modules.slice().sort((a,b)=>(Number(a.sort)||0)-(Number(b.sort)||0)).filter(appAllowed).forEach(m=>{
+    let g=groups.find(x=>x.category===m.category);
+    if(!g){ g={category:m.category||'', items:[]}; groups.push(g); }
+    g.items.push(m);
+  });
+  return groups;
+}
+function openApp(id){
+  const v=APP_VIEW[id];
+  if(v==='library') openLibrary(); else goView(v);
+}
+function renderApps(){
+  const el=document.getElementById('appsGrid');
+  if(!el) return;
+  const groups=appsGridItems();
+  el.innerHTML = groups.length ? groups.map(g=>`<div class="apps-cat"><h2>${esc(g.category)}</h2><div class="apps-grid">${
+    g.items.map(m=>`<button class="app-tile" onclick="openApp('${m.module_id}')"><span class="ico">${esc(m.icon)}</span>${esc(m.name)}</button>`).join('')
+  }</div></div>`).join('') : '<div class="v2-empty">目前沒有可用的模組</div>';
+}
+/* 設定：個人區「回到 1.0」、管理區「模組總開關」，都只在 2.0（1.0 的設定頁不變） */
+function renderUiCard(){ setHidden('uiCard', !isV2()); }
+let moduleBusy=false;
+function renderModuleCard(){
+  const show=isV2() && isAdmin();
+  setHidden('moduleCard', !show);
+  const el=document.getElementById('moduleRows');
+  if(!show || !el) return;
+  el.innerHTML=modules.map(m=>`<div class="mod-row"><span>${esc(m.icon)} ${esc(m.name)}</span>
+    <button class="btn${m.enabled===false?'':' on'}" ${moduleBusy?'disabled':''} onclick="toggleModule('${m.module_id}')">${m.enabled===false?'已停用':'啟用中'}</button></div>`).join('');
+}
+async function toggleModule(id){
+  if(moduleBusy) return;
+  moduleBusy=true; renderModuleCard();
+  let r=null;
+  try{ r=await cloudPost({action:'moduleSet', module_id:id, enabled:!moduleOn(id), trigger:'write'}); }catch(e){ r=null; }
+  moduleBusy=false;
+  if(r && r.success && Array.isArray(r.modules)){
+    applyModules(r.modules);
+    applyZone();
+    toast('「'+moduleName(id)+'」'+(moduleOn(id)?'已啟用':'已停用'));
+  }else{
+    toast('⚠️ 沒有改到，稍後再試');
+  }
+  renderModuleCard();
 }
 
 /* ---------- 導覽版位開關（ADR-006 §C） ---------- */
@@ -5259,6 +5422,8 @@ function renderAvatar(){
   const dot=document.getElementById('avatarDot');
   // 管理員的待辦：效能紀錄該清了、有人用 LINE 註冊等核准
   if(dot) dot.hidden = !(isAdmin() && (perfAlertNeeded() || pendingUsers().length>0 || !!unauthAlert));
+  const sw=document.getElementById('uiSwitchBtn');
+  if(sw) sw.hidden = !uiV2Allowed() || isV2();
 }
 function openSettings(){
   const el=document.getElementById('settings');
@@ -5291,7 +5456,7 @@ function renderSettings(){
   }
   setHidden('setPersonal', settingsTab!=='personal');
   setHidden('setAdmin', settingsTab!=='admin');
-  renderMeCard(); renderMyDevices(); renderSetEmail(); renderThemeCard();
+  renderMeCard(); renderMyDevices(); renderSetEmail(); renderThemeCard(); renderUiCard(); renderModuleCard();
   renderAdminCard(); renderSysCard(); renderPushCard(); renderAiCard(); renderPerfCard(); renderArchiveCard(); renderLogCard();
   renderFolds();
 }
