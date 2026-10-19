@@ -148,7 +148,7 @@ describe('LINE 效能紀錄', () => {
     e.sheets.performance = new FakeSheet('performance', [['id', 'ts', 'action', 'trigger', 'client_ms', 'server_ms', 'auth_ms', 'open_ms', 'read_ms', 'sheets', 'rows', 'device_id', 'line_id']]);
     say(e, '記帳/120/外食');
     e.call('flushPerfQueue');   // ADR-019 B-2：排隊的紀錄落地後才在表上
-    assert.deepEqual(e.sheets.performance.values[0].slice(-3), ['reply_ms', 'stages', 'request_id']);
+    assert.deepEqual(e.sheets.performance.values[0].slice(-4), ['reply_ms', 'stages', 'request_id', 'ui']);
     assert.ok(e.sheets.performance.toRecords()[0].reply_ms >= 0);
   });
 });
