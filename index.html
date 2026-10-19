@@ -1482,7 +1482,7 @@ function cloudPost(body){
   return fetch(CLOUD_URL,{
     method:'POST',
     headers:{'Content-Type':'text/plain'},
-    body:JSON.stringify(Object.assign({token:deviceToken||''}, body, {request_id:rid}, carry?{perf:carry}:{}))
+    body:JSON.stringify(Object.assign({token:deviceToken||''}, body, {request_id:rid, ui:uiTag()}, carry?{perf:carry}:{}))
   }).then(r=>r.json()).then(j=>{
     if(j && AUTH_ERRORS.includes(j.error)){
       if(carry) perfRestore(carry);                  // 被擋下的請求雲端一列都不寫
@@ -1522,7 +1522,7 @@ function newRequestId(){
 /* rid：這筆量的是哪一次請求（切區不打請求，沒有）。at：手機上實際發生的時間——
    這筆要搭下一個請求才上得去，雲端的上傳時間不等於它發生的時間（ADR-019 B-3） */
 function perfNote(action, trigger, ms, rid){
-  perfPending.push(Object.assign({action, trigger, client_ms:Math.round(ms), at:Date.now()}, rid?{request_id:rid}:{}));
+  perfPending.push(Object.assign({action, trigger, client_ms:Math.round(ms), at:Date.now(), ui:uiTag()}, rid?{request_id:rid}:{}));
   if(perfPending.length>PERF_PENDING_MAX) perfPending=perfPending.slice(-PERF_PENDING_MAX);
 }
 function perfRestore(list){
@@ -3963,6 +3963,7 @@ function setZone(z){
 }
 /* 權限或身份變了：重畫導覽；目前正看著的分頁被關掉時，別把人留在不該存在的畫面上 */
 function applyZone(){
+  forgetV2IfRevoked();
   renderNav();
   renderZoneCard();
   if(!viewAllowed(currentView()) || (isV2() && currentView()==='home')) goView('home');
@@ -3986,6 +3987,13 @@ const UI_KEY='personal-os-ui';
 function uiV2Allowed(){ return truthy((myUser()||{}).feat_ui_v2); }
 function wantsV2(){ try{ return localStorage.getItem(UI_KEY)==='v2'; }catch(e){ return false; } }
 function isV2(){ return wantsV2() && uiV2Allowed(); }
+/* 效能紀錄的 ui 欄（ADR-021）：標「這台選了哪一版」，不是「現在畫的是哪一版」——開機那一趟送出時
+   名單還沒回來，isV2() 一定是 false，用它標的話最重要的 2.0 冷開機會被記成 v1 */
+function uiTag(){ return wantsV2() ? 'v2' : 'v1'; }
+/* 權限被收回：清掉這台記的 2.0，之後的紀錄才不會一直標錯。名單還沒回來（不知道是誰）時不清 */
+function forgetV2IfRevoked(){
+  if(wantsV2() && myUser() && !uiV2Allowed()){ try{ localStorage.removeItem(UI_KEY); }catch(e){} }
+}
 function homeView(){ return isV2() ? 'overview' : 'home'; }
 /* 切換＝寫本機＋整頁重載（D-20）。不打雲端：兩版讀的是同一份資料 */
 function toggleUi(){ switchUi(isV2() ? 'v1' : 'v2'); }

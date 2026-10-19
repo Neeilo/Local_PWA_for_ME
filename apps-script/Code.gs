@@ -2518,7 +2518,11 @@ function authorizeArchiveMail() {
  * （指令碼屬性），**只有 flushPerfQueue 寫 performance**，一次 setValues 整批寫（ADR-019 B-2）。
  */
 var PERFORMANCE_HEADERS = ['id', 'ts', 'action', 'trigger', 'client_ms', 'server_ms', 'auth_ms', 'open_ms', 'read_ms',
-  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms', 'stages', 'request_id'];
+  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms', 'stages', 'request_id', 'ui'];
+/* ui（ADR-021）：這個請求來自 1.0 還是 2.0（v1／v2）。LINE、排程的列留空。
+   PR-B 要拿 2.0 的冷開機跟 9.6 秒比，兩版共用同一張表，沒有這欄就分不開 */
+var PERF_UI_VALUES = ['v1', 'v2'];
+function perfUi_(v) { return PERF_UI_VALUES.indexOf(v) !== -1 ? v : ''; }
 
 /** 觸發情境。不在清單裡的一律不記——欄位裡只會出現這幾個字 */
 var PERF_TRIGGERS = ['cold', 'foreground', 'poll', 'manual', 'write', 'line', 'schedule', 'zone', 'hourly'];
@@ -2556,7 +2560,7 @@ function clientPerfRows_(list) {
     if (PERF_TRIGGERS.indexOf(p.trigger) === -1) return;
     if (typeof ms !== 'number' || !isFinite(ms) || ms < 0 || ms > PERF_CLIENT_MS_MAX) return;
     out.push({ action: action, trigger: p.trigger, client_ms: Math.round(ms),
-               request_id: perfRequestId_(p.request_id), at: p.at });
+               request_id: perfRequestId_(p.request_id), ui: perfUi_(p.ui), at: p.at });
   });
   return out;
 }
@@ -2594,7 +2598,7 @@ function recordPerf_(body, perf, serverMs) {
         action: String(body.action || ''), trigger: trigger, server_ms: serverMs,
         auth_ms: perf.auth_ms, open_ms: perf.open_ms, read_ms: perf.read_ms,
         sheets: perf.sheets || (typeof body.sheet === 'string' ? body.sheet : ''), rows: perf.rows,
-        stages: perfStagesText_(perf.stages), request_id: perfRequestId_(body.request_id)
+        stages: perfStagesText_(perf.stages), request_id: perfRequestId_(body.request_id), ui: perfUi_(body.ui)
       });
     }
     rows = rows.concat(clientPerfRows_(body.perf));
@@ -2714,11 +2718,11 @@ function flushPerfQueue() {
 }
 
 /**
- * 表頭；舊表沒有 reply_ms（2026-10-06 加的，LINE 用）、stages（ADR-018 PR-0）、request_id（ADR-019 B-3）
+ * 表頭；舊表沒有 reply_ms（2026-10-06 加的，LINE 用）、stages（ADR-018 PR-0）、request_id（ADR-019 B-3）、ui（ADR-021）
  * 就依序補在最右邊，舊列留空。
  * 本來每次寫紀錄就要讀一次表頭，這裡沒有多讀，只有缺欄的那一次多寫一格。
  */
-var PERF_LATE_HEADERS = ['reply_ms', 'stages', 'request_id'];
+var PERF_LATE_HEADERS = ['reply_ms', 'stages', 'request_id', 'ui'];
 function perfHeaders_(sheet) {
   var headers = sheetHeaders_(sheet);
   if (!headers.length) return headers;

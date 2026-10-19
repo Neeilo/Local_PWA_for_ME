@@ -22,7 +22,7 @@ const MOM = 'Umom';     // 一般成員（沒有股票、沒有記帳）
 const TOK_ME = 'tok-neil-device';
 const TOK_MOM = 'tok-mom-device';
 const PERF_HEADERS = ['id', 'ts', 'action', 'trigger', 'client_ms', 'server_ms', 'auth_ms', 'open_ms', 'read_ms',
-  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms', 'stages', 'request_id'];
+  'sheets', 'rows', 'device_id', 'line_id', 'reply_ms', 'stages', 'request_id', 'ui'];
 
 function env({ sheets = {} } = {}) {
   return loadCodeGs({
