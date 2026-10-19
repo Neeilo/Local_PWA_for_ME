@@ -762,7 +762,8 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
   position:absolute; top:14px; right:58px; width:36px; height:36px; border-radius:50%;
   border:none; background:var(--accent); color:var(--on-accent); font-size:15px; font-weight:700; line-height:1;
 }
-/* 1.0 → 2.0 切換鈕（ADR-021 D-20）：只有 feat_ui_v2 的人看得到，在頭像左邊 */
+/* 1.0／2.0 切換鈕（ADR-021 D-20）：只有 feat_ui_v2 的人看得到。1.0 在頭像左邊寫「2.0」；
+   2.0 頭像退場，同一顆鈕移到頭像原本的位置、寫「1.0」（Neil 2026-10-19：切回來要一樣直覺） */
 .ui-switch{
   position:absolute; top:18px; right:102px; height:28px; padding:0 10px; border-radius:14px;
   border:1px solid var(--accent); background:none; color:var(--accent); font-size:12px; font-weight:700;
@@ -770,6 +771,7 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
 .ui-switch[hidden]{display:none;}
 /* 2.0：設定由 Tab 進入，頭像入口退場（D-4）；Tab 不用中間的圓鈕 */
 :root[data-ui="v2"] .avatar-btn{display:none;}
+:root[data-ui="v2"] .ui-switch{right:58px;}
 .v2-empty{text-align:center; padding:40px 16px; color:var(--muted);}
 .v2-empty .big{font-size:32px; display:block; margin-bottom:8px;}
 .apps-cat{margin:4px 0 16px;}
@@ -832,7 +834,7 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
   <div class="boot-progress-msg" id="bootProgressMsg" hidden></div>
   <button class="refresh-btn" id="refreshBtn" onclick="manualRefresh()" title="重新整理">↻</button>
   <!-- 設定頁入口（ADR-014 D-9）：名字首字；管理員有待辦時右上角小紅點（取代首頁的「效能紀錄該清了」卡） -->
-  <button class="ui-switch" id="uiSwitchBtn" hidden onclick="switchUi('v2')" aria-label="切換到 2.0 介面">2.0</button>
+  <button class="ui-switch" id="uiSwitchBtn" hidden onclick="toggleUi()" aria-label="切換介面版本">2.0</button>
   <button class="avatar-btn" id="avatarBtn" onclick="openSettings()" aria-label="設定"><span id="avatarChar">·</span><i class="avatar-dot" id="avatarDot" hidden></i></button>
 </header>
 
@@ -3442,7 +3444,8 @@ const STOCK_ERR={
 };
 const STOCK_FIELD={side:'買賣別', qty:'數量', price:'價格', fee:'手續費', trade_date:'日期', id:'編號'};
 
-function wantStock(){ return zone==='finance' && featureAllowed('stocks'); }
+// 2.0 沒有分區（ADR-021 D-2）：有權限就抓；1.0 照舊只在財務區抓
+function wantStock(){ return (isV2() || zone==='finance') && featureAllowed('stocks'); }
 function applyStockData(st){
   if(st===undefined) return;
   if(!st || st.error){ stockFailed=true; return; }
@@ -3985,17 +3988,18 @@ function wantsV2(){ try{ return localStorage.getItem(UI_KEY)==='v2'; }catch(e){ 
 function isV2(){ return wantsV2() && uiV2Allowed(); }
 function homeView(){ return isV2() ? 'overview' : 'home'; }
 /* 切換＝寫本機＋整頁重載（D-20）。不打雲端：兩版讀的是同一份資料 */
+function toggleUi(){ switchUi(isV2() ? 'v1' : 'v2'); }
 function switchUi(v){
   try{ if(v==='v2') localStorage.setItem(UI_KEY,'v2'); else localStorage.removeItem(UI_KEY); }catch(e){}
   location.reload();
 }
-/* 5 格 Tab（D-4）。設定是蓋版、不是一頁；圖書館先接既有的收藏列表（雜記頁的收藏分段，PR-E 才搬家）。
+/* 5 格 Tab（D-4），順序 Apps｜圖書館｜總覽｜搜尋｜設定（總覽在中間，Neil 2026-10-19）。設定是蓋版、不是一頁；圖書館先接既有的收藏列表（雜記頁的收藏分段，PR-E 才搬家）。
    沒權限的格子留空佔位，其他格不移位。主色固定金黃（D-3：沿用財務區的 data-zone） */
 const V2_TABS=[
-  { key:'overview', ico:'🧭', label:'總覽', tap:"goView('overview')" },
   { key:'apps',     ico:'🧩', label:'Apps', tap:"goView('apps')" },
-  { key:'search',   ico:'🔎', label:'搜尋', tap:"goView('search')" },
   { key:'library',  ico:'📚', label:'圖書館', tap:'openLibrary()' },
+  { key:'overview', ico:'🧭', label:'總覽', tap:"goView('overview')" },
+  { key:'search',   ico:'🔎', label:'搜尋', tap:"goView('search')" },
   { key:'settings', ico:'⚙️', label:'設定', tap:'openSettings()' }
 ];
 function v2ActiveTab(){
@@ -5423,7 +5427,7 @@ function renderAvatar(){
   // 管理員的待辦：效能紀錄該清了、有人用 LINE 註冊等核准
   if(dot) dot.hidden = !(isAdmin() && (perfAlertNeeded() || pendingUsers().length>0 || !!unauthAlert));
   const sw=document.getElementById('uiSwitchBtn');
-  if(sw) sw.hidden = !uiV2Allowed() || isV2();
+  if(sw){ sw.hidden = !uiV2Allowed(); sw.textContent = isV2() ? '1.0' : '2.0'; }
 }
 function openSettings(){
   const el=document.getElementById('settings');
