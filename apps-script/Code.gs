@@ -50,6 +50,9 @@ var GMAIL_LOG_SHEET = 'gmail_log';
 /** 給自己的一段話（ADR-018 C-4）。一人一列、只有本人讀得到——所以 PWA 一般讀寫都碰不到，只走 boot／selfNoteSet */
 var SELF_NOTES_SHEET = 'self_notes';
 
+/** 模組登記表＋總開關（ADR-021 D-9 ①，modules.gs）。PWA 讀寫都碰不到：只走 boot 帶回、moduleSet 改 */
+var MODULE_REGISTRY_SHEET = '_module_registry';
+
 /**
  * PWA 連一筆都不准寫的分頁（任何 action 都一樣，包括 upsert）。
  *
@@ -64,7 +67,7 @@ var SELF_NOTES_SHEET = 'self_notes';
 var GUIDE_SHEET = '_guide';
 var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET,
                     LINE_GROUPS_SHEET, STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET,
-                    SELF_NOTES_SHEET, CLIPS_SHEET];
+                    SELF_NOTES_SHEET, CLIPS_SHEET, MODULE_REGISTRY_SHEET];
 
 /**
  * PWA 連讀都不准讀的分頁（ADR-010 D-8）。
@@ -88,7 +91,7 @@ var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_
  */
 var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET, LINE_GROUPS_SHEET,
                    STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET,
-                   SELF_NOTES_SHEET];
+                   SELF_NOTES_SHEET, MODULE_REGISTRY_SHEET];
 
 /**
  * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
@@ -130,6 +133,8 @@ var FEATURE_LABEL = {
  */
 function canUse_(user, feature) {
   if (!feature) return true;
+  // 總開關（ADR-021 D-9 ①）先問：關掉的模組對誰都不開，管理員也一樣
+  if (MODULE_OF_FEATURE[feature] && !moduleOn_(MODULE_OF_FEATURE[feature])) return false;
   if (!user || !Object.keys(user).some(function (k) { return k.indexOf('feat_') === 0; })) return true;
   return truthy_(user[feature]);
 }
@@ -389,9 +394,9 @@ function readSheetResponse_(sheetName, perf, user) {
   return { data: pwaVisibleRows_(sheetName, withoutTombstones_(rows), user) };
 }
 
-/** 有些表的列只給本人看（ADR-020 clips）。read 與 readMany 共用，兩條路不會一條漏掉 */
+/** 有些表的列只給本人看（ADR-020 clips）；提醒、白板關掉時欄位級濾掉（ADR-021）。read 與 readMany 共用，兩條路不會一條漏掉 */
 function pwaVisibleRows_(sheetName, rows, user) {
-  return sheetName === CLIPS_SHEET ? clipsVisibleTo_(rows, user) : rows;
+  return sheetName === CLIPS_SHEET ? clipsVisibleTo_(rows, user) : moduleVisibleRows_(sheetName, rows);
 }
 
 /**
@@ -452,6 +457,8 @@ function bootResponse_(caller, perf) {
   perf.open_ms = Date.now() - opened;
 
   perfSet_(perf, 'open', perf.open_ms);
+  // 總開關先用這個 ss 讀好（ADR-021）：後面 canUse_ 問到時就不會自己再開一次試算表
+  var modules = perfStage_(perf, 'modules', function () { return modulesForPwa_(ss); });
   var users = perfStage_(perf, 'users', function () { return sheetRecords_(ss, LINE_USERS_SHEET, perf); });
   var many = perfStage_(perf, 'sheets', function () { return readManyFrom_(ss, caller.user, BOOT_SHEETS, perf); });
   perf.sheets = [LINE_USERS_SHEET].concat(BOOT_SHEETS).join(',');
@@ -468,7 +475,9 @@ function bootResponse_(caller, perf) {
     },
     line_users: users.error ? [] : withoutTombstones_(users.rows),
     data: many.data,
-    denied: many.denied
+    denied: many.denied,
+    // Apps 的圖示與總開關（ADR-021 D-9 ①）。1.0 用它藏起關掉的入口，2.0 用它排 Apps Grid
+    modules: modules
   };
   if (many.data.tasks) out.group_names = perfStage_(perf, 'groups', function () { return taskGroupNames_(many.data.tasks); });
   // 首頁「今天」層（ADR-018 C-2／C-4）：自己的一段話；郵件磚只給看得到郵件的人（管理者＋feat_gmail）
@@ -600,8 +609,8 @@ function taskGroupNames_(tasks) {
 function withExpenseConfig_(out, user, ss, sheets, perf) {
   if ((sheets || []).indexOf('expenses') !== -1 && canUseSheet_(user, 'expenses')) {
     out.expense_config = perfStage_(perf, 'expense_config', function () { return expenseConfigPublic_(expenseConfig_(ss)); });
-    // 分期計畫（D-6）跟著同一個條件走：列表上的「剩 M 期共 X 元」要用計畫的總額與狀態
-    out.installments = perfStage_(perf, 'installments', function () { return installmentPlans_(ss); });
+    // 分期計畫（D-6）跟著同一個條件走：列表上的「剩 M 期共 X 元」要用計畫的總額與狀態。分期模組關掉就不帶（ADR-021）
+    if (moduleOn_('plans')) out.installments = perfStage_(perf, 'installments', function () { return installmentPlans_(ss); });
   }
   return out;
 }
@@ -660,6 +669,7 @@ function routePwaSync_(body, perf) {
     var ssMany = SpreadsheetApp.getActiveSpreadsheet();
     perf.open_ms = Date.now() - openedMany;
     perfSet_(perf, 'open', perf.open_ms);
+    modulesOff_(ssMany);
     var many = perfStage_(perf, 'sheets', function () { return readManyFrom_(ssMany, caller.user, body.sheets, perf); });
     return perfJsonOut_(perf, withExpenseConfig_(many, caller.user, ssMany, Array.isArray(body.sheets) ? body.sheets : [], perf));
   }
@@ -688,6 +698,7 @@ function routePwaSync_(body, perf) {
   if (body.action === 'aiConfigGet') return jsonOut(aiConfigGet_(caller));
   if (body.action === 'aiConfigSet') return jsonOut(aiConfigSet_(caller, body.provider, body.model));
   if (body.action === 'commandDict') return jsonOut(commandDictForPwa_(caller));
+  if (body.action === 'moduleSet') return jsonOut(moduleSet_(caller, body.module_id, body.enabled === true));
   // 收藏的重跑／刪除（ADR-020）：只限擁有者，不走一般 upsert
   if (body.action === 'clipRetry' || body.action === 'clipDelete') return jsonOut(clipPwaAction_(caller, body.action, body.id));
 
@@ -695,6 +706,9 @@ function routePwaSync_(body, perf) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');
     return jsonOut({ error: 'sheet_not_writable', sheet: body.sheet });
   }
+  // 模組總開關（ADR-021）：永久拒絕，前端移出佇列——跟沒權限不同，這筆重送幾次都一樣
+  var offModule = sheetModuleOff_(body.sheet);
+  if (offModule) return jsonOut(moduleOffDenied_(offModule, body.action, body.sheet, caller.line_id));
   if (!canUseSheet_(caller.user, body.sheet)) return jsonOut(featureForbidden_(caller, body.action, body.sheet));
   // 股票表只開 upsert（有專屬把關）；封存走 archiveByMail_，不經這裡
   if ((body.sheet === STOCK_TRADES_SHEET || body.sheet === STOCK_WATCH_SHEET || body.sheet === STOCK_RULES_SHEET) &&
@@ -762,6 +776,12 @@ function pwaUpsert_(body, caller, sheet) {
   var record = body.sheet === TASKS_SHEET ? guardReminderDone_(keepOriginChat_(sheet, headers, body.record || {}), caller)
     : (body.record || {});
   var keyField = body.key_field;
+  // 提醒模組關掉（ADR-021）：新增或改提醒都擋。舊版 App 不帶 kind 時，上面已經補成雲端的值
+  if (body.sheet === TASKS_SHEET && isReminder_(record) && !moduleOn_('reminders')) {
+    return moduleOffDenied_('reminders', 'upsert', body.sheet + ' id=' + keyValue_(record.id), caller.line_id);
+  }
+  // 白板模組關掉：board 一律用雲端原值（前端讀到的都是空的，照送回來會把白板洗掉）
+  if (BOARD_SHEETS.indexOf(body.sheet) !== -1 && !moduleOn_('board')) record = keepStoredBoard_(sheet, headers, record);
   var notOwner = boardOwnerDenied_(sheet, headers, record, body.sheet, caller, 'upsert');
   if (notOwner) return notOwner;
   // 股票（ADR-015 D-8／D-9）：持有者、誰能改、賣超、自選上限都由後端決定
@@ -1574,7 +1594,10 @@ function checkDueReminders(todayKey) {
       return o;
     });
 
-    due = dueRemindersToNotify_(records, today);
+    // 提醒模組關掉（ADR-021）：提醒不推、不翻頁、不封存——關掉的模組的資料一格都不動
+    var remindersOn = moduleOn_('reminders');
+    var live = remindersOn ? records : records.filter(function (r) { return !isReminder_(r); });
+    due = dueRemindersToNotify_(live, today);
 
     // 有群組任務才讀 line_groups 與名單（推群組要帶建立者名稱）
     var groups = {}, roster = null;
@@ -1614,7 +1637,7 @@ function checkDueReminders(todayKey) {
 
     // ADR-018 A-3：同一輪，推播之後再翻頁。這一期該推卻推失敗的不翻：翻了那一期就安靜地被跳過了
     var rolled = 0, archived = 0;
-    reminderRollPlan_(records, today).forEach(function (p) {
+    reminderRollPlan_(live, today).forEach(function (p) {
       var rec = p.record;
       if (p.action === 'roll') {
         if (dueRemindersToNotify_([rec], today).length) return;
@@ -3521,6 +3544,7 @@ function planSchedule_(total, downPayment, periods, dateKey) {
 
 /** 分期的動作一律要有記帳權限（跟寫 expenses 同一條規則） */
 function planForbidden_(caller, action) {
+  if (!moduleOn_('plans')) return moduleOffDenied_('plans', action, INSTALLMENTS_SHEET, caller.line_id);
   return canUseSheet_(caller.user, 'expenses') ? null : featureForbidden_(caller, action, 'expenses');
 }
 
@@ -4165,7 +4189,9 @@ function pushText_(kind, groupId, custom, todayKey) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var open = function (name) { var r = sheetRecords_(ss, name, {}); return r.error ? [] : r.rows.filter(function (x) { return !isTombstone_(x); }); };
   var tasks = open(TASKS_SHEET).filter(function (t) { return !truthy_(t.is_completed); });
+  var boardOn = moduleOn_('board');
   if (kind === 'board') {
+    if (!boardOn) return { error: 'module_off', module: 'board' };
     var items = tasks.filter(function (t) { return truthy_(t.board); }).map(function (t) { return '☑️ ' + t.text; })
       .concat(open('notes').filter(function (n) { return truthy_(n.board); }).map(function (n) { return '📎 ' + n.text; }));
     if (!items.length) return { error: 'nothing_to_send' };
@@ -4173,7 +4199,8 @@ function pushText_(kind, groupId, custom, todayKey) {
   }
   var today = todayKeyFrom_(todayKey);
   var due = tasks.filter(function (t) {
-    return PUSH_DUE_BUCKETS[dueBucket_(t.due_date, today)] && (keyValue_(t.origin_chat) === groupId || truthy_(t.board));
+    return PUSH_DUE_BUCKETS[dueBucket_(t.due_date, today)] && (keyValue_(t.origin_chat) === groupId || (boardOn && truthy_(t.board))) &&
+      (!isReminder_(t) || moduleOn_('reminders'));
   }).sort(function (a, b) { return keyValue_(a.due_date) < keyValue_(b.due_date) ? -1 : 1; });
   if (!due.length) return { error: 'nothing_to_send' };
   return { text: '⏰ 快到期（' + due.length + ' 項）\n' + due.map(function (t) {

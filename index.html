@@ -624,6 +624,8 @@
 .board-item .tag{ font-size:11px; opacity:.6; flex:0 0 auto; }
 .pin{ background:none; border:none; cursor:pointer; opacity:.35; font-size:14px; padding:0 2px; }
 .pin.on{ opacity:1; }
+/* 模組總開關（ADR-021）：白板、提醒關掉時，入口不擺（雲端也擋，這裡只是不放按不動的按鈕） */
+:root[data-mod-off~="board"] .pin, :root[data-mod-off~="reminders"] #taskSeg button[data-val="reminder"]{ display:none; }
 .due-pick{ margin-top:8px; font-size:13px; }
 .due-pick summary{ cursor:pointer; opacity:.75; }
 .due-row{ display:flex; align-items:center; gap:6px; margin-top:8px; flex-wrap:wrap; }
@@ -1330,6 +1332,20 @@ const SHEET_BY_VIEW = { expenses:'expenses', notes:'notes', tasks:'tasks', clips
 const DATA_SHEETS = ['tasks','notes','expenses'];
 /* 雲端明說「沒權限」的分頁。跟讀取失敗是兩件事：這裡的會被清空、待送的會被丟掉 */
 let cloudDenied=[];
+/* 模組總開關（ADR-021 D-9 ①）：boot 帶回的登記表。關掉的模組對所有人停用，雲端讀寫都擋；
+   這裡只負責把入口藏好。舊版雲端沒帶就是空的＝全開 */
+let modules=[];
+const MODULE_BY_VIEW = { expenses:'expenses', plans:'plans', stocks:'stocks', tasks:'tasks', reminders:'reminders',
+  notes:'notes', mail:'mail', clips:'library' };
+function moduleName(id){ const m=modules.find(x=>x.module_id===id); return (m&&m.name)||id||'這個功能'; }
+function moduleOn(id){ const m=modules.find(x=>x.module_id===id); return !m || m.enabled!==false; }
+function applyModules(list){
+  modules=Array.isArray(list) ? list.filter(m=>m && typeof m.module_id==='string') : [];
+  const off=modules.filter(m=>m.enabled===false).map(m=>m.module_id).join(' ');
+  if(!document.documentElement) return;
+  if(off) document.documentElement.setAttribute('data-mod-off', off);
+  else document.documentElement.removeAttribute('data-mod-off');
+}
 const FEATURE_LABEL = {};
 FEATURE_ITEMS.forEach(function(it){ FEATURE_LABEL[FEATURE_BY_VIEW[it.view]] = it.icon + ' ' + it.label; });
 
@@ -1381,6 +1397,7 @@ function hasFeatureMatrix(u){
 }
 function featureAllowed(view){
   if(view==='home') return true;
+  if(MODULE_BY_VIEW[view] && !moduleOn(MODULE_BY_VIEW[view])) return false;   // 總開關關掉（ADR-021）
   if(cloudDenied.includes(SHEET_BY_VIEW[view])) return false;   // 雲端明說沒權限（名單快取可能還沒跟上）
   const key=FEATURE_BY_VIEW[view];
   if(!key) return true;
@@ -1609,6 +1626,7 @@ async function runBoot(trigger){
   // 首頁「今天」層（ADR-018）：自己的一段話只在開機帶（輪詢不帶，它只有自己會改）；郵件摘要只給管理者＋feat_gmail
   if(typeof j.self_note==='string' && !selfNoteEditing) selfNote=j.self_note;
   mailSummary = j.mail_summary && typeof j.mail_summary==='object' ? j.mail_summary : null;
+  applyModules(j.modules);
   if(gateMode) closeAuthGate();
   roster=j.line_users.filter(u=>rosterId(u));
   rosterStatus = activeUsers().length ? 'ok' : 'empty';
@@ -2424,7 +2442,8 @@ function flushOutbox(){
     // 永久拒絕（B-5）：重送幾次都一樣。先移出佇列再還原，還原才不會把這筆又疊回畫面
     if(refused){
       revertRecord(job.sheet, (job.record||{}).id);
-      toast(refused.reason==='not_owner' ? `這筆由 ${refused.owner_name||'建立者'} 維護，你的修改沒有存` : '這筆改不了，你的修改沒有存');
+      toast(refused.reason==='not_owner' ? `這筆由 ${refused.owner_name||'建立者'} 維護，你的修改沒有存`
+        : refused.reason==='module_off' ? `「${moduleName(refused.module)}」已停用，你的修改沒有存` : '這筆改不了，你的修改沒有存');
     }
     return outbox.length ? flushOutbox() : true;
   });
@@ -3762,8 +3781,8 @@ const TITLES={home:'首頁',expenses:'記帳',plans:'分期',tasks:'任務',note
 /* 分頁能不能進。股票看 feat_stock（ADR-015）。「提醒」不是一頁，是任務頁的一段（ADR-018 C-6） */
 function viewAllowed(name){
   if(!TITLES[name] && name!=='reminders') return false;          // 退場或不存在的頁（例如 ADR-018 的日誌）
-  if(name==='plans') return featureAllowed('expenses');     // 分期就是記帳的一部分（各期是 expenses 的列）
-  if(name==='reminders') return featureAllowed('tasks');
+  if(name==='plans') return featureAllowed('expenses') && moduleOn('plans');     // 分期就是記帳的一部分（各期是 expenses 的列）
+  if(name==='reminders') return featureAllowed('tasks') && moduleOn('reminders');
   if(name==='mail') return featureAllowed('mail') && isAdmin();   // 雲端也一樣：非管理者就算被勾了也讀不到（ADR-016 D-7）
   return featureAllowed(name);
 }

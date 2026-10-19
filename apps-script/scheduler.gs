@@ -39,28 +39,29 @@ function schedulerOldHandlers_() {
  * 工作登記表，**順序就是執行順序**：股票規則（盤中、最在意即時）→ 到期提醒 → Gmail → 其他 → 效能落地最後
  * （它要把前面每個工作排隊的紀錄一起寫進去）。之後的 RD 佇列也掛這裡。
  * done：工作回報「今天做完了」就記 done_day，今天不再跑（盤後收盤價拿到當天的就停）。
+ * module：掛在哪個模組底下（ADR-021）。總開關關掉，這個工作就不跑
  */
 function schedulerJobs_() {
   return [
-    { name: 'stockRules', label: '股票提醒規則', when: '盤中每輪', rule: { kind: 'market' },
+    { name: 'stockRules', module: 'stocks', label: '股票提醒規則', when: '盤中每輪', rule: { kind: 'market' },
       run: function (now) { return checkStockRules(now); } },
-    { name: 'dueCheck', label: '到期提醒', when: '每天 ' + DUE_CHECK_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: DUE_CHECK_HOUR },
+    { name: 'dueCheck', module: 'tasks', label: '到期提醒', when: '每天 ' + DUE_CHECK_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: DUE_CHECK_HOUR },
       run: function () { return checkDueReminders(); } },
-    { name: 'gmail', label: 'Gmail 控制員', when: '每天 ' + GMAIL_CONTROLLER_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: GMAIL_CONTROLLER_HOUR },
+    { name: 'gmail', module: 'mail', label: 'Gmail 控制員', when: '每天 ' + GMAIL_CONTROLLER_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: GMAIL_CONTROLLER_HOUR },
       run: function (now) { return runGmailController_(now); } },
     { name: 'guide', label: '_guide 導覽', when: '每天 ' + GUIDE_REFRESH_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: GUIDE_REFRESH_HOUR },
       run: function () { return refreshGuide(); } },
     { name: 'unauthFlush', label: '未驗證彙總', when: '每小時', rule: { kind: 'hourly' },
       run: function (now) { return flushUnauthPerf(now.getTime()); } },
-    { name: 'stockDaily', label: '盤後收盤價', when: '交易日 ' + STOCK_DAILY_HOUR + '～' + STOCK_DAILY_LAST_HOUR + ' 點每小時，拿到當天收盤就停',
+    { name: 'stockDaily', module: 'stocks', label: '盤後收盤價', when: '交易日 ' + STOCK_DAILY_HOUR + '～' + STOCK_DAILY_LAST_HOUR + ' 點每小時，拿到當天收盤就停',
       rule: { kind: 'trading_hours', from: STOCK_DAILY_HOUR, to: STOCK_DAILY_LAST_HOUR },
       run: function (now) { return fetchStockDaily(now); },
       done: function (r) { return !!r && (r.reason === 'done' || (Array.isArray(r.pending) && !r.pending.length && !(r.errors || []).length)); } },
     // ADR-020 C-1：每輪最多 5 篇；預算不夠一篇就不開始（ctx.budgetLeft）
-    { name: 'clips', label: '收藏搜集', when: '每輪，最多 ' + CLIPS_PER_ROUND + ' 篇', rule: { kind: 'always' },
+    { name: 'clips', module: 'library', label: '收藏搜集', when: '每輪，最多 ' + CLIPS_PER_ROUND + ' 篇', rule: { kind: 'always' },
       run: function (now, ctx) { return runClipsJob_(now, ctx); } },
     // RD-HF1 HF-C：Apify 本月用量＋近 3 天收藏成功率，給管理員頁看（ADR-020 的備案條件）
-    { name: 'apifyUsage', label: 'Apify 用量', when: '每天 ' + CLIPS_USAGE_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: CLIPS_USAGE_HOUR },
+    { name: 'apifyUsage', module: 'library', label: 'Apify 用量', when: '每天 ' + CLIPS_USAGE_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: CLIPS_USAGE_HOUR },
       run: function (now) { return runApifyUsageJob_(now); } },
     { name: 'perfFlush', label: '效能紀錄落地', when: '每 ' + PERF_QUEUE_MINUTES + ' 分鐘', rule: { kind: 'every', minutes: PERF_QUEUE_MINUTES },
       run: function () { return flushPerfQueue(); } }
@@ -167,6 +168,7 @@ function schedulerRound_(nowMs) {
 
   first.concat(rest).forEach(function (job) {
     var js = st.jobs[job.name] || {};
+    if (job.module && !moduleOn_(job.module)) return;       // 模組總開關關掉（ADR-021）：它的工作不跑
     if (!schedulerDue_(job.rule, nowMs, js)) return;
     if (schedulerClock_() - started >= SCHEDULER_BUDGET_MS) { skipped.push(job.name); return; }
 

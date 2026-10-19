@@ -423,7 +423,8 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
   // stock.gs 一律載入：Code.gs 的 boot／readMany／upsert 會呼叫它（ADR-015），線上它永遠在。
   // gmail.gs 同理：line-router.gs 的「初始化」會呼叫它（ADR-016）；ai.gs：「查/」與設定頁的 AI 出口（ADR-017）
   // scheduler.gs：「初始化」裝的唯一觸發器（ADR-019 D-1）；clips.gs：LINE 路由與總管會呼叫它（ADR-020）
-  const ALWAYS = ['stock.gs', 'gmail.gs', 'ai.gs', 'scheduler.gs', 'clips.gs'];
+  // modules.gs：canUse_ 與各讀寫出口都問總開關（ADR-021）
+  const ALWAYS = ['stock.gs', 'gmail.gs', 'ai.gs', 'scheduler.gs', 'clips.gs', 'modules.gs'];
   const files = ALWAYS.concat(extraFiles.filter((name) => ALWAYS.indexOf(name) === -1));
   files.forEach((name) => {
     runInContext(readFileSync(join(ROOT, 'apps-script', name), 'utf8'), context, { filename: name });
