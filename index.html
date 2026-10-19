@@ -2343,7 +2343,7 @@ function saveCompass(k, text){
 }
 
 const OUTBOX_KEY='personal-os-outbox-v1';
-const OUTBOX_MAX=1000;          // 滿了丟最舊的。真的塞到這個數，問題不在佇列大小
+const OUTBOX_MAX=1000;          // 滿了停收新的（ADR-019 B-1）。以前是無聲丟最舊的——丟的正是最早那幾筆沒送出去的資料
 let outbox=loadOutbox(), outboxSeq=0, outboxFlushing=false;
 
 /** 一筆待送工作的身分。同一張表、同一個鍵，佇列裡只該有一筆 */
@@ -2354,14 +2354,18 @@ function outboxJobKey(job){
 }
 
 /** 排進佇列：同鍵的舊工作直接被取代，位置不動。
-    連按五次的那五筆不該送五次——最後一次編輯才是真相，前四次送上去只是浪費配額。 */
+    連按五次的那五筆不該送五次——最後一次編輯才是真相，前四次送上去只是浪費配額。
+    滿了回 null＝拒收（ADR-019 B-1）：已經排著的一筆都不丟。同鍵取代不增加筆數，滿了也照常取代 */
 function outboxAdd(list, job){
   const key=outboxJobKey(job);
   const out=list.slice();
   const at=out.findIndex(j=>outboxJobKey(j)===key);
-  if(at>=0) out[at]=job; else out.push(job);
-  return out.length>OUTBOX_MAX ? out.slice(out.length-OUTBOX_MAX) : out;
+  if(at>=0){ out[at]=job; return out; }
+  if(out.length>=OUTBOX_MAX) return null;
+  out.push(job);
+  return out;
 }
+function outboxFull(){ return outbox.length>=OUTBOX_MAX; }
 
 /** 送成功後移除。比對 seq 而不只比對鍵：送出去的期間使用者可能又改了同一筆，
     那筆新的已經把舊的換掉了，這時候把它一起刪掉會讓最新的編輯消失。 */
@@ -2381,15 +2385,24 @@ function persistOutbox(){
     但先擋在這裡，logs 才不會被一整排「被拒絕」淹掉（同 ADR-008 的既有考量）。
     配對／續期畫面開著的時候也一樣只排不送，理由相同。 */
 function queueUpsert(sheet, record, keyField){
-  outbox=outboxAdd(outbox, {sheet, record, key_field:keyField||'id', seq:++outboxSeq, at:Date.now()});
+  const next=outboxAdd(outbox, {sheet, record, key_field:keyField||'id', seq:++outboxSeq, at:Date.now()});
+  if(!next){
+    // 滿了：這次的編輯不生效，畫面還原成雲端那份＋還在排的，不讓人以為存好了（B-1）
+    revertRecord(sheet, (record||{}).id);
+    renderSyncBadge();
+    toast(`⚠️ 待同步 ${outbox.length} 筆，請連網。這次的修改沒有存`);
+    return Promise.resolve(false);
+  }
+  outbox=next;
   persistOutbox();
   return flushOutbox();
 }
 
-/* 回 true（送到了）、false（這次沒送到，下次再試）或 'forbidden'（永遠送不上去：沒有功能權限） */
+/* 回 true（送到了）、false（這次沒送到，下次再試，含雲端忙碌 busy）、'forbidden'（永遠送不上去：沒有功能權限）
+   或雲端的回應本身（permanent：永久拒絕，例如白板項目不是建立者，ADR-019 B-5） */
 function sendJob(job){
   return cloudPost({sheet:job.sheet, action:'upsert', key_field:job.key_field, record:job.record, trigger:'write'})
-    .then(j=>(j&&j.success) ? true : (j&&j.error==='forbidden' ? 'forbidden' : false)).catch(()=>false);
+    .then(j=>(j&&j.success) ? true : (j&&j.permanent) ? j : (j&&j.error==='forbidden' ? 'forbidden' : false)).catch(()=>false);
 }
 
 /** 一次送一筆、依序送。刻意不併發：同一張 Sheet 併發寫入正是這次要根治的那類問題。 */
@@ -2399,6 +2412,7 @@ function flushOutbox(){
   const job=outbox[0];
   return sendJob(job).then(ok=>{
     outboxFlushing=false;
+    const refused=(ok&&ok.permanent) ? ok : null;
     if(ok==='forbidden'){
       toast(`⚠️ 你沒有「${sheetLabel(job.sheet)}」的權限，這筆沒有送出`);
       ok=true;                                         // 從佇列拿掉，不讓它卡住後面的
@@ -2407,6 +2421,11 @@ function flushOutbox(){
     outbox=outboxRemove(outbox, job);
     persistOutbox();
     renderSyncBadge();
+    // 永久拒絕（B-5）：重送幾次都一樣。先移出佇列再還原，還原才不會把這筆又疊回畫面
+    if(refused){
+      revertRecord(job.sheet, (job.record||{}).id);
+      toast(refused.reason==='not_owner' ? `這筆由 ${refused.owner_name||'建立者'} 維護，你的修改沒有存` : '這筆改不了，你的修改沒有存');
+    }
     return outbox.length ? flushOutbox() : true;
   });
 }
@@ -2419,7 +2438,7 @@ function renderSyncBadge(){
   if(!el) return;
   const n=pendingCount();
   el.hidden=!n;
-  el.textContent=n?('⏳ '+n+' 筆待同步'):'';
+  el.textContent=!n ? '' : outboxFull() ? ('⚠️ 待同步 '+n+' 筆，請連網（滿了，新的修改不會存）') : ('⏳ '+n+' 筆待同步');
 }
 function taskToCloud(t){
   return {id:String(t.id), text:t.txt, is_completed:!!t.done, created_at:new Date(t.ts).toISOString(),
@@ -2585,6 +2604,10 @@ function syncFromCloud(meta){
    現在整張換成雲端那份。代價講明白：**離線時不再顯示任何資料**，畫面會是連線
    異常而不是你上次看到的東西。這是 ADR 明確的選擇，不是疏漏。 */
 let cloudOnline=null;        // null=還沒試過、true=通、false=不通
+/* 上次雲端回來的原始列（applyCloudData 存）。寫入被拒（佇列滿、不是建立者）時，
+   用它把那一筆還原成雲端的樣子——畫面上的東西是當場改的，被拒就得改回去 */
+let cloudRows={};
+const FROM_CLOUD={tasks:taskFromCloud, notes:noteFromCloud, expenses:expenseFromCloud};
 
 /* 還沒送出去的那幾筆要疊回畫面上。
    它們在雲端還不存在，被覆蓋式 pull 洗掉的話，使用者會看著自己剛打的字消失——
@@ -2616,6 +2639,20 @@ function applyPendingOverlay(){
                         next:r.most_important||'', line_id:String(r.line_id||'').trim(), ts:Date.now()};
     }
   });
+}
+
+/** 一筆改回「雲端那份＋還在排的」（ADR-019 B-1／B-5）。雲端沒有的（新建、還沒送上去）就拿掉。
+    心情、複盤不在三張資料表裡，不還原（只會看到提示），下一次 pull 自然洗回雲端那份 */
+function revertRecord(sheet, id){
+  const list=state[sheet], from=FROM_CLOUD[sheet];
+  if(!Array.isArray(list) || !from || id==null) return;
+  const i=list.findIndex(x=>String(x.id)===String(id));
+  const row=(cloudRows[sheet]||[]).find(r=>String(r.id)===String(id));
+  if(row){ const r=from(row); if(i>=0) list[i]=r; else list.unshift(r); }
+  else if(i>=0) list.splice(i,1);
+  applyPendingOverlay();
+  if(sheet==='expenses') sortExpenses(); else list.sort((a,b)=>b.ts-a.ts);
+  renderAll();
 }
 
 /* ⚠️ 這段的錯誤處理是整個同步最危險的一處，改之前先讀完。
@@ -2667,6 +2704,7 @@ function applyCloudData(data, denied, extras){
   state.tasks    = c.tasks.map(taskFromCloud);
   state.notes    = c.notes.map(noteFromCloud);
   state.expenses = c.expenses.filter(r=>r.id).map(expenseFromCloud);
+  cloudRows=c;
 
   applyPendingOverlay();
 
@@ -4028,15 +4066,16 @@ function reminderWhen(t, today){
 }
 function reminderHtml(t, today){
   const meta=[reminderWhen(t, today), reminderRecurLabel(t)].filter(Boolean).join('・');
+  const locked=boardLocked(t);
   return `
     <div class="task reminder">
       <span class="lbl" aria-hidden="true">🔔</span>
-      <div class="txt editable" role="button" tabindex="0" onclick="openTaskEdit(${t.id})" title="點一下改日期與重複">${esc(t.txt)}${t.origin_chat?` <span class="tag" title="在 LINE 群組建立：提醒推回這個群組">👥 ${esc(groupNames[t.origin_chat]||'群組')}</span>`:''}
+      <div class="txt${locked?'':' editable'}" ${locked?'':`role="button" tabindex="0" onclick="openTaskEdit(${t.id})" title="點一下改日期與重複"`}>${esc(t.txt)}${t.origin_chat?` <span class="tag" title="在 LINE 群組建立：提醒推回這個群組">👥 ${esc(groupNames[t.origin_chat]||'群組')}</span>`:''}${locked?' '+boardOwnerTag(t):''}
         <div class="meta">${esc(meta)}</div></div>
-      <button class="pin ${t.board?'on':''}" onclick="toggleBoard('tasks',${t.id})"
+      ${locked?'':`<button class="pin ${t.board?'on':''}" onclick="toggleBoard('tasks',${t.id})"
         aria-label="釘到白板" title="釘到共用白板">📌</button>
-      <button class="del" onclick="delTask(${t.id})" aria-label="刪除">✕</button>
-    </div>${editingTaskId===t.id?taskEditHtml(t):''}`;
+      <button class="del" onclick="delTask(${t.id})" aria-label="刪除">✕</button>`}
+    </div>${editingTaskId===t.id&&!locked?taskEditHtml(t):''}`;
 }
 function renderReminders(){
   const today=todayKey();
@@ -4060,16 +4099,17 @@ function renderTasks(){
   const done=state.tasks.filter(t=>!isReminder(t) && t.done && inScope(t));
   const html=t=>{
     const p=t.priority||DEFAULT_PRIORITY;
+    const locked=boardLocked(t);
     return `
     <div class="task ${t.done?'done':''}">
-      <input type="checkbox" ${t.done?'checked':''} onchange="toggleTask(${t.id})">
-      <button class="prio-dot prio-${p}" onclick="cyclePriority(${t.id})"
-        aria-label="優先度 ${PRIORITY_LABEL[p]}，點擊切換" title="優先度：${PRIORITY_LABEL[p]}"></button>
-      <div class="txt editable" role="button" tabindex="0" onclick="openTaskEdit(${t.id})" title="點一下改到期日與週期">${esc(t.txt)}${t.origin_chat?` <span class="tag" title="在 LINE 群組建立：到期提醒推回這個群組">👥 ${esc(groupNames[t.origin_chat]||'群組')}</span>`:''}${t.due?` <span class="tag">${esc(t.due)}${t.recurUnit?'／每'+esc(String(t.recurN||1))+esc(t.recurUnit):''}</span>`:''}</div>
-      <button class="pin ${t.board?'on':''}" onclick="toggleBoard('tasks',${t.id})"
+      <input type="checkbox" ${t.done?'checked':''} ${locked?'disabled':`onchange="toggleTask(${t.id})"`}>
+      <button class="prio-dot prio-${p}" ${locked?'disabled':`onclick="cyclePriority(${t.id})"`}
+        aria-label="優先度 ${PRIORITY_LABEL[p]}${locked?'':'，點擊切換'}" title="優先度：${PRIORITY_LABEL[p]}"></button>
+      <div class="txt${locked?'':' editable'}" ${locked?'':`role="button" tabindex="0" onclick="openTaskEdit(${t.id})" title="點一下改到期日與週期"`}>${esc(t.txt)}${t.origin_chat?` <span class="tag" title="在 LINE 群組建立：到期提醒推回這個群組">👥 ${esc(groupNames[t.origin_chat]||'群組')}</span>`:''}${t.due?` <span class="tag">${esc(t.due)}${t.recurUnit?'／每'+esc(String(t.recurN||1))+esc(t.recurUnit):''}</span>`:''}${locked?' '+boardOwnerTag(t):''}</div>
+      ${locked?'':`<button class="pin ${t.board?'on':''}" onclick="toggleBoard('tasks',${t.id})"
         aria-label="釘到白板" title="釘到共用白板">📌</button>
-      <button class="del" onclick="delTask(${t.id})" aria-label="刪除">✕</button>
-    </div>${editingTaskId===t.id?taskEditHtml(t):''}`;
+      <button class="del" onclick="delTask(${t.id})" aria-label="刪除">✕</button>`}
+    </div>${editingTaskId===t.id&&!locked?taskEditHtml(t):''}`;
   };
   document.getElementById('taskListOpen').innerHTML=
     open.length?open.map(html).join(''):'<div class="empty-hint">目前沒有進行中的任務 🎉</div>';
@@ -4121,8 +4161,8 @@ function renderNotes(){
       <div class="note-txt">${esc(n.txt)}</div>
       <div class="note-meta">
         <span class="mood-meta">${fmtTime(n.ts)}</span>
-        <button class="pin ${n.board?'on':''}" onclick="toggleBoard('notes',${n.id})" aria-label="釘到白板" title="釘到共用白板">📌</button>
-        <button class="del" onclick="delNote(${n.id})" aria-label="刪除">✕</button>
+        ${boardLocked(n) ? boardOwnerTag(n) : `<button class="pin ${n.board?'on':''}" onclick="toggleBoard('notes',${n.id})" aria-label="釘到白板" title="釘到共用白板">📌</button>
+        <button class="del" onclick="delNote(${n.id})" aria-label="刪除">✕</button>`}
       </div>
     </div>`).join('');
 }
@@ -4609,14 +4649,14 @@ function renderExpenseView(){
   el.innerHTML=rows.map(e=>`
     <div class="exp-item">
       <span class="exp-cat"><span class="lg-dot" style="background:${catColor(e.category)}"></span>${esc(e.category)}</span>
-      <div class="exp-body" onclick="editExpense(${e.id})">
+      <div class="exp-body" ${boardLocked(e)?'':`onclick="editExpense(${e.id})"`}>
         ${(e.subcategory||e.note)?`<div class="exp-note">${e.subcategory?`<span class="exp-sub">[${esc(e.subcategory)}]</span> `:''}${esc(e.note||'')}</div>`:''}
         ${((e.targets||[]).length||e.plan_seq)?`<div class="exp-tags">${e.plan_seq?`<span class="exp-tag">🧾 ${esc(planSeqLabel(e.plan_seq))}${e.date>todayKey()?' ⏳':''}</span>`:''}${(e.targets||[]).map(t=>`<span class="exp-tag">${esc(t)}</span>`).join('')}</div>`:''}
-        <div class="exp-date">${esc(e.date)}${e.type==='income'?' · 收入':''}</div>
+        <div class="exp-date">${esc(e.date)}${e.type==='income'?' · 收入':''}${boardLocked(e)?' '+boardOwnerTag(e):''}</div>
       </div>
       <div class="exp-amt ${e.type==='income'?'income':''}">${e.type==='income'?'+':'-'}${fmtAmount(e.amount)}</div>
-      <button class="pin ${e.board?'on':''}" onclick="toggleBoard('expenses',${e.id})" aria-label="釘到白板" title="釘到共用白板">📌</button>
-      <button class="del" onclick="delExpense(${e.id})" aria-label="刪除">✕</button>
+      ${boardLocked(e)?'':`<button class="pin ${e.board?'on':''}" onclick="toggleBoard('expenses',${e.id})" aria-label="釘到白板" title="釘到共用白板">📌</button>
+      <button class="del" onclick="delExpense(${e.id})" aria-label="刪除">✕</button>`}
     </div>`).join('');
 }
 
@@ -4958,7 +4998,7 @@ function renderDeep(){
   if(t) t.innerHTML = open.length ? open.slice(0,5).map(x=>{
       const p=x.priority||DEFAULT_PRIORITY;
       return `<div class="dash-task">
-        <input type="checkbox" onchange="toggleTaskFromHome(${x.id})" aria-label="完成">
+        <input type="checkbox" ${boardLocked(x)?'disabled title="白板項目只有建立者能改"':`onchange="toggleTaskFromHome(${x.id})"`} aria-label="完成">
         <span class="prio-dot prio-${p}" title="優先度：${PRIORITY_LABEL[p]}"></span>
         <div class="txt">${esc(x.txt)}</div></div>`;
     }).join('') + (open.length>5?`<button class="dash-link" onclick="openTasksSeg('todo')">全部 ${open.length} 件 →</button>`:'')
@@ -5078,6 +5118,16 @@ const BOARD_KINDS={
   expenses: {label:'記帳', text:e=>e.date+' '+e.category+' '+e.amount},
   notes:    {label:'雜記', text:n=>n.txt}
 };
+
+/* 白板只能由建立者維護（ADR-019 B-5）：別人釘的項目大家看得到，編輯／刪除／勾選／釘選只有他自己能按。
+   雲端也擋（boardOwnerDenied_），這裡只是不擺按不動的按鈕。沒有建立者的舊資料、還沒配對的裝置不鎖 */
+function boardLocked(r){
+  const owner=String((r&&r.line_id)||'').trim();
+  return !!(r && r.board && owner && myLineId && owner!==myLineId);
+}
+function boardOwnerTag(r){
+  return `<span class="tag" title="白板項目只有建立者能改">🔒 ${esc(nameOfLineId(r.line_id)||'別人')} 維護</span>`;
+}
 
 function toggleBoard(kind, id){
   const list=state[kind]||[];
