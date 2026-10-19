@@ -72,11 +72,23 @@ describe('誰看得到 2.0', () => {
     assert.equal(el('uiSwitchBtn').hidden, false);
   });
 
-  test('有權限＋本機選了 2.0：2.0；2.0 裡不顯示「2.0」鈕', () => {
+  test('有權限＋本機選了 2.0：2.0；右上同一顆鈕改成「1.0」、按了切回 1.0（Neil 2026-10-19）', () => {
     const { e, el } = env({ me: { feat_ui_v2: 'TRUE' }, stored: 'v2' });
     assert.equal(e.call('isV2'), true);
     e.call('renderAvatar');
-    assert.equal(el('uiSwitchBtn').hidden, true);
+    assert.equal(el('uiSwitchBtn').hidden, false);
+    assert.equal(el('uiSwitchBtn').textContent, '1.0');
+    e.call('toggleUi');
+    assert.equal(e.read('localStorage.getItem("personal-os-ui")'), null);
+    assert.equal(e.read('__reloads'), 1);
+  });
+
+  test('1.0 的鈕寫「2.0」、按了切到 2.0', () => {
+    const { e, el } = env({ me: { feat_ui_v2: 'TRUE' } });
+    e.call('renderAvatar');
+    assert.equal(el('uiSwitchBtn').textContent, '2.0');
+    e.call('toggleUi');
+    assert.equal(e.read('localStorage.getItem("personal-os-ui")'), 'v2');
   });
 
   test('權限被關掉：下一次判斷就回 1.0（本機記的不算數）', () => {
@@ -121,11 +133,11 @@ describe('切換：寫本機＋整頁重載，不打雲端', () => {
 /* ========================================================================== */
 describe('2.0 的導覽與畫面', () => {
 
-  test('5 格 Tab：總覽｜Apps｜搜尋｜圖書館｜設定；主色固定金黃（data-zone=finance）', () => {
+  test('5 格 Tab：Apps｜圖書館｜總覽｜搜尋｜設定（總覽在中間，Neil 2026-10-19）；主色固定金黃（data-zone=finance）', () => {
     const { e, el } = env({ me: { feat_ui_v2: 'TRUE' }, stored: 'v2' });
     const html = navHtml(e, el);
     const labels = [...html.matchAll(/<span class="tab-label">([^<]+)<\/span>/g)].map((m) => m[1]);
-    assert.deepEqual(labels, ['總覽', 'Apps', '搜尋', '圖書館', '設定']);
+    assert.deepEqual(labels, ['Apps', '圖書館', '總覽', '搜尋', '設定']);
     assert.equal(e.read('__attrs["data-zone"]'), 'finance');
     assert.equal(e.read('__attrs["data-ui"]'), 'v2');
   });
@@ -150,7 +162,7 @@ describe('2.0 的導覽與畫面', () => {
   test('圖書館沒權限或總開關關掉：那一格藏起（佔位不移位）', () => {
     const { e, el } = env({ me: { feat_ui_v2: 'TRUE' }, stored: 'v2', off: ['library'] });
     const labels = [...navHtml(e, el).matchAll(/<span class="tab-label">([^<]+)<\/span>/g)].map((m) => m[1]);
-    assert.deepEqual(labels, ['總覽', 'Apps', '搜尋', '設定']);
+    assert.deepEqual(labels, ['Apps', '總覽', '搜尋', '設定']);
   });
 });
 
@@ -232,5 +244,24 @@ describe('設定：回到 1.0、模組總開關', () => {
     await e.call('toggleModule', 'reminders');
     assert.equal(e.call('moduleOn', 'reminders'), true);
     assert.match(e.read('__toast'), /沒有改到/);
+  });
+});
+
+/* ========================================================================== */
+describe('股票報價：2.0 沒有分區', () => {
+  test('1.0 停在生產力區不抓報價（原本的行為）；2.0 不管上次停哪一區都抓', () => {
+    const v1 = env({ me: { feat_ui_v2: 'TRUE' } });
+    v1.e.raw('zone = "productivity"');
+    assert.equal(v1.e.call('wantStock'), false);
+    const v2 = env({ me: { feat_ui_v2: 'TRUE' }, stored: 'v2' });
+    v2.e.raw('zone = "productivity"');
+    assert.equal(v2.e.call('wantStock'), true);
+  });
+
+  test('2.0 沒有股票權限或總開關關掉：照樣不抓', () => {
+    const noFeat = env({ me: { feat_ui_v2: 'TRUE', feat_stock: '' }, stored: 'v2' });
+    assert.equal(noFeat.e.call('wantStock'), false);
+    const off = env({ me: { feat_ui_v2: 'TRUE' }, stored: 'v2', off: ['stocks'] });
+    assert.equal(off.e.call('wantStock'), false);
   });
 });
