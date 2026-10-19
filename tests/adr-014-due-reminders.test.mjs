@@ -189,8 +189,8 @@ describe('T2 推播依來源', () => {
     const e = env({ tasks: [due({ origin_chat: GROUP })] });
     e.call('checkDueReminders', TODAY);
     assert.deepEqual(e.pushes.map((p) => p.to), [GROUP]);
-    assert.match(e.pushes[0].text, /裕仁的任務快到期了/);
-    assert.match(e.pushes[0].text, /繳管理費/);
+    assert.match(e.pushes[0].text.altText, /裕仁的任務快到期了/);
+    assert.match(e.pushes[0].text.altText, /繳管理費/);
     assert.equal(tasksOf(e)[0].notified, 'TRUE');
   });
 
@@ -203,7 +203,7 @@ describe('T2 推播依來源', () => {
       const e = env({ tasks: [due({ origin_chat: GROUP })], groups: [groupRow(g)] });
       e.call('checkDueReminders', TODAY);
       assert.deepEqual(e.pushes.map((p) => p.to), [MOM]);
-      assert.doesNotMatch(e.pushes[0].text, /的任務快到期了/, '推給本人就不用說是誰的');
+      assert.doesNotMatch(e.pushes[0].text.altText, /的任務快到期了/, '推給本人就不用說是誰的');
       const log = e.transactions.find((t) => /到期檢查/.test(t[2]));
       assert.match(log[4], /退回/);
       assert.match(log[4], reason);

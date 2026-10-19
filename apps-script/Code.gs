@@ -1185,6 +1185,7 @@ function isReminder_(record) {
 /**
  * 提醒不能標完成（ADR-018 A-2，前後端都擋）。不回錯誤：前端的待送佇列遇到錯誤會一直重送，
  * 一筆被擋的寫入會卡住後面所有的寫入。改成把完成改回空白、其他欄照寫，並留一列 logs（不可靜默）。
+ * ADR-019 C-2 起單次提醒有一個出口：LINE 到期卡片的「✅ 處理了」（line-router.gs dueCardStep_），只有那裡寫得進 is_completed。
  */
 function guardReminderDone_(record, caller) {
   if (!isReminder_(record) || !truthy_(record.is_completed)) return record;
@@ -1423,6 +1424,61 @@ function dueReminderMessage_(record, todayKey, ownerName) {
          '\n' + keyValue_(record.due_date) + (when ? '（' + when + '）' : '');
 }
 
+/* ---------- 到期 Flex 卡片（ADR-019 C-1～C-6） ----------
+   一筆一張卡、三顆按鈕常駐聊天室；一個收件對象一則輪播（一次推播）。按鈕是 postback，
+   由 line-router.gs 的 handleDueCardPostback_ 處理；data 帶推播當時的 due_date，舊卡片按了不會動到已經改過的資料 */
+var DUE_CARD_MAX = 12;               // LINE 輪播最多 12 張
+var DUE_CARD_ALT_MAX = 400;          // altText 上限
+var DUE_CARD_ACTIONS = { done: '✅ 處理了', tmr: '⏰ 明天', pick: '📅 改日期' };
+
+/** postback data：dc=1（到期卡片）、a＝動作、t＝任務 id、d＝推播當時的到期日 */
+function dueCardData_(action, record) {
+  return 'dc=1&a=' + action + '&t=' + encodeURIComponent(keyValue_(record.id)) + '&d=' + keyValue_(record.due_date);
+}
+
+function dueCardBubble_(record, todayKey, ownerName) {
+  var days = daysUntil_(record.due_date, todayKey);
+  var when = days === null ? '' : days < 0 ? '已逾期 ' + Math.abs(days) + ' 天' : days === 0 ? '今天到期' : '還剩 ' + days + ' 天';
+  var recur = keyValue_(record.recur_unit)
+    ? '🔁 每' + (Number(record.recur_interval) > 1 ? ' ' + Number(record.recur_interval) + ' ' : '') + keyValue_(record.recur_unit) : '';
+  var lines = [
+    { type: 'text', text: [isReminder_(record) ? '🔔 提醒' : '☑️ 待辦', recur].filter(Boolean).join('・'), size: 'xs', color: '#888888' },
+    { type: 'text', text: String(record.text || '(沒有內容)'), weight: 'bold', wrap: true },
+    { type: 'text', text: keyValue_(record.due_date) + (when ? '（' + when + '）' : ''), size: 'sm',
+      color: days !== null && days < 0 ? '#D93025' : '#555555' }
+  ];
+  if (ownerName !== undefined) lines.push({ type: 'text', text: '👤 ' + (ownerName || '有人'), size: 'xs', color: '#888888' });
+  var post = function (a) {
+    return { type: 'button', style: a === 'done' ? 'primary' : 'secondary', height: 'sm',
+      action: { type: 'postback', label: DUE_CARD_ACTIONS[a], data: dueCardData_(a, record), displayText: DUE_CARD_ACTIONS[a] } };
+  };
+  return {
+    type: 'bubble', size: 'kilo',
+    body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: lines },
+    footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: [post('done'), post('tmr'),
+      { type: 'button', style: 'secondary', height: 'sm', action: { type: 'datetimepicker', label: DUE_CARD_ACTIONS.pick,
+        data: dueCardData_('pick', record), mode: 'date', initial: keyValue_(record.due_date) || todayKey } }] }
+  };
+}
+
+/**
+ * 一個收件對象的輪播。純函式。ownerNameOf＝推到群組時給（line_id → 顯示名稱），個人不給。
+ * 超過 12 筆：前 11 張＋最後一張「還有 N 件，請開 App」——維持一個收件對象一次推播，不拆成兩則。
+ * altText 是通知列看得到的字：一筆時沿用原本的文字訊息，多筆時列件數與內容
+ */
+function dueCardsMessage_(records, todayKey, ownerNameOf) {
+  var name = function (r) { return ownerNameOf ? ownerNameOf(keyValue_(r.line_id)) : undefined; };
+  var shown = records.length > DUE_CARD_MAX ? records.slice(0, DUE_CARD_MAX - 1) : records;
+  var bubbles = shown.map(function (r) { return dueCardBubble_(r, todayKey, name(r)); });
+  if (records.length > DUE_CARD_MAX) {
+    bubbles.push({ type: 'bubble', size: 'kilo', body: { type: 'box', layout: 'vertical', justifyContent: 'center',
+      contents: [{ type: 'text', text: '還有 ' + (records.length - shown.length) + ' 件，請開 App', wrap: true, align: 'center' }] } });
+  }
+  var alt = records.length === 1 ? dueReminderMessage_(records[0], todayKey, name(records[0]))
+    : '⏰ 到期提醒 ' + records.length + ' 件：' + records.map(function (r) { return String(r.text || '(沒有內容)'); }).join('、');
+  return { type: 'flex', altText: alt.slice(0, DUE_CARD_ALT_MAX), contents: { type: 'carousel', contents: bubbles } };
+}
+
 /**
  * 這一筆要推到哪裡（ADR-014 D-17／D-18）。純函式，groups 是 group_id → line_groups 那一列。
  *  - origin_chat 空白                              → 建立者個人（現狀）
@@ -1528,23 +1584,30 @@ function checkDueReminders(todayKey) {
       roster = lineUsersRoster_();
     }
 
-    var sent = 0, failed = 0, notes = [];
+    // 一個收件對象一則輪播（ADR-019 C-1）：先依推播對象分組，順序照表上的先後
+    var sent = 0, failed = 0, notes = [], byTarget = {}, order = [];
     due.forEach(function (rec) {
       var target = dueTarget_(rec, groups);
       if (target.fallback) notes.push('id=' + rec.id + ' 退回個人：' + target.fallback);
-      var owner = target.group ? (((roster && roster.users) || {})[keyValue_(rec.line_id)] || {}) : null;
-      var text = target.group ? dueReminderMessage_(rec, today, String(owner.display_name || '').trim())
-                              : dueReminderMessage_(rec, today);
-      var result = linePush_(target.to, text);
+      if (!byTarget[target.to]) { byTarget[target.to] = { target: target, recs: [] }; order.push(target.to); }
+      byTarget[target.to].recs.push(rec);
+    });
+    var nameOf = function (id) { return String((((roster && roster.users) || {})[id] || {}).display_name || '').trim(); };
+    order.forEach(function (to) {
+      var g = byTarget[to];
+      var result = linePush_(to, dueCardsMessage_(g.recs, today, g.target.group ? nameOf : null));
+      var ids = g.recs.map(function (r) { return r.id; }).join(',');
       if (!result.ok) {
-        failed++;
-        notes.push('id=' + rec.id + ' 推' + (target.group ? '群組' : '個人') + '失敗：' + result.reason);
-        console.log('推播失敗，這筆保留未通知狀態，明天會再試：id=' + rec.id + '／' + result.reason);
+        failed += g.recs.length;
+        notes.push('id=' + ids + ' 推' + (g.target.group ? '群組' : '個人') + '失敗：' + result.reason);
+        console.log('推播失敗，這幾筆保留未通知狀態，明天會再試：id=' + ids + '／' + result.reason);
         return;
       }
-      sent++;
-      rec.notified = 'TRUE';
-      upsertRow_(sheet, headers, rec, TASKS_SHEET, 'id');
+      g.recs.forEach(function (rec) {
+        sent++;
+        rec.notified = 'TRUE';
+        upsertRow_(sheet, headers, rec, TASKS_SHEET, 'id');
+      });
     });
 
     if (failed) notes.unshift('有 ' + failed + ' 筆推播失敗，未標記 notified，明天會再試');

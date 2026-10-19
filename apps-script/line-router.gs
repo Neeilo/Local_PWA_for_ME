@@ -1912,7 +1912,7 @@ function lineReply_(replyToken, text) {
 /* ========================================================================== */
 
 /**
- * 主動推一則文字訊息給某個 userId。
+ * 主動推一則訊息給某個 userId。text 是字串（文字訊息）或整則訊息物件（例如到期 Flex 卡片）。
  *
  * 與 lineReply_ 的差別只有兩點：端點不同、以及 push 沒有 replyToken 的時效限制，
  * 換來的是配額限制（免費方案每月有則數上限）。權杖共用同一把，所以權杖有沒有效
@@ -1941,7 +1941,8 @@ function linePush_(toUserId, text) {
       headers: { Authorization: 'Bearer ' + token },
       payload: JSON.stringify({
         to: toUserId,
-        messages: [{ type: 'text', text: text }]
+        // 到期卡片（ADR-019 C-1）傳的是整則訊息物件（type:'flex'），其餘是純文字
+        messages: [(text && typeof text === 'object') ? text : { type: 'text', text: text }]
       }),
       muteHttpExceptions: true
     });
@@ -2471,6 +2472,7 @@ function handlePostback_(event) {
   var data = parseQuickData_(event.postback && event.postback.data);
   if (String(data.td) === '1') { handleTaskDatePostback_(event, data); return; }
   if (String(data.tr) === '1') { handleReminderRepeatPostback_(event, data); return; }
+  if (String(data.dc) === '1') { handleDueCardPostback_(event, data); return; }
   if (String(data.qr) !== '1') return;
   var src = event.source || {};
   var userId = src.userId || '';
@@ -2773,6 +2775,114 @@ function reminderRepeatStep_(data, userId, input) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/* ---------- 到期卡片的三顆按鈕（ADR-019 C-2～C-6） ----------
+   卡片由 9 點排程推出（Code.gs dueCardsMessage_），data：dc=1、a＝done／tmr／pick、t＝任務 id、d＝推播當時的到期日。
+   過門跟其他任務按鈕一樣（群組三道／一對一白名單 → 任務權限），再來只有建立者按得動（C-6，與 B-5 一致）。
+   寫入拿 PWA 寫入同一把 script lock（PR-4）。冪等靠 d：到期日已經不是推播當時那天、或已完成／已刪，一律不動作——
+   同一顆按兩次不會跳兩期，舊卡片也不會蓋掉後來在 App 改的日期。回覆用 replyToken（不吃推播額度） */
+function handleDueCardPostback_(event, data) {
+  var src = event.source || {};
+  var userId = src.userId || '';
+  var input = '到期卡片（按鈕：' + (DUE_CARD_ACTIONS[data.a] || data.a || '?') + '）';
+  var denied = null;
+  if (isGroupSource_(src)) {
+    denied = groupGate_(src, 'cmd_tasks', input, userId);
+  } else {
+    var w = writeGate_(userId, 'LINE ' + input);
+    if (!w.allowed) denied = lineDeniedMessage_(w.error);
+  }
+  if (denied === null) {
+    var params = (event.postback && event.postback.params) || {};
+    denied = dueCardStep_(data, params, isGroupSource_(src), userId, input);
+  }
+  lineReply_(event.replyToken, denied);
+}
+
+function dueCardStep_(data, params, inGroup, userId, input) {
+  if (!canUse_(lineUserById_(userId), FEATURE_BY_SHEET.tasks)) {
+    var label = FEATURE_LABEL[FEATURE_BY_SHEET.tasks];
+    logTransaction_('任務', '失敗', input, '沒有「' + label + '」功能的權限', 'code=forbidden｜feat_tasks', '', userId);
+    return '你沒有「' + label + '」功能的權限。\n需要的話請管理者到 App 的「成員與權限」打開。';
+  }
+  if (!data.t || !DUE_CARD_ACTIONS[data.a] || !parseDateKey_(data.d)) return '這個按鈕看不懂，請開 App 處理。';
+  var picked = data.a === 'pick' ? keyValue_(params.date) : '';
+  if (data.a === 'pick' && !parseDateKey_(picked)) return '這個日期看不懂，請再選一次。';
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(UPSERT_LOCK_MS)) return '有點忙，請再按一次。';
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TASKS_SHEET);
+    var headers = sheet ? sheetHeaders_(sheet) : [];
+    var idCol = headers.indexOf('id') + 1;
+    if (!sheet || !idCol || headers.indexOf('due_date') === -1) return '任務表還沒準備好（缺 due_date 欄），請管理者傳「' + INIT_COMMAND + '」。';
+    var rows = findRowsByKey_(sheet, [idCol], String(data.t));
+    var rec = {};
+    if (rows.length) {
+      var line = sheet.getRange(rows[0], 1, 1, headers.length).getValues()[0];
+      headers.forEach(function (h, i) { rec[h] = line[i]; });
+    }
+    if (!rows.length || isTombstone_(rec)) return '這筆已經刪掉了，不用處理 👌';
+
+    var owner = keyValue_(rec.line_id);
+    if (owner && owner !== userId) {
+      logTransaction_('任務', '失敗', input, '不是建立者，不動作', 'id=' + data.t + '｜owner=' + owner, rows[0], userId);
+      return '這筆由 ' + (displayNameOf_(owner) || '建立者') + ' 維護，請他處理 🙏';
+    }
+    var cur = keyValue_(rec.due_date);
+    if (truthy_(rec.is_completed) || cur !== data.d) {
+      var now = truthy_(rec.is_completed) ? (isReminder_(rec) ? '已處理' : '已完成') : cur ? shortDateLabel_(cur) + ' 到期' : '沒有到期日';
+      logTransaction_('任務', '失敗', input, '舊卡片或重複按，不動作（目前：' + now + '）', 'id=' + data.t + '｜card=' + data.d, rows[0], userId);
+      return '這筆已經更新過（目前：' + now + '）';
+    }
+
+    var text = String(rec.text || '(沒有內容)');
+    var who = inGroup ? (displayNameOf_(userId) || '有人') : '';
+    var result, reply;
+    if (data.a === 'done') {
+      var next = isReminder_(rec) ? nextDueDate_(cur, rec.recur_interval, rec.recur_unit, lineTodayKey_()) : '';
+      if (isReminder_(rec) && next) {
+        // 週期提醒：跳下一期、清 notified（同 9 點翻頁的算法）
+        setDeviceFields_(sheet, headers, rows[0], { due_date: next, notified: '' });
+        result = '週期提醒跳到 ' + next;
+      } else if (isReminder_(rec)) {
+        // 單次提醒：標 is_completed＝已處理（從提醒清單收起、不上首頁最急兩件；過期 30 天照舊由 9 點封存）
+        setDeviceFields_(sheet, headers, rows[0], { is_completed: 'TRUE' });
+        result = '單次提醒已處理';
+      } else {
+        // 待辦：走 App 打勾的同一條完成路徑（週期待辦照 ADR-009 生下一期）
+        rec.is_completed = 'TRUE';
+        var done = completeRecurring_({ sheet: TASKS_SHEET, key_field: 'id', record: rec, today: lineTodayKey_(), next_id: String(Date.now()) },
+          { line_id: userId }, sheet);
+        if (done.error) throw new Error('完成失敗：' + done.error);
+        next = done.next_due || '';
+        result = done.spawned ? '待辦完成，下一期 ' + next : '待辦完成';
+      }
+      reply = inGroup ? '✅ ' + who + ' 已處理：' + text : '✅ 已處理' + (next ? '，下次 ' + shortDateLabel_(next) : '');
+    } else {
+      var key = data.a === 'tmr' ? addDaysKey_(lineTodayKey_(), 1) : picked;
+      setDeviceFields_(sheet, headers, rows[0], { due_date: key, notified: '' });
+      result = '到期日 → ' + key;
+      reply = data.a === 'tmr'
+        ? (inGroup ? '⏰ ' + who + ' 改成明天再提醒：' + text : '⏰ 明天再提醒')
+        : (inGroup ? '📅 ' + who + ' 改到 ' + shortDateLabel_(key) + '：' + text : '📅 改到 ' + shortDateLabel_(key));
+    }
+    logTransaction_('任務', '成功', input, result, 'id=' + data.t, rows[0], userId);
+    return reply;
+  } catch (err) {
+    console.log('到期卡片寫入失敗：' + err);
+    logTransaction_('任務', '失敗', input, '到期卡片寫入失敗', String(err && err.stack || err), '', userId);
+    return '寫入失敗了：' + err.message;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 名單上的顯示名稱；查不到回空字串 */
+function displayNameOf_(lineId) {
+  var u = lineUserById_(lineId);
+  return String((u && u.display_name) || '').trim();
 }
 
 /** 等待的 key：聊天室＋人。一對一沒有聊天室 ID，用 dm 代替 */

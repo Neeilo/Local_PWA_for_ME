@@ -137,7 +137,7 @@ describe('9 點排程：先推播、再翻頁', () => {
       recur_interval: 1, recur_unit: '月' }] });
     const r = e.call('checkDueReminders', TODAY);
     assert.equal(r.notified, 1);
-    assert.match(e.pushes[0].text, /繳房租[\s\S]*已逾期 8 天/);
+    assert.match(e.pushes[0].text.altText, /繳房租[\s\S]*已逾期 8 天/);
     const t = byId(e, '1');
     assert.equal(t.due_date, '2026-11-05');
     assert.equal(t.notified, '', '翻頁後清掉，下一期進 3 天門檻會再推一次');
