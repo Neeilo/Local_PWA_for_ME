@@ -83,7 +83,7 @@ describe('refreshGuide — 產生而不是累加', () => {
       ['分頁', '類別', '用途', '誰寫入', '誰讀取', '主鍵', '相關 ADR', '欄位', '筆數', '狀態', '備註']);
     assert.deepEqual(g.records.map((r) => r['分頁']),
       ['tasks', 'expenses', 'installments', 'reviews', 'moods', 'self_notes', 'clips', 'notes', 'stock_trades', 'stock_watch', 'stock_rules',
-       'logs', 'line_users', 'line_groups', 'line_devices', 'performance', '_expense_config',
+       '_module_registry', 'logs', 'line_users', 'line_groups', 'line_devices', 'performance', '_expense_config',
        'stock_daily', '_stock_config', '_stock_gf', '_guide', 'gmail_rules', 'gmail_log', 'ETC_Data']);
   });
 

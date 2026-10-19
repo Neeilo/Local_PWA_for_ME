@@ -561,6 +561,12 @@ function routeLineMessage_(rawText, userId, chatId) {
     return supportedPrefixesMessage_() + '\n' + versionLine_();
   }
 
+  // 模組總開關（ADR-021）先講：關掉的模組不是「沒權限」，叫人去開權限只會白跑一趟
+  var offModule = sheetModuleOff_(route.sheetName) || (route.taskKind === 'reminder' && !moduleOn_('reminders') ? 'reminders' : '');
+  if (offModule) {
+    logTransaction_(prefix, '失敗', text, '「' + moduleName_(offModule) + '」模組已停用', 'code=module_off｜' + offModule, '', userId);
+    return moduleOffText_(offModule);
+  }
   // 功能權限（ADR-012 D-3）：跟 PWA 同一張對照表、同一個 canUse_
   var feature = FEATURE_BY_SHEET[route.sheetName];
   if (!canUse_(lineUserById_(userId), feature)) {
@@ -656,6 +662,11 @@ function initSteps_() {
       var k = classifyTaskKinds_();
       if (k.reason) return { level: 'warn', text: k.reason === 'sheet_missing' ? '找不到 tasks 分頁，沒有歸類' : 'tasks 還沒有 kind 欄，沒有歸類' };
       return { level: 'ok', text: '歸為提醒 ' + k.reminder + ' 筆、待辦 ' + k.todo + ' 筆（已有分類的不動；歸錯的到 App 改）' };
+    } },
+    { label: '模組登記表（ADR-021）', run: function () {
+      var r = ensureModuleRegistry_();
+      return { level: 'ok', text: (r.created ? '新建 ' : '') + MODULE_REGISTRY_SHEET +
+        (r.added.length ? (r.created ? '' : ' 補上') + '：' + r.added.join('、') : ' 已齊備') + '（已關掉的模組不會被打開）' };
     } },
     { label: '給自己的一段話（ADR-018）', run: function () {
       var r = ensureSelfNotesSheet_();
@@ -1125,7 +1136,8 @@ function buildQueryContext_(userId, question) {
   // 軟刪除的列不送給 AI（2026-10-14 補：readSheet_ 不濾 del，刪掉的任務／帳以前也會被拿去回答）
   var expenseRows = allowed.expenses ? withoutTombstones_(readSheet_('expenses')) : [];
   var cfg = allowed.expenses ? expenseConfig_() : null;
-  var taskRows = allowed.tasks ? withoutTombstones_(readSheet_('tasks')) : [];
+  // 提醒模組關掉時提醒不進 AI 的資料（ADR-021）；白板欄「查/」用不到，不另外濾
+  var taskRows = allowed.tasks ? moduleVisibleRows_('tasks', withoutTombstones_(readSheet_('tasks'))) : [];
 
   return {
     since: since,
@@ -2687,6 +2699,7 @@ function applyTaskDue_(taskId, nonce, key, userId, input) {
       headers.forEach(function (h, i) { rec[h] = line[i]; });
     }
     if (!rows.length || truthy_(rec.del)) return '找不到這筆任務（可能已經刪掉了）。';
+    if (isReminder_(rec) && !moduleOn_('reminders')) return moduleOffText_('reminders');
     if (keyValue_(rec.line_id) !== userId) return '這筆任務是別人建的，請他自己設。';
     setDeviceFields_(sheet, headers, rows[0], { due_date: key, notified: '' });
     cache.put(nkey, '1', TASK_DATE_NONCE_TTL);
@@ -2741,6 +2754,7 @@ function reminderRepeatStep_(data, userId, input) {
     logTransaction_('任務', '失敗', input, '沒有「' + label + '」功能的權限', 'code=forbidden｜feat_tasks', '', userId);
     return '你沒有「' + label + '」功能的權限。\n需要的話請管理者到 App 的「成員與權限」打開。';
   }
+  if (!moduleOn_('reminders')) return moduleOffText_('reminders');
   var opt = REMINDER_REPEAT_OPTIONS.filter(function (o) { return o.r === data.r; })[0];
   if (!data.t || !data.n || !opt) return '這個按鈕看不懂，之後可以在 App 改。';
   if (data.u && data.u !== userId) return '這組按鈕是別人叫出來的，請他自己點。';
@@ -2824,6 +2838,7 @@ function dueCardStep_(data, params, inGroup, userId, input) {
       headers.forEach(function (h, i) { rec[h] = line[i]; });
     }
     if (!rows.length || isTombstone_(rec)) return '這筆已經刪掉了，不用處理 👌';
+    if (isReminder_(rec) && !moduleOn_('reminders')) return moduleOffText_('reminders');
 
     var owner = keyValue_(rec.line_id);
     if (owner && owner !== userId) {
