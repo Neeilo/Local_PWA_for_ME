@@ -4079,7 +4079,8 @@ function reminderHtml(t, today){
 }
 function renderReminders(){
   const today=todayKey();
-  const all=state.tasks.filter(t=>isReminder(t) && inScope(t))
+  // 單次提醒在 LINE 到期卡片按了「✅ 處理了」會標 is_completed（ADR-019 C-2）：收起，過期 30 天由 9 點封存
+  const all=state.tasks.filter(t=>isReminder(t) && !t.done && inScope(t))
     .sort((a,b)=>(a.due||'9999')<(b.due||'9999')?-1:(a.due||'9999')>(b.due||'9999')?1:a.ts-b.ts);
   // 單次提醒過期 → 已過；週期提醒過期是排程還沒翻（隔天 9 點），留在清單
   const past=all.filter(t=>t.due && t.due<today && !t.recurUnit).reverse();
@@ -4873,7 +4874,7 @@ function urgentWhen(x){
 }
 function homeTaskLists(){
   const mine=state.tasks.filter(inScope);
-  return { todos:mine.filter(t=>!isReminder(t)), reminders:mine.filter(isReminder) };
+  return { todos:mine.filter(t=>!isReminder(t)), reminders:mine.filter(t=>isReminder(t) && !t.done) };   // 已處理的提醒收起（ADR-019 C-2）
 }
 /* 「今天」層兩區共用、切區不重畫（C-1）：只依資料畫，跟區無關 */
 function renderToday(){
