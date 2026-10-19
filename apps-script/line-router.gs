@@ -668,6 +668,10 @@ function initSteps_() {
       return { level: 'ok', text: (r.created ? '新建 ' : '') + MODULE_REGISTRY_SHEET +
         (r.added.length ? (r.created ? '' : ' 補上') + '：' + r.added.join('、') : ' 已齊備') + '（已關掉的模組不會被打開）' };
     } },
+    { label: '2.0 介面權限（ADR-021）', run: function () {
+      var r = installUiV2Feature_();
+      return { level: r.warn ? 'warn' : 'ok', text: r.text };
+    } },
     { label: '給自己的一段話（ADR-018）', run: function () {
       var r = ensureSelfNotesSheet_();
       return { level: 'ok', text: r.created ? '新建 ' + SELF_NOTES_SHEET : SELF_NOTES_SHEET + ' 已存在' };
