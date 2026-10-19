@@ -783,6 +783,23 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
 }
 .app-tile:active{transform:scale(.96);}
 .app-tile .ico{font-size:24px;}
+.widget{display:flex; flex-direction:column; gap:10px;}
+.widget[hidden]{display:none;}
+.w-head{display:flex; align-items:baseline; justify-content:space-between;}
+.w-head h2{margin:0;}
+.w-at{font-size:12px; color:var(--muted);}
+.w-skel{height:16px; border-radius:8px; background:var(--line); margin:4px 0;}
+.w-skel.short{width:60%;}
+.w-in{display:flex; flex-direction:column; gap:8px; animation:w-fade .25s ease-out;}
+@keyframes w-fade{from{opacity:0} to{opacity:1}}
+@media (prefers-reduced-motion: reduce){ .w-in{animation:none;} }
+.w-retry{align-self:flex-start; background:none; border:1px solid var(--line); border-radius:10px; padding:8px 12px; color:var(--danger);}
+.w-task{display:flex; align-items:center; gap:8px; font-size:14px; padding:4px 0;}
+.w-task.done .txt{text-decoration:line-through; color:var(--muted);}
+.w-sync{font-size:12px; color:var(--muted);}
+.w-row{display:flex; flex-direction:column; align-items:flex-start; gap:2px; background:none; border:none; padding:4px 0; text-align:left; color:var(--text);}
+.w-row .lbl{font-size:12px; color:var(--muted);}
+.w-more{align-self:flex-end; background:none; border:none; color:var(--accent); font-size:13px; padding:4px 0;}
 .mod-row{display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0;}
 .avatar-dot{position:absolute; top:0; right:0; width:10px; height:10px; border-radius:50%; background:var(--danger); border:2px solid var(--bg);}
 .avatar-dot[hidden]{display:none;}
@@ -907,8 +924,23 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
   <!-- 分期（ADR-014 D-7）：進行中的計畫。轉成分期仍從記帳明細點一筆進去；記帳月清單的分期列照舊顯示 -->
   <!-- 2.0（ADR-021）：只有 isV2() 時進得來。總覽 PR-A 先放骨架（Neil 2026-10-19：純空骨架），Widget 在 PR-B -->
   <section class="view" id="view-overview">
-    <div class="card"><div class="dash-sub">給自己的一段話</div><div id="v2SelfNote"></div></div>
-    <div class="v2-empty"><span class="big">🧩</span>首頁 Widget 即將上線</div>
+    <!-- 給自己的一段話：固定在總覽頂部、不參與排序（ADR-021 D-6）。跟 1.0 首頁同一份 -->
+    <div class="card today-card">
+      <button class="self-note" id="v2SelfNote" onclick="editSelfNote()" aria-label="給自己的一段話，點一下編輯">
+        <span class="lbl">給自己的一段話 · 點一下編輯</span>
+        <span class="txt" id="v2SelfNoteText"></span>
+      </button>
+      <div class="self-note-edit" id="v2SelfNoteEdit" hidden>
+        <textarea id="v2SelfNoteInput" maxlength="300" rows="3" placeholder="想提醒自己的話，寫了就一直留著"></textarea>
+        <div class="row">
+          <button class="btn" onclick="saveSelfNote()">儲存</button>
+          <button class="btn-outline" onclick="closeSelfNote()">取消</button>
+        </div>
+      </div>
+    </div>
+    <!-- Widget（PR-B：Tasks、Reading）。各自載入、各自失敗：骨架 → 淡入；失敗只換那一格 -->
+    <div class="card widget" id="wTasks" hidden></div>
+    <div class="card widget" id="wReading" hidden></div>
   </section>
   <section class="view" id="view-apps"><div id="appsGrid"></div></section>
   <section class="view" id="view-search">
@@ -1581,7 +1613,7 @@ function startSession(trigger){
   }
   bootPromise=(full ? bootWithRetry(trigger) : runBoot(trigger)).then(ok=>{
     if(ok && trigger) perfNote('boot', trigger, Date.now()-started, lastRequestId.boot);
-    if(ok) refreshStock(trigger);          // 不等它：報價慢，Loading 不等報價（D-6）
+    if(ok && !isV2()) refreshStock(trigger);   // 不等它：報價慢，Loading 不等報價（D-6）。2.0 進股票頁才打（ADR-021 D-1）
     if(full){
       if(ok || gateMode) progressDone('full');
       else loadingStuck();                 // 兩次都失敗：停在 Loading，給一顆「重新整理」（Neil 2026-10-14）
@@ -1655,7 +1687,10 @@ function renderStockParts(){
 /* 套用順序：身份 → 名單 → 資料 → 補送。
    失敗、被擋、回應缺欄位，一律「這次不算數、原地不動」——**絕不能變成空陣列清掉畫面**
    （見 pullFromCloud 上方的註解）。認證錯誤 cloudPost 已經帶去對的畫面了。 */
-async function runBoot(trigger){
+function runBoot(trigger){
+  return wantsV2() ? runBootCore(trigger) : runBootFull(trigger);   // 這台選了 2.0：只讀核心層（ADR-021 D-1）
+}
+async function runBootFull(trigger){
   let j=null;
   // 「再試一次」、續期完成這兩處沒有傳 trigger：都是人按出來的，記成 manual（ADR-014 D-12：每個請求都要記）
   try{ j=await cloudPost({action:'boot', trigger:trigger||'manual'}); }catch(e){ j=null; }
@@ -1665,6 +1700,39 @@ async function runBoot(trigger){
     applyIdentity();
     return pullFailed();
   }
+  applyBootSession(j);
+  const ok=applyCloudData(j.data, j.denied, j);
+  applyIdentity();
+  if(ok) flushOutbox();
+  return ok;
+}
+/* 2.0 開機（ADR-021 D-1）：只拿核心層——身份、名單、模組、一段話、Widget 摘要。模組的表點進去才讀（v2LoadSheets）。
+   名單回來才知道有沒有 2.0 權限：被收回了就清掉這台的選擇、改走 1.0 的完整開機 */
+async function runBootCore(trigger){
+  let j=null;
+  try{ j=await cloudPost({action:'boot', core:true, trigger:trigger||'manual'}); }catch(e){ j=null; }
+  const s=j && j.session;
+  if(!s || s.status!=='ok' || !s.line_id || !Array.isArray(j.line_users) || !j.widgets || typeof j.widgets!=='object'){
+    rosterStatus='unavailable';
+    applyIdentity();
+    return pullFailed();
+  }
+  applyBootSession(j);
+  if(!uiV2Allowed()){ forgetV2IfRevoked(); return runBootFull(trigger); }
+  // 重新開機（冷開機、離開 30 分鐘以上）＝之前讀過的模組都不算數；正停在某個模組上就一起讀，資料到齊才收 Loading
+  v2Loaded={};
+  const cur=currentView();
+  if(V2_SHEETS_OF[cur] && !(await v2LoadSheets(V2_SHEETS_OF[cur], trigger))) return false;
+  cloudOnline=true;
+  applyWidgets(j.widgets);
+  applyIdentity();
+  renderConnState();
+  flushOutbox();
+  return true;
+}
+/* boot 與 boot core 共用：身份、名單、管理員提示、一段話、模組登記 */
+function applyBootSession(j){
+  const s=j.session;
   myLineId=s.line_id; myDeviceId=s.device_id||null;
   try{ localStorage.setItem(LINE_ID_KEY, myLineId); }catch(e){}
   perfRows = typeof j.perf_rows==='number' ? j.perf_rows : 0;   // 只有管理員會拿到
@@ -1678,10 +1746,6 @@ async function runBoot(trigger){
   if(gateMode) closeAuthGate();
   roster=j.line_users.filter(u=>rosterId(u));
   rosterStatus = activeUsers().length ? 'ok' : 'empty';
-  const ok=applyCloudData(j.data, j.denied, j);
-  applyIdentity();
-  if(ok) flushOutbox();
-  return ok;
 }
 
 /**
@@ -2610,7 +2674,7 @@ function stopPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null;
 function pollTick(){
   if(document.visibilityState!=='visible') return;     // 保險：背景時不送
   timedPull('poll');
-  refreshStock('poll');                                // 報價另打，不拖慢其他資料（ADR-018 D-6）
+  if(stockOnScreen()) refreshStock('poll');            // 報價另打，不拖慢其他資料（ADR-018 D-6）
   flushOutbox();                                       // 順手把積著的推出去
 }
 
@@ -2619,7 +2683,7 @@ function manualRefresh(){
   toast('更新中…');
   flushOutbox();
   progressStart();
-  refreshStock('manual');
+  if(stockOnScreen()) refreshStock('manual');
   return timedPull('manual').finally(()=>progressDone());
 }
 
@@ -2638,15 +2702,16 @@ function onForeground(now){
   if(now-lastPullAt<FOREGROUND_PULL_MIN_GAP) return Promise.resolve(false);
   if(!myLineId) return startSession('foreground');   // 還沒有身份（開機失敗過）：照完整開機走
   progressStart();
-  refreshStock('foreground');
+  if(stockOnScreen()) refreshStock('foreground');
   return timedPull('foreground').finally(()=>progressDone());
 }
 
 /* pull 一次並記耗時。輪詢也每次都記（ADR-014 D-13，取消原本的 20 抽 1） */
 function timedPull(trigger){
   const started=Date.now();
+  const action = isV2() && currentView()==='overview' ? 'widgets' : 'readMany';   // 2.0 停在總覽時輪詢的是摘要
   return syncFromCloud({trigger}).then(ok=>{
-    if(ok) perfNote('pull', trigger, Date.now()-started, lastRequestId.readMany);
+    if(ok) perfNote('pull', trigger, Date.now()-started, lastRequestId[action]);
     return ok;
   });
 }
@@ -2660,7 +2725,7 @@ function syncFromCloud(meta){
   // 沒配對問了也是被擋；續期畫面開著時問了只會多灌幾列 token_expired 的 logs
   if(!myLineId || gateMode){ renderConnState(); return Promise.resolve(false); }
   if(pullPromise) return pullPromise;
-  pullPromise=pullFromCloud(meta).finally(()=>{ pullPromise=null; lastPullAt=Date.now(); });
+  pullPromise=(isV2() ? v2Pull(meta) : pullFromCloud(meta)).finally(()=>{ pullPromise=null; lastPullAt=Date.now(); });
   return pullPromise;
 }
 
@@ -2748,18 +2813,22 @@ function pullFailed(){
     extras 是兩條路都會帶的記帳附件（ADR-013）：分類設定 expense_config 與分期計畫 installments。
     放在這裡收，boot 失敗、改由輪詢接手時也一樣補得上；分類設定一定在換算記帳資料「之前」收——
     別名→正名的換算靠它 */
-function applyCloudData(data, denied, extras){
+function applyCloudData(data, denied, extras, only){
+  // only：2.0 分層載入只讀了其中幾張（ADR-021 D-1）。沒讀的那幾張原樣留著，不是清空
+  const want=only || DATA_SHEETS;
   const expenseCfg=(extras||{}).expense_config;
-  const deniedList=(Array.isArray(denied)?denied:[]).filter(x=>DATA_SHEETS.includes(x));
+  const deniedList=(Array.isArray(denied)?denied:[]).filter(x=>want.includes(x));
   const c={};
-  for(const sheet of DATA_SHEETS){
+  for(const sheet of want){
     if(deniedList.includes(sheet)){ c[sheet]=[]; continue; }
     if(!Array.isArray(data[sheet])) return pullFailed();     // 回應缺一張表：整次不算數，不是只更新一半
     c[sheet]=data[sheet];
   }
-  applyDenied(deniedList);
+  applyDenied(only ? cloudDenied.filter(x=>!want.includes(x)).concat(deniedList) : deniedList);
   // 讀得到記帳、雲端卻沒送設定：不可靜默（Rule 12）。分類列會講明是雲端沒送，不是叫人「連上線再試」
-  if(!deniedList.includes('expenses')){
+  if(!want.includes('expenses')){
+    // 這次沒讀記帳：設定與分期照舊
+  }else if(!deniedList.includes('expenses')){
     expenseConfigMissing = !applyExpenseConfig(expenseCfg) && !expenseConfig;
     if(expenseConfigMissing) console.warn('雲端回應沒有帶記帳分類設定（expense_config）');
     if(Array.isArray((extras||{}).installments)) installmentPlans=extras.installments;
@@ -2768,10 +2837,10 @@ function applyCloudData(data, denied, extras){
   }
 
   // 整張換掉。後端已經濾掉 del=true 的列，所以「別人刪掉的」在這裡自然消失
-  state.tasks    = c.tasks.map(taskFromCloud);
-  state.notes    = c.notes.map(noteFromCloud);
-  state.expenses = c.expenses.filter(r=>r.id).map(expenseFromCloud);
-  cloudRows=c;
+  if(c.tasks)    state.tasks    = c.tasks.map(taskFromCloud);
+  if(c.notes)    state.notes    = c.notes.map(noteFromCloud);
+  if(c.expenses) state.expenses = c.expenses.filter(r=>r.id).map(expenseFromCloud);
+  cloudRows = only ? Object.assign({}, cloudRows, c) : c;
 
   applyPendingOverlay();
 
@@ -3868,7 +3937,9 @@ function homeGreeting(){
 /* 首頁卡片上的捷徑與導覽按鈕共用。「提醒」直開任務頁的提醒分段 */
 function goView(name){
   if(name==='home') name=homeView();                             // 2.0 的首頁是總覽（ADR-021）
-  if(name==='reminders'){ openTasksSeg('reminder'); return; }
+  if(v2NeedsLoad(name)) return v2OpenModule(name);               // 2.0：這個模組這次開 App 還沒讀過
+  if(isV2() && !v2JustLoaded) v2AfterEnter(name);
+  v2JustLoaded=false;  if(name==='reminders'){ openTasksSeg('reminder'); return; }
   if(name==='tasks' && taskSeg!=='todo') pickTaskSeg('todo');
   switchView(name);
 }
@@ -4029,15 +4100,191 @@ function renderNavV2(nav){
   }).join('');
 }
 function openLibrary(){
-  if(!featureAllowed('clips')){ toast('這個功能還沒對你開放'); return; }
-  goView('notes');
-  pickNoteSeg('clips');
+  if(!featureAllowed('clips')){ toast('這個功能還沒對你開放'); return Promise.resolve(false); }
+  noteSeg='clips';
+  switchView('notes');                                           // 圖書館只要收藏：不為它讀整張雜記
+  const p=pickNoteSeg('clips');
   renderNav();
+  return p;
 }
-/* 總覽骨架：給自己的一段話（只顯示，改在 1.0 首頁或 PR-B 的總覽）＋ Widget 即將上線 */
+/* ---------- 2.0 分層載入（ADR-021 D-1｜PR-B） ----------
+   開機只讀核心層（runBootCore）；模組的表**這次開 App 第一次點進去**才讀：全螢幕 Loading，資料到齊才進畫面
+   （Neil 2026-10-19：第一次進才載，之後靠輪詢保持最新——資料都是這次開 App 從雲端讀的，不是快取）。
+   輪詢只更新畫面上的（Neil 2026-10-19）：停在總覽拿摘要（action=widgets），停在模組讀那個模組的表 */
+const V2_SHEETS_OF={ expenses:['expenses'], plans:['expenses'], tasks:['tasks'], reminders:['tasks'], notes:['notes'] };
+let v2Loaded={};                 // 表 → 這次開 App 讀過了
+function v2NeedsLoad(view){ return isV2() && (V2_SHEETS_OF[view]||[]).some(s=>!v2Loaded[s]); }
+function stockOnScreen(){ return !isV2() || currentView()==='stocks'; }
+async function v2LoadSheets(sheets, trigger){
+  let j=null;
+  const groups=sheets.includes('tasks');            // 群組名開機沒帶，讀任務時順便要
+  try{ j=await cloudPost(Object.assign({action:'readMany', sheets, trigger:trigger||'manual'}, groups?{groups:true}:{})); }catch(e){ j=null; }
+  if(!j || j.error || !j.data || typeof j.data!=='object') return pullFailed();
+  if(j.group_names && typeof j.group_names==='object') groupNames=j.group_names;
+  const ok=applyCloudData(j.data, j.denied, j, sheets);
+  if(ok) sheets.forEach(x=>{ v2Loaded[x]=true; });
+  return ok;
+}
+async function v2LoadWithLoading(sheets){
+  progressStart('full');
+  const ok=await v2LoadSheets(sheets, 'manual');
+  progressDone('full');
+  if(!ok) toast('⚠️ 連不上雲端，請稍後再試');
+  return ok;
+}
+let v2JustLoaded=false;           // 剛讀完就進去：不再背景重讀一次
+async function v2OpenModule(name){
+  const ok=await v2LoadWithLoading(V2_SHEETS_OF[name]);
+  if(ok){ v2JustLoaded=true; goView(name); }
+  return ok;
+}
+/* 進一頁時補上那一頁要的（不擋畫面）：讀過的模組背景重讀一次、總覽超過一輪沒更新就拿摘要、股票頁拿報價 */
+function v2AfterEnter(name){
+  if(name==='overview'){ if(Date.now()-widgets.at>POLL_INTERVAL) refreshWidgets('manual'); return; }
+  if(name==='stocks'){ refreshStock('manual'); return; }
+  if(V2_SHEETS_OF[name]) v2LoadSheets(V2_SHEETS_OF[name], 'manual');
+}
+function v2Pull(meta){
+  const cur=currentView(), trigger=(meta&&meta.trigger)||'manual';
+  if(cur==='overview') return refreshWidgets(trigger);
+  const sheets=(V2_SHEETS_OF[cur]||[]).filter(x=>v2Loaded[x]);
+  return sheets.length ? v2LoadSheets(sheets, trigger) : Promise.resolve(true);   // Apps、搜尋：沒有要輪詢的表
+}
+
+/* ---------- 總覽 Widget（ADR-021 D-6、D-13｜PR-B：Tasks、Reading） ----------
+   資料是雲端算好的摘要（Widget 不直接讀模組的表）。各自的狀態：讀取中（骨架）→ 有資料（淡入）／失敗（只換那一格「連不上・重試」）。
+   摘要沒帶＝沒權限或總開關關掉：那一格不出現 */
+let widgets={ data:null, at:0, loading:false, failed:false };
+let widgetSyncing={};            // 首頁勾完成、雲端還沒回的 id（ADR-021：雲端確認後才顯示已完成）
+let widgetDoneIds={};            // 剛勾完、雲端確認過的：這一輪照樣列著、打勾劃線，下次更新才收起
+let v2TaskSeg='todo';
+function applyWidgets(w){
+  widgets.data = w && typeof w==='object' ? w : {};
+  widgets.at=Date.now(); widgets.failed=false; widgetDoneIds={};
+  renderOverview();
+}
+async function refreshWidgets(trigger){
+  if(widgets.loading) return false;
+  widgets.loading=true;
+  let j=null;
+  try{ j=await cloudPost({action:'widgets', trigger:trigger||'manual'}); }catch(e){ j=null; }
+  widgets.loading=false;
+  if(!j || j.error || !j.widgets || typeof j.widgets!=='object'){ widgets.failed=true; renderOverview(); return false; }
+  if(typeof j.self_note==='string' && !selfNoteEditing) selfNote=j.self_note;
+  cloudOnline=true;
+  applyWidgets(j.widgets);
+  return true;
+}
+/* loading｜ok｜failed｜none（沒帶＝不顯示） */
+function widgetState(key){
+  if(!widgets.data) return widgets.failed ? 'failed' : 'loading';
+  const w=widgets.data[key];
+  if(w===undefined) return 'none';
+  if(widgets.failed || (w && w.error)) return 'failed';
+  return 'ok';
+}
+function hhmm(ms){ const d=new Date(ms); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+function widgetShell(id, title, key, body){
+  const el=document.getElementById(id);
+  if(!el) return;
+  const st=widgetState(key);
+  el.hidden = st==='none';
+  if(st==='none') return;
+  const head=`<div class="w-head"><h2>${title}</h2>${st==='ok' && widgets.at ? `<span class="w-at">更新 ${hhmm(widgets.at)}</span>` : ''}</div>`;
+  el.innerHTML = head + (st==='loading' ? '<div class="w-skel"></div><div class="w-skel short"></div>'
+    : st==='failed' ? `<button class="w-retry" onclick="refreshWidgets('manual')">連不上・重試</button>`
+    : `<div class="w-in">${body()}</div>`);
+}
 function renderOverview(){
-  const el=document.getElementById('v2SelfNote');
-  if(el) el.textContent = selfNote || '（還沒寫）';
+  renderSelfNote();
+  renderTasksWidget();
+  renderReadingWidget();
+}
+
+/* Tasks Widget：頂部最急兩件＋待辦｜提醒｜白板三段（跟 1.0 首頁同一套判斷：urgentItems、byPriority、boardItems） */
+function widgetTaskLists(){
+  const d=(widgets.data||{}).tasks||{};
+  const all=(d.tasks||[]).map(taskFromCloud).filter(inScope);
+  return {
+    all,
+    todos: all.filter(t=>!isReminder(t) && (!t.done || widgetDoneIds[t.id])),
+    reminders: all.filter(t=>isReminder(t) && !t.done),
+    board: boardItems({ tasks:(d.tasks||[]).map(taskFromCloud).filter(t=>t.board),
+      notes:((d.board||{}).notes||[]).map(noteFromCloud), expenses:((d.board||{}).expenses||[]).filter(r=>r.id).map(expenseFromCloud) })
+  };
+}
+function v2TaskSegs(){
+  return [['todo','待辦'], ['reminder','提醒'], ['board','白板']].filter(([k])=>
+    k==='todo' || (k==='reminder' ? moduleOn('reminders') : moduleOn('board')));
+}
+function pickWidgetSeg(k){ v2TaskSeg=k; renderTasksWidget(); }
+function renderTasksWidget(){
+  if(!viewAllowed('tasks')){ setHidden('wTasks', true); return; }
+  widgetShell('wTasks', '☑️ 任務', 'tasks', ()=>{
+    const today=todayKey();
+    const L=widgetTaskLists();
+    const u=urgentItems(L.todos.filter(t=>!t.done), L.reminders, today);
+    const top = !u.total ? '<div class="urgent-empty">✓ 3 天內沒有急事</div>'
+      : u.top.map(x=>{ const w=urgentWhen(x);
+          return `<button class="urgent-row" onclick="openTasksSeg('${x.kind}')"><span class="dot ${x.kind}" aria-hidden="true"></span>
+            <span class="txt">${esc(x.item.txt)}</span><span class="when${w.hot?' hot':''}">${esc(w.text)}</span></button>`; }).join('');
+    const segs=v2TaskSegs();
+    if(!segs.some(([k])=>k===v2TaskSeg)) v2TaskSeg='todo';
+    const counts={ todo:L.todos.filter(t=>!t.done).length, reminder:L.reminders.length, board:L.board.length };
+    const seg=`<div class="seg w-seg">${segs.map(([k,l])=>`<button class="${v2TaskSeg===k?'sel':''}" onclick="pickWidgetSeg('${k}')">${l} ${counts[k]}</button>`).join('')}</div>`;
+    let list='';
+    if(v2TaskSeg==='todo'){
+      const open=L.todos.slice().sort(byPriority).slice(0,5);
+      list = open.length ? open.map(t=>{
+        const sync=!!widgetSyncing[t.id], done=t.done || !!widgetDoneIds[t.id], locked=boardLocked(t);
+        return `<label class="w-task${done?' done':''}"><input type="checkbox" ${done?'checked disabled':''} ${sync||locked?'disabled':''}
+          ${done||sync||locked?'':`onchange="widgetDone(${t.id})"`} aria-label="完成">
+          <span class="txt">${esc(t.txt)}</span>${sync?'<span class="w-sync">同步中…</span>':''}${locked?' '+boardOwnerTag(t):''}</label>`;
+      }).join('') : '<div class="empty-hint">沒有待辦</div>';
+    }else if(v2TaskSeg==='reminder'){
+      const rem=L.reminders.slice().sort((a,b)=>(a.due||'9999')<(b.due||'9999')?-1:1).slice(0,5);
+      list = rem.length ? rem.map(t=>`<div class="w-task"><span class="txt">${esc(t.txt)}</span>${t.due?`<span class="tag">${esc(t.due)}</span>`:''}</div>`).join('')
+        : '<div class="empty-hint">沒有提醒</div>';
+    }else{
+      list = L.board.length ? L.board.slice(0,8).map(i=>`<div class="board-item"><span class="tag">${BOARD_KINDS[i.kind].label}</span>${esc(i.text)}</div>`).join('')
+        : '<div class="empty-hint">白板是空的</div>';
+    }
+    const more=`<button class="w-more" onclick="openTasksSeg('${v2TaskSeg==='reminder'?'reminder':'todo'}')">打開任務 →</button>`;
+    return top + seg + list + more;
+  });
+}
+/* 首頁勾完成（ADR-021）：雲端確認後才顯示已完成。等回應時「同步中…」、不能再按；被拒或連不上就還原（本來就沒先改） */
+async function widgetDone(id){
+  if(widgetSyncing[id]) return false;
+  widgetSyncing[id]=true; renderTasksWidget();
+  let r=null;
+  try{ r=await cloudPost({action:'taskDone', id:String(id), today:todayKey(), next_id:String(Date.now()), trigger:'write'}); }catch(e){ r=null; }
+  delete widgetSyncing[id];
+  if(r && r.success){
+    widgetDoneIds[id]=true;
+    toast(r.spawned ? '✅ 完成，下一期 '+r.next_due : '✅ 完成');
+  }else{
+    toast(r && r.reason==='not_owner' ? `這筆由 ${r.owner_name||'建立者'} 維護，請他處理`
+      : r && r.reason==='module_off' ? `「${moduleName(r.module)}」已停用`
+      : '⚠️ 沒有完成，請稍後再試');
+  }
+  renderTasksWidget();
+  return !!(r && r.success);
+}
+
+/* Reading Widget（D-13）：上次在讀＋未讀 N 篇 */
+function renderReadingWidget(){
+  if(!featureAllowed('clips')){ setHidden('wReading', true); return; }
+  widgetShell('wReading', '📚 閱讀', 'reading', ()=>{
+    const d=(widgets.data||{}).reading||{};
+    const last=d.last ? `<button class="w-row" onclick="openClipFromWidget('${esc(d.last.id)}')"><span class="lbl">上次在讀</span>
+      <span class="txt">${esc(d.last.title||'（沒有標題）')}</span>${d.last.author?`<small>${esc(d.last.author)}</small>`:''}</button>`
+      : '<div class="empty-hint">還沒讀過收藏</div>';
+    return last + `<button class="w-more" onclick="openLibrary()">未讀 ${Number(d.unread)||0} 篇 →</button>`;
+  });
+}
+function openClipFromWidget(id){
+  return openLibrary().then(()=>{ if((clipsData||[]).some(c=>String(c.id)===String(id))) openClip(id); });
 }
 /* Apps Grid（D-9 ①②）：依登記表的 sort、分類分組；總開關關掉的、沒權限的不出現。
    白板沒有獨立頁，等 PR-B 的 Tasks Widget 再放（Neil 2026-10-19） */
@@ -4379,6 +4626,8 @@ function renderNoteSeg(){
   if(!ok && noteSeg==='clips') pickNoteSeg('notes');
 }
 function pickNoteSeg(seg){
+  // 2.0 從圖書館進來時雜記還沒讀（ADR-021 D-1）：切到雜記那一刻才讀
+  if(seg!=='clips' && v2NeedsLoad('notes')) return v2LoadWithLoading(['notes']).then(ok=>ok ? pickNoteSeg(seg) : false);
   noteSeg = seg==='clips' && featureAllowed('clips') ? 'clips' : 'notes';
   document.querySelectorAll('#noteSeg button').forEach(b=>b.classList.toggle('sel', b.dataset.val===noteSeg));
   setHidden('noteCards', noteSeg==='clips');
@@ -4476,7 +4725,17 @@ function renderClips(){
   setHidden('clipReader', !open);
   setHidden('clipListCard', !!open);
 }
-function openClip(id){ clipOpenId=id; renderClips(); window.scrollTo(0,0); }
+function openClip(id){ clipOpenId=id; renderClips(); window.scrollTo(0,0); if(isV2()) markClipRead(id); }
+/* 開閱讀頁即已讀＋時間（ADR-021 D-13）。只在 2.0：1.0 的行為一個都不能變（D-20）。
+   只是閱讀狀態：送不上去不打擾人，下次開再寫一次 */
+function markClipRead(id){
+  const c=(clipsData||[]).find(x=>String(x.id)===String(id));
+  if(c){ c.read_status='read'; c.last_read_at=new Date().toISOString(); }
+  return cloudPost({action:'clipRead', id:String(id), trigger:'write'}).then(r=>{
+    if(!r || !r.success) console.warn('已讀沒有寫進雲端：'+((r&&r.error)||'連線失敗'));
+    return !!(r && r.success);
+  }, ()=>false);
+}
 function closeClip(){ clipOpenId=null; renderClips(); }
 function retryClip(id){ return clipAction('clipRetry', id, '已排進重跑，幾分鐘後按「重新整理」看'); }
 function deleteClip(id){
@@ -5100,6 +5359,7 @@ function renderToday(){
 /* 導覽「🔔 提醒」與首頁的數字磚共用：直開任務頁的某一段 */
 function openTasksSeg(seg){
   if(!viewAllowed('tasks')){ toast('這個功能還沒對你開放'); return; }
+  if(v2NeedsLoad('tasks')) return v2OpenModule('tasks').then(ok=>{ if(ok) pickTaskSeg(seg); });
   switchView('tasks');
   pickTaskSeg(seg);
 }
@@ -5108,25 +5368,30 @@ function openTasksSeg(seg){
    一人一段、寫了就留著直到自己改；只顯示在首頁；雲端存在 self_notes，只有本人讀得到。
    沒有配對（先在本機用）就沒有雲端可存，點了講清楚，不假裝存好了。 */
 function renderSelfNote(){
-  const t=document.getElementById('selfNoteText');
-  if(t){
-    t.textContent = selfNote || '想提醒自己的話，寫了就一直留著';
-    if(t.classList && t.classList.toggle) t.classList.toggle('placeholder', !selfNote);
-  }
-  setHidden('selfNote', selfNoteEditing);
-  setHidden('selfNoteEdit', !selfNoteEditing);
+  // 1.0 首頁與 2.0 總覽各一份（ADR-021：一段話固定在總覽頂部），同一個 selfNote
+  ['', 'v2'].forEach(px=>{
+    const id=k=>px ? px+k.charAt(0).toUpperCase()+k.slice(1) : k;
+    const t=document.getElementById(id('selfNoteText'));
+    if(t){
+      t.textContent = selfNote || '想提醒自己的話，寫了就一直留著';
+      if(t.classList && t.classList.toggle) t.classList.toggle('placeholder', !selfNote);
+    }
+    setHidden(id('selfNote'), selfNoteEditing);
+    setHidden(id('selfNoteEdit'), !selfNoteEditing);
+  });
 }
+function selfNoteInputEl(){ return document.getElementById(isV2() ? 'v2SelfNoteInput' : 'selfNoteInput'); }
 function editSelfNote(){
   if(!deviceToken || localOnly){ toast('配對之後才能存到雲端'); return; }
   selfNoteEditing=true;
-  const inp=document.getElementById('selfNoteInput');
+  const inp=selfNoteInputEl();
   if(inp) inp.value=selfNote;
   renderSelfNote();
   if(inp && inp.focus) inp.focus();
 }
 function closeSelfNote(){ selfNoteEditing=false; renderSelfNote(); }
 async function saveSelfNote(){
-  const inp=document.getElementById('selfNoteInput');
+  const inp=selfNoteInputEl();
   const text=String((inp||{}).value||'').trim();
   let r=null;
   try{ r=await cloudPost({action:'selfNoteSet', text, trigger:'write'}); }catch(e){ r=null; }
@@ -5333,10 +5598,10 @@ function toggleBoard(kind, id){
   renderAll();
 }
 
-function boardItems(){
+function boardItems(src){
   const out=[];
   Object.keys(BOARD_KINDS).forEach(kind=>{
-    (state[kind]||[]).forEach(r=>{ if(r.board) out.push({kind, id:r.id, text:BOARD_KINDS[kind].text(r), ts:r.ts||0}); });
+    ((src||state)[kind]||[]).forEach(r=>{ if(r.board) out.push({kind, id:r.id, text:BOARD_KINDS[kind].text(r), ts:r.ts||0}); });
   });
   return out.sort((a,b)=>b.ts-a.ts);
 }

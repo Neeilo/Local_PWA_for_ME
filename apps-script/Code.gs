@@ -467,14 +467,7 @@ function bootResponse_(caller, perf) {
 
   var isAdmin = truthy_((caller.user || {}).is_admin);
   var out = {
-    session: {
-      status: 'ok',
-      line_id: caller.line_id,
-      display_name: String((caller.user && caller.user.display_name) || '').trim(),
-      device_id: caller.device ? caller.device.device_id : '',
-      device_label: caller.device ? caller.device.device_label : '',
-      is_admin: isAdmin
-    },
+    session: bootSession_(caller),
     line_users: users.error ? [] : withoutTombstones_(users.rows),
     data: many.data,
     denied: many.denied,
@@ -488,14 +481,84 @@ function bootResponse_(caller, perf) {
     var mail = perfStage_(perf, 'mail', function () { return mailSummary_(ss, taipeiDateKey_(new Date())); });
     if (mail) out.mail_summary = mail;
   }
-  if (isAdmin) {
-    out.perf_rows = perfStage_(perf, 'perf_rows', perfRowCount_);
-    var alert = perfStage_(perf, 'unauth_alert', unauthAlert_);
-    if (alert) out.unauth_alert = alert;
-    var usage = perfStage_(perf, 'clips_usage', clipsUsage_);      // RD-HF1：讀一個指令碼屬性，不讀 Sheet
-    if (usage) out.clips_usage = usage;
-  }
+  if (isAdmin) bootAdminExtras_(out, perf);
   return withExpenseConfig_(out, caller.user, ss, BOOT_SHEETS, perf);
+}
+
+/** boot 與 boot core 共用：session 那一塊 */
+function bootSession_(caller) {
+  return {
+    status: 'ok',
+    line_id: caller.line_id,
+    display_name: String((caller.user && caller.user.display_name) || '').trim(),
+    device_id: caller.device ? caller.device.device_id : '',
+    device_label: caller.device ? caller.device.device_label : '',
+    is_admin: truthy_((caller.user || {}).is_admin)
+  };
+}
+
+/** boot 與 boot core 共用：管理員才有的提示（設定頁小紅點、效能紀錄列數、Apify 用量） */
+function bootAdminExtras_(out, perf) {
+  out.perf_rows = perfStage_(perf, 'perf_rows', perfRowCount_);
+  var alert = perfStage_(perf, 'unauth_alert', unauthAlert_);
+  if (alert) out.unauth_alert = alert;
+  var usage = perfStage_(perf, 'clips_usage', clipsUsage_);      // RD-HF1：讀一個指令碼屬性，不讀 Sheet
+  if (usage) out.clips_usage = usage;
+}
+
+/* ---------- 2.0 開機只讀核心層（ADR-021 D-1｜PR-B） ----------
+   1.0 的 boot 整張讀 tasks／notes／expenses（BOOT_SHEETS）；2.0 帶 core:true 只讀首頁要的：
+   身份、名單、模組登記、一段話、各 Widget 的摘要。模組自己的表點進去才讀（前端 readMany 那張）。
+   沿用 action=boot（不另開動作）：效能紀錄照舊 action=boot，用 ui 欄分 1.0／2.0。
+   摘要各自包 try/catch（EXP-01）：一個摘要壞了只有那一格「連不上・重試」，開機與其他 Widget 照常。
+   沒權限（或總開關關掉）的摘要不帶：前端不畫那一格。 */
+function bootCoreResponse_(caller, perf) {
+  var opened = Date.now();
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  perf.open_ms = Date.now() - opened;
+  perfSet_(perf, 'open', perf.open_ms);
+  var modules = perfStage_(perf, 'modules', function () { return modulesForPwa_(ss); });
+  var users = perfStage_(perf, 'users', function () { return sheetRecords_(ss, LINE_USERS_SHEET, perf); });
+  var out = {
+    core: true,
+    session: bootSession_(caller),
+    line_users: users.error ? [] : withoutTombstones_(users.rows),
+    modules: modules,
+    self_note: perfStage_(perf, 'self_note', function () { return selfNoteOf_(ss, caller.line_id); }),
+    widgets: perfStage_(perf, 'widgets', function () { return bootWidgets_(ss, caller.user, perf); })
+  };
+  perf.sheets = [LINE_USERS_SHEET].concat(Object.keys(out.widgets)).join(',');
+  if (truthy_((caller.user || {}).is_admin)) bootAdminExtras_(out, perf);
+  return out;
+}
+
+/** action=widgets：2.0 停在總覽時的輪詢，只拿摘要與一段話（名單、模組等開機才帶） */
+function widgetsResponse_(caller, perf) {
+  var opened = Date.now();
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  perf.open_ms = Date.now() - opened;
+  perfSet_(perf, 'open', perf.open_ms);
+  modulesOff_(ss);
+  var widgets = perfStage_(perf, 'widgets', function () { return bootWidgets_(ss, caller.user, perf); });
+  perf.sheets = Object.keys(widgets).join(',');
+  return { widgets: widgets, self_note: perfStage_(perf, 'self_note', function () { return selfNoteOf_(ss, caller.line_id); }) };
+}
+
+/** 各模組的摘要（Widget 不直接讀模組的表，Spec §4.2）。key＝Widget 名 */
+function bootWidgets_(ss, user, perf) {
+  var out = {};
+  if (canUseSheet_(user, TASKS_SHEET)) out.tasks = widgetSafe_(perf, 'w.tasks', function () { return tasksWidget_(ss, user, perf); });
+  if (canUse_(user, CLIPS_FEATURE)) out.reading = widgetSafe_(perf, 'w.reading', function () { return readingWidget_(ss, user); });
+  return out;
+}
+
+function widgetSafe_(perf, name, fn) {
+  try {
+    return perfStage_(perf, name, fn);
+  } catch (err) {
+    console.log('Widget 摘要失敗（' + name + '，其他照常）：' + err);
+    return { error: 'summary_failed' };
+  }
 }
 
 /* ---------- 給自己的一段話（ADR-018 C-4） ----------
@@ -663,7 +726,8 @@ function routePwaSync_(body, perf) {
   perf.who = { line_id: caller.line_id, device_id: caller.device ? caller.device.device_id : '' };
 
   // 股票不再夾在 boot／readMany 裡（ADR-018 D-6）：前端進首頁後另打 action=stock
-  if (body.action === 'boot') return perfJsonOut_(perf, bootResponse_(caller, perf));
+  if (body.action === 'boot') return perfJsonOut_(perf, body.core === true ? bootCoreResponse_(caller, perf) : bootResponse_(caller, perf));
+  if (body.action === 'widgets') return perfJsonOut_(perf, widgetsResponse_(caller, perf));
   if (body.action === 'stock') return perfJsonOut_(perf, stockResponse_(caller, body, perf));
   if (body.action === 'readMany') {
     perf.sheets = Array.isArray(body.sheets) ? body.sheets.filter(function (x) { return typeof x === 'string'; }).join(',') : '';
@@ -673,6 +737,8 @@ function routePwaSync_(body, perf) {
     perfSet_(perf, 'open', perf.open_ms);
     modulesOff_(ssMany);
     var many = perfStage_(perf, 'sheets', function () { return readManyFrom_(ssMany, caller.user, body.sheets, perf); });
+    // 2.0 開機不帶群組名（ADR-021 D-1）：進任務頁讀 tasks 時順便要（groups:true）。1.0 不帶這個參數，回應不變
+    if (body.groups === true && many.data.tasks) many.group_names = perfStage_(perf, 'groups', function () { return taskGroupNames_(many.data.tasks); });
     return perfJsonOut_(perf, withExpenseConfig_(many, caller.user, ssMany, Array.isArray(body.sheets) ? body.sheets : [], perf));
   }
   if (body.action === 'read') return jsonOut(readSheetResponse_(body.sheet, perf, caller.user));
@@ -701,8 +767,9 @@ function routePwaSync_(body, perf) {
   if (body.action === 'aiConfigSet') return jsonOut(aiConfigSet_(caller, body.provider, body.model));
   if (body.action === 'commandDict') return jsonOut(commandDictForPwa_(caller));
   if (body.action === 'moduleSet') return jsonOut(moduleSet_(caller, body.module_id, body.enabled === true));
+  if (body.action === 'taskDone') return jsonOut(taskDone_(caller, body));
   // 收藏的重跑／刪除（ADR-020）：只限擁有者，不走一般 upsert
-  if (body.action === 'clipRetry' || body.action === 'clipDelete') return jsonOut(clipPwaAction_(caller, body.action, body.id));
+  if (body.action === 'clipRetry' || body.action === 'clipDelete' || body.action === 'clipRead') return jsonOut(clipPwaAction_(caller, body.action, body.id));
 
   if (NO_PWA_WRITE.indexOf(body.sheet) !== -1 || isBackupSheet_(body.sheet)) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');
@@ -1249,6 +1316,77 @@ function boardOwnerDenied_(sheet, headers, record, sheetName, caller, action) {
   logTransaction_('同步', '失敗', 'PWA ' + action + ' → ' + sheetName + ' id=' + id,
     '白板項目只有建立者能改，拒絕', 'code=not_owner｜owner=' + owner, '', caller.line_id);
   return { error: 'forbidden', permanent: true, reason: 'not_owner', sheet: sheetName, id: id, owner_name: ownerName };
+}
+
+/* ---------- Tasks Widget 摘要（ADR-021 PR-B） ----------
+   tasks：還沒完成的（待辦＋提醒）＋釘在白板上的（含已完成），格式跟 readMany 的列一樣，前端沿用同一套換算。
+   board：notes／expenses 裡釘在白板上的列。**不整張讀**——只讀 board 那一欄找出列號，再一列一列讀；
+   2.0 開機省掉的就是這兩張表的整張讀取。沒權限的表不帶，白板模組關掉就全空 */
+function tasksWidget_(ss, user, perf) {
+  var read = sheetRecords_(ss, TASKS_SHEET, perf || {});
+  if (read.error) throw new Error(read.error);
+  var rows = pwaVisibleRows_(TASKS_SHEET, withoutTombstones_(read.rows), user);
+  var board = { notes: [], expenses: [] };
+  if (moduleOn_('board')) {
+    ['notes', 'expenses'].forEach(function (name) { if (canUseSheet_(user, name)) board[name] = boardRowsOf_(ss, name); });
+  }
+  return {
+    tasks: rows.filter(function (r) { return !truthy_(r.is_completed) || truthy_(r.board); }),
+    board: board,
+    at: new Date().toISOString()
+  };
+}
+
+/** 一張表裡釘在白板上、沒刪掉的列（完整欄位）。只讀 board 一欄＋命中的列 */
+function boardRowsOf_(ss, sheetName) {
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return [];
+  var headers = sheetHeaders_(sheet);
+  var col = headers.indexOf('board') + 1;
+  var last = sheet.getLastRow();
+  if (!col || last < 2) return [];
+  var out = [];
+  sheet.getRange(2, col, last - 1, 1).getValues().forEach(function (flag, i) {
+    if (!truthy_(flag[0])) return;
+    var line = sheet.getRange(i + 2, 1, 1, headers.length).getValues()[0];
+    var rec = {};
+    headers.forEach(function (h, j) { rec[h] = line[j]; });
+    if (!isTombstone_(rec)) out.push(rec);
+  });
+  return out;
+}
+
+/**
+ * 首頁勾完成（ADR-021 PR-B）：action=taskDone { id, today, next_id }。
+ * 票面要求「雲端確認後才顯示已完成」，所以不走待送佇列，直接問雲端；判斷全用雲端那一列（不信前端送的）。
+ * 完成走任務頁打勾的同一條路（completeRecurring_：週期待辦生下一期、白板只有建立者能勾、提醒不能勾）。
+ * 永久拒絕帶 permanent:true；拿不到鎖回 busy（可重試）
+ */
+function taskDone_(caller, body) {
+  var off = sheetModuleOff_(TASKS_SHEET);
+  if (off) return moduleOffDenied_(off, 'taskDone', TASKS_SHEET, caller.line_id);
+  if (!canUseSheet_(caller.user, TASKS_SHEET)) return featureForbidden_(caller, 'taskDone', TASKS_SHEET);
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(UPSERT_LOCK_MS)) return { error: 'busy' };
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TASKS_SHEET);
+    var headers = sheet ? sheetHeaders_(sheet) : [];
+    var idCol = headers.indexOf('id') + 1;
+    var id = keyValue_(body.id);
+    var found = idCol && id ? findRowsByKey_(sheet, [idCol], id) : [];
+    if (!found.length) return { error: 'not_found', permanent: true };
+    var line = sheet.getRange(found[0], 1, 1, headers.length).getValues()[0];
+    var rec = {};
+    headers.forEach(function (h, i) { rec[h] = line[i]; });
+    if (isTombstone_(rec)) return { error: 'not_found', permanent: true };
+    if (isReminder_(rec)) return { error: 'reminder_not_completable', permanent: true };
+    rec.is_completed = 'TRUE';
+    var out = completeRecurring_({ sheet: TASKS_SHEET, key_field: 'id', record: rec, today: body.today, next_id: body.next_id }, caller, sheet);
+    if (out.success) logTransaction_('任務', '成功', 'PWA taskDone id=' + id, out.spawned ? '完成，下一期 ' + out.next_due : '完成', '', found[0], caller.line_id);
+    return out;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /* ========================================================================== */
