@@ -40,7 +40,7 @@ function guideRegistry_() {
     { sheet: SELF_NOTES_SHEET, category: '資料', purpose: '給自己的一段話（一人一列，只有本人讀得到）',
       writers: 'PWA 首頁（只走 selfNoteSet）', readers: 'PWA 開機（boot 只帶自己那一列；PWA 一般讀寫碰不到）',
       key: 'line_id', adr: '018' },
-    { sheet: CLIPS_SHEET, category: '資料', purpose: 'IG 收藏，一篇一列（全文、Drive 資料夾與圖片檔 ID；status＝pending／done／partial／failed；category 先留空）',
+    { sheet: CLIPS_SHEET, category: '資料', purpose: 'IG 收藏，一篇一列（全文、Drive 資料夾與圖片檔 ID；status＝pending／done／partial／failed；category 先留空；read_status／last_read_at＝2.0 開閱讀頁即已讀，ADR-021 D-13）',
       writers: 'LINE 一對一貼 IG 網址（登記 pending）、排程總管 clips 工作（抓取、存 Drive、重試、合併）、PWA clipRetry／clipDelete（只限擁有者）',
       readers: 'PWA（只回自己的列）', key: 'id', adr: '020' },
     { sheet: 'notes', category: '資料', purpose: '雜記（[類別] 內容）',

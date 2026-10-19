@@ -18,7 +18,9 @@
  */
 var CLIPS_HEADERS = ['id', 'line_id', 'source_text', 'url', 'shortcode', 'kind', 'status', 'attempts', 'next_try_at', 'error',
   'author', 'posted_at', 'caption', 'media_expected', 'media_saved', 'drive_folder_id', 'image_ids', 'category',
-  'collected_at', 'last_collected_at', 'del', 'created_at', 'updated_at', 'video_saved'];
+  'collected_at', 'last_collected_at', 'del', 'created_at', 'updated_at', 'video_saved',
+  // ADR-021 D-13：閱讀狀態（未讀／已讀兩態；開閱讀頁即已讀＋時間）。加在最右邊，1.0 讀到陌生欄位照常
+  'read_status', 'last_read_at'];
 var CLIPS_FEATURE = 'feat_clips';
 var CLIPS_LOG_SOURCE = '收藏';
 var CLIPS_PER_ROUND = 5;
@@ -628,7 +630,7 @@ function clipsRecordResult_(sheet, rec, result, nowMs) {
 /* -------------------------------------------------------------------------- */
 
 /**
- * action=clipRetry｜clipDelete。只限擁有者；不是擁有者回 { error: 'forbidden', permanent: true }——
+ * action=clipRetry｜clipDelete｜clipRead（ADR-021：開閱讀頁即已讀）。只限擁有者；不是擁有者回 { error: 'forbidden', permanent: true }——
  * 這是永久性拒絕，前端收到不重送（ADR-018 實作差異 A-2 的教訓，ADR-019 B-5 同一套）。
  * 重跑：→ pending、attempts=0、清 next_try_at；刪除：del（Drive 不動）
  */
@@ -642,16 +644,45 @@ function clipPwaAction_(caller, action, id) {
     logTransaction_(CLIPS_LOG_SOURCE, '失敗', action + ' ' + id, '不是擁有者，拒絕', '', '', caller.line_id);
     return { error: 'forbidden', permanent: true, reason: 'not_owner' };
   }
-  var patch = action === 'clipDelete'
-    ? { del: 'TRUE' }
+  var patch = action === 'clipDelete' ? { del: 'TRUE' }
+    : action === 'clipRead' ? { read_status: 'read', last_read_at: new Date().toISOString() }
     : { status: 'pending', attempts: 0, next_try_at: '', error: '' };
   try {
     clipsPatch_(sheet, id, patch);
   } catch (err) {
     return { error: 'busy' };                  // 可重試
   }
-  logTransaction_(CLIPS_LOG_SOURCE, '成功', action + ' ' + id, action === 'clipDelete' ? '刪除（Drive 保留）' : '重跑', rec.url, '', caller.line_id);
+  // 已讀只是閱讀狀態，每開一篇都寫一列 logs 只會把 logs 灌大
+  if (action !== 'clipRead') logTransaction_(CLIPS_LOG_SOURCE, '成功', action + ' ' + id, action === 'clipDelete' ? '刪除（Drive 保留）' : '重跑', rec.url, '', caller.line_id);
   return { success: true };
+}
+
+/**
+ * Reading Widget 摘要（ADR-021 D-13）：「上次在讀」＝最後閱讀時間最新的一篇；「未讀」＝收齊（done／partial）且沒讀過的。
+ * 只看自己的、刪掉的不算。title 取內文第一行（沒有就作者、網址）
+ */
+function readingWidget_(ss, user) {
+  var read = sheetRecords_(ss, CLIPS_SHEET, {});
+  if (read.error) return { unread: 0, last: null, at: new Date().toISOString() };
+  var mine = clipsVisibleTo_(read.rows, user).filter(function (r) { return !clipDeleted_(r); });
+  var unread = mine.filter(function (r) {
+    var st = String(r.status || '').trim();
+    return (st === 'done' || st === 'partial') && String(r.read_status || '').trim() !== 'read';
+  }).length;
+  var last = null, lastMs = 0;
+  mine.forEach(function (r) {
+    var ms = r.last_read_at ? new Date(r.last_read_at).getTime() : NaN;
+    if (isFinite(ms) && ms > lastMs) { lastMs = ms; last = r; }
+  });
+  return {
+    unread: unread,
+    last: last ? {
+      id: String(last.id), author: String(last.author || ''),
+      title: String(last.caption || '').split('\n')[0].trim().slice(0, 60) || String(last.author || '') || String(last.url || ''),
+      last_read_at: new Date(lastMs).toISOString()
+    } : null,
+    at: new Date().toISOString()
+  };
 }
 
 /** PWA 讀 clips：只回請求者自己的列（readMany 與 read 共用） */
