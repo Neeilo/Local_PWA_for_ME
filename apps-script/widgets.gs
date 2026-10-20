@@ -173,7 +173,7 @@ function weatherWanted_() {
 
 function weatherFetchCounty_(county, key) {
   var url = WEATHER_URL + WEATHER_DATASETS[county] + '?Authorization=' + encodeURIComponent(key) + '&format=JSON';
-  var res = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true });
+  var res = callApi_('cwa', url, { method: 'get', muteHttpExceptions: true });
   var code = res.getResponseCode();
   if (code !== 200) throw new Error('HTTP ' + code);
   return JSON.parse(res.getContentText());

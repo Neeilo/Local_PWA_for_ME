@@ -215,6 +215,21 @@ export class FakeCache {
     this.map.delete(k);
   }
 
+  // 批次版（真的 CacheService 也有）：API 計次一次讀寫好幾個鍵（ADR-022）
+  getAll(keys) {
+    const out = {};
+    keys.forEach((k) => { const v = this.get(k); if (v !== null) out[k] = v; });
+    return out;
+  }
+
+  putAll(values, ttl = 600) {
+    Object.keys(values).forEach((k) => this.put(k, values[k], ttl));
+  }
+
+  removeAll(keys) {
+    keys.forEach((k) => this.remove(k));
+  }
+
   /** 測試用：模擬 Google 提早逐出（不等 TTL） */
   evict(prefix = '') {
     [...this.map.keys()].filter((k) => k.startsWith(prefix)).forEach((k) => this.map.delete(k));
@@ -328,6 +343,7 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
     requireAllScopes: (mode) => { scopeChecks.push({ mode, scopes: 'all' }); }
   };
 
+  const queueKey = (k) => ['perfq_', 'apiq_', 'apid_'].some((p) => String(k).indexOf(p) === 0);
   const context = createContext({
     console: {
       log: (...args) => logs.push(args.join(' ')),
@@ -336,18 +352,19 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
     // 開了幾次試算表（ADR-012：boot 要「只開一次」，這裡數得出來）
     SpreadsheetApp: { getActiveSpreadsheet: () => { counters.opens++; return ss; }, flush: () => {} },
     // 指令碼屬性預設唯讀：setProperty 丟例外。propsWritable 才開放寫。
+    // API 用量的排隊鍵（apiq_、apid_，ADR-022）同理：記帳只能走這條路，照真的行為一律可寫
     // 例外是效能紀錄的排隊鍵（perfq_）：ADR-019 B-2 起它是寫 performance 的唯一途徑（不再退回直接寫），
     // 照真的行為一律可寫。測試要看 performance 的列，先呼叫 flushPerfQueue（跟上線後排程落地一樣）
     PropertiesService: {
       getScriptProperties: () => ({
         getProperty: (k) => (k in properties ? properties[k] : null),
         setProperty: (k, v) => {
-          if (!propsWritable && String(k).indexOf('perfq_') !== 0) throw new Error('測試的指令碼屬性是唯讀的');
+          if (!propsWritable && !queueKey(k)) throw new Error('測試的指令碼屬性是唯讀的');
           properties[k] = String(v);
         },
         getProperties: () => Object.assign({}, properties),
         deleteProperty: (k) => {
-          if (!propsWritable && String(k).indexOf('perfq_') !== 0) throw new Error('測試的指令碼屬性是唯讀的');
+          if (!propsWritable && !queueKey(k)) throw new Error('測試的指令碼屬性是唯讀的');
           delete properties[k];
         }
       })
@@ -424,7 +441,8 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
   // gmail.gs 同理：line-router.gs 的「初始化」會呼叫它（ADR-016）；ai.gs：「查/」與設定頁的 AI 出口（ADR-017）
   // scheduler.gs：「初始化」裝的唯一觸發器（ADR-019 D-1）；clips.gs：LINE 路由與總管會呼叫它（ADR-020）
   // modules.gs：canUse_ 與各讀寫出口都問總開關（ADR-021）
-  const ALWAYS = ['stock.gs', 'gmail.gs', 'ai.gs', 'scheduler.gs', 'clips.gs', 'modules.gs', 'widgets.gs', 'search.gs'];
+  // api-cost.gs：所有外部呼叫的唯一出口 callApi_（ADR-022）
+  const ALWAYS = ['stock.gs', 'gmail.gs', 'ai.gs', 'scheduler.gs', 'clips.gs', 'modules.gs', 'widgets.gs', 'search.gs', 'api-cost.gs'];
   const files = ALWAYS.concat(extraFiles.filter((name) => ALWAYS.indexOf(name) === -1));
   files.forEach((name) => {
     runInContext(readFileSync(join(ROOT, 'apps-script', name), 'utf8'), context, { filename: name });
