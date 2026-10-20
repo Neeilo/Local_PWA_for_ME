@@ -322,6 +322,19 @@ function runGmailController_(now) {
   }
 }
 
+/**
+ * Mail Widget 摘要（ADR-021 D-16）：控制員既有產出——今日各標籤筆數＋異常警告。
+ * 警告沿用控制員檢查規則的同一套（gmailActiveRules_：規則有問題、掛了不存在的解析器），不另寫一份；最多 5 則
+ */
+function mailWidget_(ss) {
+  var counts = mailSummary_(ss, taipeiDateKey_(new Date())) || { today: 0, bill: 0, newsletter: 0, etag: 0, bills_3d: 0 };
+  var warnings = [];
+  var r = gmailRulesRead_();
+  if (r.error) warnings.push('讀不到 ' + GMAIL_RULES_SHEET + '（' + r.error + '）');
+  else gmailActiveRules_(r.rules, warnings);
+  return Object.assign({}, counts, { warnings: warnings.slice(0, 5), at: new Date().toISOString() });
+}
+
 /** 啟用中、沒有問題的規則（有問題的寫進 notes 並跳過；parser 不認得只提醒、照樣處理） */
 function gmailActiveRules_(rules, notes) {
   var seen = {};

@@ -166,9 +166,13 @@ describe('輪詢只更新畫面上的', () => {
   test('停在總覽：action=widgets，不讀任何整張表', async () => {
     const { e } = env({ handler: { bootCore: coreReply(), widgets: { widgets: coreReply().widgets, self_note: '' } } });
     await e.callRaw('runBoot', 'cold');
+    await settle();
+    const before = sent(e, 'widgets').length;          // PR-C：開機後另外要財務（一趟 widgets only:[finance]）
     await e.callRaw('timedPull', 'poll');
-    assert.equal(sent(e, 'widgets').length, 1);
-    assert.equal(sent(e, 'widgets')[0].body.trigger, 'poll');
+    const polls = sent(e, 'widgets').slice(before);
+    assert.equal(polls.length, 1);
+    assert.equal(polls[0].body.trigger, 'poll');
+    assert.ok(!polls[0].body.only.includes('stocks'), '股票走報價，不在 widgets 裡');
     assert.equal(sent(e, 'readMany').length, 0);
   });
 

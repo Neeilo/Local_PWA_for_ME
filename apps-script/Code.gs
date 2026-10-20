@@ -53,6 +53,9 @@ var SELF_NOTES_SHEET = 'self_notes';
 /** 模組登記表＋總開關（ADR-021 D-9 ①，modules.gs）。PWA 讀寫都碰不到：只走 boot 帶回、moduleSet 改 */
 var MODULE_REGISTRY_SHEET = '_module_registry';
 
+/** 總覽 Widget 的個人設定（ADR-021 D-8，widgets.gs）。一人一列；PWA 讀寫都碰不到：只走 boot 帶自己那列、widgetConfigSet 改 */
+var WIDGET_CONFIG_SHEET = 'widget_config';
+
 /**
  * PWA 連一筆都不准寫的分頁（任何 action 都一樣，包括 upsert）。
  *
@@ -67,7 +70,7 @@ var MODULE_REGISTRY_SHEET = '_module_registry';
 var GUIDE_SHEET = '_guide';
 var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET,
                     LINE_GROUPS_SHEET, STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET,
-                    SELF_NOTES_SHEET, CLIPS_SHEET, MODULE_REGISTRY_SHEET];
+                    SELF_NOTES_SHEET, CLIPS_SHEET, MODULE_REGISTRY_SHEET, WIDGET_CONFIG_SHEET];
 
 /**
  * PWA 連讀都不准讀的分頁（ADR-010 D-8）。
@@ -91,7 +94,7 @@ var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_
  */
 var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET, LINE_GROUPS_SHEET,
                    STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET,
-                   SELF_NOTES_SHEET, MODULE_REGISTRY_SHEET];
+                   SELF_NOTES_SHEET, MODULE_REGISTRY_SHEET, WIDGET_CONFIG_SHEET];
 
 /**
  * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
@@ -525,30 +528,47 @@ function bootCoreResponse_(caller, perf) {
     line_users: users.error ? [] : withoutTombstones_(users.rows),
     modules: modules,
     self_note: perfStage_(perf, 'self_note', function () { return selfNoteOf_(ss, caller.line_id); }),
-    widgets: perfStage_(perf, 'widgets', function () { return bootWidgets_(ss, caller.user, perf); })
+    widget_config: perfStage_(perf, 'widget_config', function () { return widgetConfigOf_(ss, caller.line_id); })
   };
+  out.widgets = perfStage_(perf, 'widgets', function () { return bootWidgets_(ss, caller, perf, WIDGET_FAST, out.widget_config); });
+  out.widgets_meta = widgetsMeta_();
   perf.sheets = [LINE_USERS_SHEET].concat(Object.keys(out.widgets)).join(',');
   if (truthy_((caller.user || {}).is_admin)) bootAdminExtras_(out, perf);
   return out;
 }
 
 /** action=widgets：2.0 停在總覽時的輪詢，只拿摘要與一段話（名單、模組等開機才帶） */
-function widgetsResponse_(caller, perf) {
+function widgetsResponse_(caller, perf, body) {
   var opened = Date.now();
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   perf.open_ms = Date.now() - opened;
   perfSet_(perf, 'open', perf.open_ms);
   modulesOff_(ss);
-  var widgets = perfStage_(perf, 'widgets', function () { return bootWidgets_(ss, caller.user, perf); });
+  // only：要哪幾個（finance 開機後另外要；停在總覽輪詢時要畫面上那幾個）。沒帶＝開機那幾個
+  var only = Array.isArray(body.only) ? body.only.filter(function (k) { return WIDGET_IDS.indexOf(k) !== -1; }) : WIDGET_FAST;
+  var cfg = only.indexOf('weather') !== -1 ? widgetConfigOf_(ss, caller.line_id) : null;
+  var widgets = perfStage_(perf, 'widgets', function () { return bootWidgets_(ss, caller, perf, only, cfg); });
   perf.sheets = Object.keys(widgets).join(',');
-  return { widgets: widgets, self_note: perfStage_(perf, 'self_note', function () { return selfNoteOf_(ss, caller.line_id); }) };
+  return { widgets: widgets, widgets_meta: widgetsMeta_(),
+    self_note: perfStage_(perf, 'self_note', function () { return selfNoteOf_(ss, caller.line_id); }) };
 }
 
-/** 各模組的摘要（Widget 不直接讀模組的表，Spec §4.2）。key＝Widget 名 */
-function bootWidgets_(ss, user, perf) {
+/** 盤中排序（D-7）要的「現在是不是交易時段」：沿用股票模組的判斷，不在前端另寫一份 */
+function widgetsMeta_() {
+  return { trading: isTwTradingTime_(new Date()) };
+}
+
+/** 各模組的摘要（Widget 不直接讀模組的表，Spec §4.2）。key＝Widget 名；only＝這次要哪幾個 */
+function bootWidgets_(ss, caller, perf, only, cfg) {
+  var user = caller.user;
+  var want = function (k) { return only.indexOf(k) !== -1; };
   var out = {};
-  if (canUseSheet_(user, TASKS_SHEET)) out.tasks = widgetSafe_(perf, 'w.tasks', function () { return tasksWidget_(ss, user, perf); });
-  if (canUse_(user, CLIPS_FEATURE)) out.reading = widgetSafe_(perf, 'w.reading', function () { return readingWidget_(ss, user); });
+  if (want('tasks') && canUseSheet_(user, TASKS_SHEET)) out.tasks = widgetSafe_(perf, 'w.tasks', function () { return tasksWidget_(ss, user, perf); });
+  if (want('reading') && canUse_(user, CLIPS_FEATURE)) out.reading = widgetSafe_(perf, 'w.reading', function () { return readingWidget_(ss, user); });
+  // 郵件只給管理者＋feat_gmail（D-16，跟郵件模組同一條）
+  if (want('mail') && truthy_((user || {}).is_admin) && canUse_(user, 'feat_gmail')) out.mail = widgetSafe_(perf, 'w.mail', function () { return mailWidget_(ss); });
+  if (want('weather')) out.weather = widgetSafe_(perf, 'w.weather', function () { return weatherWidget_(cfg || widgetConfigOf_(ss, caller.line_id)); });
+  if (want('finance') && canUseSheet_(user, 'expenses')) out.finance = widgetSafe_(perf, 'w.finance', function () { return financeWidget_(ss, user); });
   return out;
 }
 
@@ -727,7 +747,8 @@ function routePwaSync_(body, perf) {
 
   // 股票不再夾在 boot／readMany 裡（ADR-018 D-6）：前端進首頁後另打 action=stock
   if (body.action === 'boot') return perfJsonOut_(perf, body.core === true ? bootCoreResponse_(caller, perf) : bootResponse_(caller, perf));
-  if (body.action === 'widgets') return perfJsonOut_(perf, widgetsResponse_(caller, perf));
+  if (body.action === 'widgets') return perfJsonOut_(perf, widgetsResponse_(caller, perf, body));
+  if (body.action === 'widgetConfigSet') return jsonOut(widgetConfigSet_(caller, body.config));
   if (body.action === 'stock') return perfJsonOut_(perf, stockResponse_(caller, body, perf));
   if (body.action === 'readMany') {
     perf.sheets = Array.isArray(body.sheets) ? body.sheets.filter(function (x) { return typeof x === 'string'; }).join(',') : '';
@@ -1333,6 +1354,26 @@ function tasksWidget_(ss, user, perf) {
   return {
     tasks: rows.filter(function (r) { return !truthy_(r.is_completed) || truthy_(r.board); }),
     board: board,
+    at: new Date().toISOString()
+  };
+}
+
+/* ---------- Finance Widget 摘要（ADR-021 PR-C） ----------
+   本月支出（雙環圖）＋分期摘要。只帶本月的列與之後的分期列（不是整張），附分類設定與分期計畫——
+   前端沿用記帳頁同一套彙總（categoryBreakdown、dashPlanFigures），不在後端另算一份 */
+function financeWidget_(ss, user) {
+  var read = sheetRecords_(ss, 'expenses', {});
+  if (read.error) throw new Error(read.error);
+  var today = taipeiDateKey_(new Date());
+  var mk = today.slice(0, 7);
+  var rows = pwaVisibleRows_('expenses', withoutTombstones_(read.rows), user).filter(function (r) {
+    var d = keyValue_(r.expense_date);
+    return d.slice(0, 7) === mk || (keyValue_(r.plan_id) && d > today);
+  });
+  return {
+    rows: rows,
+    expense_config: expenseConfigPublic_(expenseConfig_(ss)),
+    installments: moduleOn_('plans') ? installmentPlans_(ss) : [],
     at: new Date().toISOString()
   };
 }
