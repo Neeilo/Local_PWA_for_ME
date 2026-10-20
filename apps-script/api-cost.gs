@@ -61,6 +61,7 @@ function apiCatalog_() {
     cwa: { label: '氣象署', billing: 'free_quota' },
     jina: { label: 'Jina Reader', billing: 'free_quota' },
     web: { label: '網頁／圖片下載', billing: 'count' },
+    litellm: { label: 'LiteLLM 價目（查價）', billing: 'count' },
     gas_urlfetch: { label: 'GAS UrlFetch（全部呼叫）', billing: 'free_quota' }
   };
 }
@@ -286,7 +287,7 @@ function apiQueueUsage_(row) {
 /* -------------------------------------------------------------------------- */
 
 /**
- * **整個專案唯一寫 api_* 分頁的地方**（初始化建表除外）。每 10 分鐘一次，拿不到鎖就跳過。
+ * **平常唯一寫 api_* 分頁的地方**（例外：初始化建表、管理者確認改價 apiPriceApply_，都拿同一把鎖）。每 10 分鐘一次，拿不到鎖就跳過。
  * 先寫、寫成功才刪鍵——寫失敗一個鍵都不刪，下一輪重寫，不掉也不重複。
  */
 function flushApiUsage(now) {
@@ -541,4 +542,224 @@ function installApiCost_() {
     lines.push('價目表登記 ' + add.length + ' 列（AI 單價等「重新查價」帶入，之前費用記為未定價）');
   }
   return { level: 'ok', changed: changed, text: lines.length ? lines.join('\n　') : '四張表與價目表已齊備' };
+}
+
+/* -------------------------------------------------------------------------- */
+/* 查價（ADR-022 PR-B，D-9）：查只回差異、確認才寫                                 */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * 各家都沒有查價 API，AI 單價取自 LiteLLM 社群價目 JSON。社群資料可能晚幾天、可能錯，
+ * 所以分兩步：apiPriceCheck 只回差異（Sheet 一格都不動），Neil 看過按確認才 apiPriceApply 新增列。
+ * 只看價目表裡 active、per_token 的 model（不把整份 JSON 存進 Sheet）。
+ */
+var API_BIG_CHANGE = 0.5;                                   // 變動超過 50% 標黃
+var API_LITELLM_PREFIX = { gemini: ['gemini/'], openai: ['openai/'], claude: ['anthropic/'] };
+var API_QUOTA_PERIODS = ['', 'day', 'month', 'minute', 'once'];
+
+function apiForbidden_(caller, action) {
+  logTransaction_(API_LOG_SOURCE, '失敗', 'PWA ' + action, '只有管理者可以查價、改價', 'code=forbidden', '', caller.line_id);
+  return { error: 'forbidden', permanent: true };
+}
+
+/** LiteLLM 的 key：先照 price_key，再試各家前綴（Gemini 在 LiteLLM 是 gemini/xxx） */
+function apiLitellmLookup_(json, apiId, key) {
+  var tries = [key].concat((API_LITELLM_PREFIX[apiId] || []).map(function (p) { return p + key; }));
+  for (var i = 0; i < tries.length; i++) {
+    var x = json[tries[i]];
+    if (x && typeof x.input_cost_per_token === 'number' && typeof x.output_cost_per_token === 'number') {
+      return { key: tries[i], price: { input: x.input_cost_per_token, output: x.output_cost_per_token,
+        cacheRead: typeof x.cache_read_input_token_cost === 'number' ? x.cache_read_input_token_cost : '',
+        cacheWrite: typeof x.cache_creation_input_token_cost === 'number' ? x.cache_creation_input_token_cost : '' } };
+    }
+  }
+  return null;
+}
+
+/** 這個 model 目前生效的那一列（原始欄位，快取單價空白就是空白）；沒有回 null */
+function apiCurrentRow_(rows, apiId, model, today) {
+  var best = null;
+  rows.forEach(function (r) {
+    if (r.api_id !== apiId || r.model !== model || r.billing_mode !== 'per_token' || !truthy_(r.active)) return;
+    if (r.input_per_token === '' || r.output_per_token === '') return;
+    var from = String(r.effective_from || '');
+    if (from && from > today) return;
+    if (best && from < String(best.effective_from || '')) return;
+    best = r;
+  });
+  return best ? { input: Number(best.input_per_token), output: Number(best.output_per_token),
+    cacheRead: best.cache_read_per_token === '' ? '' : Number(best.cache_read_per_token),
+    cacheWrite: best.cache_write_per_token === '' ? '' : Number(best.cache_write_per_token) } : null;
+}
+
+/** 四個單價裡變動最大的比例（舊值 0 或空白的不算比例） */
+function apiMaxChange_(a, b) {
+  var max = 0;
+  ['input', 'output', 'cacheRead', 'cacheWrite'].forEach(function (k) {
+    var x = a[k], y = b[k];
+    if (x === '' || y === '' || x === y) return;
+    max = Math.max(max, x > 0 ? Math.abs(y - x) / x : 1);
+  });
+  return max;
+}
+
+function apiSamePrice_(a, b) {
+  return ['input', 'output', 'cacheRead', 'cacheWrite'].every(function (k) {
+    return a[k] === b[k] || (a[k] !== '' && b[k] !== '' && Math.abs(a[k] - b[k]) < 1e-15);
+  });
+}
+
+/**
+ * 管理者按「🔄 重新查價」→ 每個 model 一筆：same（沒變）／changed（big＝>50%）／new（第一次有價）／missing（⚠️ 未定價）。
+ * 另附額度型的目前值，給畫面手動改。**不寫 Sheet**
+ */
+function apiPriceCheck_(caller) {
+  if (!truthy_((caller.user || {}).is_admin)) return apiForbidden_(caller, 'apiPriceCheck');
+  var res;
+  try { res = callApi_('litellm', API_LITELLM_URL, { method: 'get', muteHttpExceptions: true }, { feature: 'price_check' }); }
+  catch (err) { return { error: 'fetch_failed', detail: String(err && err.message || err) }; }
+  if (res.getResponseCode() !== 200) return { error: 'fetch_failed', detail: 'HTTP ' + res.getResponseCode() };
+  var json;
+  try { json = JSON.parse(res.getContentText()); } catch (err) { return { error: 'bad_json' }; }
+
+  apiClearPriceCache_();                                  // 用表上最新的比，不用 10 分鐘前的快取
+  var rows = apiRegistryRows_();
+  var today = taipeiDateKey_(apiNow_());
+  var seen = {}, items = [];
+  rows.forEach(function (r) {
+    if (r.billing_mode !== 'per_token' || !truthy_(r.active) || !r.model) return;
+    var id = r.api_id + '|' + r.model;
+    if (seen[id]) return;
+    seen[id] = true;
+    var old = apiCurrentRow_(rows, r.api_id, r.model, today);
+    var found = apiLitellmLookup_(json, r.api_id, String(r.price_key || r.model));
+    var it = { api_id: r.api_id, model: r.model, price_key: String(r.price_key || r.model), old: old, checked_at: String(r.checked_at || '') };
+    if (!found) it.status = 'missing';
+    else {
+      it.key = found.key;
+      it.new = found.price;
+      it.status = !old ? 'new' : apiSamePrice_(old, found.price) ? 'same' : 'changed';
+      it.big = it.status === 'changed' && apiMaxChange_(old, found.price) > API_BIG_CHANGE;
+    }
+    items.push(it);
+  });
+  var quotas = [], qSeen = {};
+  for (var i = rows.length - 1; i >= 0; i--) {
+    var q = rows[i];
+    if (q.billing_mode === 'per_token' || !truthy_(q.active) || qSeen[q.api_id]) continue;
+    qSeen[q.api_id] = true;
+    var cur = apiQuotaOf_(rows, q.api_id, today);
+    quotas.push({ api_id: q.api_id, quota: cur.quota, quota_period: cur.period, quota_unit: String(q.quota_unit || ''),
+      checked_at: String(q.checked_at || '') });
+  }
+  quotas.sort(function (a, b) { return a.api_id < b.api_id ? -1 : 1; });
+  logTransaction_(API_LOG_SOURCE, '成功', 'PWA apiPriceCheck', '查價：' + items.length + ' 個 model',
+    items.map(function (x) { return x.model + '=' + x.status; }).join('｜'), '', caller.line_id);
+  return { success: true, today: today, source_url: API_LITELLM_URL, items: items, quotas: quotas };
+}
+
+function apiPriceNum_(v, optional) {
+  if (optional && (v === '' || v == null)) return '';
+  var x = typeof v === 'number' ? v : (typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN);
+  return isFinite(x) && x >= 0 ? x : null;
+}
+
+/**
+ * 確認寫入：prices（改價／補價，每 token 的 USD）、quotas（額度手動改）各新增一列，effective_from＝台北今天；
+ * checked（沒變的）只更新 checked_at。**整批先驗證，有一筆不合理就一列都不寫**。
+ * 寫完清單價快取，再把排隊中的用量先落地，回填這次補到價的 priced=N 列（已有費用的列不動）
+ */
+function apiPriceApply_(caller, body) {
+  if (!truthy_((caller.user || {}).is_admin)) return apiForbidden_(caller, 'apiPriceApply');
+  var catalog = apiCatalog_();
+  apiClearPriceCache_();
+  var rows = apiRegistryRows_();
+  var today = taipeiDateKey_(apiNow_());
+  var known = {};
+  rows.forEach(function (r) { if (r.billing_mode === 'per_token' && truthy_(r.active)) known[r.api_id + '|' + r.model] = r; });
+
+  var prices = [], quotas = [], checked = [];
+  var bad = null;
+  (Array.isArray(body.prices) ? body.prices : []).forEach(function (p) {
+    var k = String(p && p.api_id) + '|' + String(p && p.model);
+    var nums = [apiPriceNum_(p && p.input), apiPriceNum_(p && p.output), apiPriceNum_(p && p.cache_read, true), apiPriceNum_(p && p.cache_write, true)];
+    if (!known[k] || nums.indexOf(null) !== -1) { bad = bad || k; return; }
+    prices.push({ api_id: known[k].api_id, model: known[k].model, price_key: known[k].price_key || known[k].model, billing_mode: 'per_token',
+      input_per_token: nums[0], output_per_token: nums[1], cache_read_per_token: nums[2], cache_write_per_token: nums[3],
+      effective_from: today, source_url: p.source === 'manual' ? 'manual' : API_LITELLM_URL, checked_at: today, active: 'TRUE' });
+  });
+  (Array.isArray(body.quotas) ? body.quotas : []).forEach(function (q) {
+    var id = String(q && q.api_id);
+    var c = catalog[id];
+    var n = apiPriceNum_(q && q.quota, true);
+    var period = String((q && q.quota_period) || '');
+    if (!c || c.billing === 'per_token' || n === null || API_QUOTA_PERIODS.indexOf(period) === -1) { bad = bad || id; return; }
+    quotas.push({ api_id: id, model: '', price_key: '', billing_mode: c.billing === 'count' ? 'free_quota' : c.billing,
+      quota: n, quota_period: period, quota_unit: String((q && q.quota_unit) || ''),
+      effective_from: today, source_url: 'manual', checked_at: today, active: 'TRUE' });
+  });
+  (Array.isArray(body.checked) ? body.checked : []).forEach(function (c) {
+    var k = String(c && c.api_id) + '|' + String(c && c.model);
+    if (!known[k]) { bad = bad || k; return; }
+    checked.push(k);
+  });
+  if (bad) return { error: 'invalid', item: bad };
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(API_LOCK_MS)) return { error: 'busy' };
+  var backfilled = 0;
+  try {
+    var sheet = apiEnsureSheet_(API_REGISTRY_SHEET, API_REGISTRY_HEADERS);
+    if (checked.length && sheet.getLastRow() >= 2) {
+      var h = sheetHeaders_(sheet);
+      var iA = h.indexOf('api_id'), iM = h.indexOf('model'), iC = h.indexOf('checked_at'), iT = h.indexOf('active');
+      sheet.getRange(2, 1, sheet.getLastRow() - 1, h.length).getValues().forEach(function (v, i) {
+        if (checked.indexOf(String(v[iA]) + '|' + String(v[iM])) !== -1 && truthy_(v[iT])) sheet.getRange(i + 2, iC + 1, 1, 1).setValues([[today]]);
+      });
+    }
+    if (prices.length || quotas.length) apiAppendRows_(sheet, prices.concat(quotas));
+    apiClearPriceCache_();
+    if (prices.length) {
+      apiWriteQueued_(PropertiesService.getScriptProperties());
+      backfilled = apiBackfill_(prices);
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  logTransaction_(API_LOG_SOURCE, '成功', 'PWA apiPriceApply',
+    '價目表新增 ' + (prices.length + quotas.length) + ' 列、核價 ' + checked.length + ' 個、回填 ' + backfilled + ' 筆',
+    prices.map(function (p) { return p.model + '=' + p.input_per_token + '/' + p.output_per_token + '(' + p.source_url + ')'; })
+      .concat(quotas.map(function (q) { return q.api_id + ' 額度=' + q.quota + '/' + q.quota_period; })).join('｜'), '', caller.line_id);
+  return { success: true, added: prices.length + quotas.length, checked: checked.length, backfilled: backfilled, today: today };
+}
+
+/** 只回填 priced=N（當時查不到價）的列；已有費用的列一格都不動（D-8） */
+function apiBackfill_(prices) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(API_USAGE_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return 0;
+  var by = {};
+  prices.forEach(function (p) {
+    by[p.api_id + '|' + p.model] = { input: p.input_per_token, output: p.output_per_token,
+      cacheRead: p.cache_read_per_token === '' ? p.input_per_token : p.cache_read_per_token,
+      cacheWrite: p.cache_write_per_token === '' ? p.input_per_token : p.cache_write_per_token };
+  });
+  var h = sheetHeaders_(sheet);
+  var col = function (n) { return h.indexOf(n); };
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, h.length).getValues();
+  var n = 0;
+  values.forEach(function (v, i) {
+    if (String(v[col('priced')]) !== 'N') return;
+    var p = by[String(v[col('api_id')]) + '|' + String(v[col('model')])];
+    if (!p) return;
+    var t = { input: apiNum_(v[col('input_tokens')]), output: apiNum_(v[col('output_tokens')]),
+      cacheRead: apiNum_(v[col('cache_read_tokens')]), cacheWrite: apiNum_(v[col('cache_write_tokens')]) };
+    v[col('unit_price_in')] = p.input;
+    v[col('unit_price_out')] = p.output;
+    v[col('unit_price_other')] = JSON.stringify({ cache_read: p.cacheRead, cache_write: p.cacheWrite });
+    v[col('cost_usd')] = apiCost_(t, p);
+    v[col('priced')] = 'Y';
+    sheet.getRange(i + 2, 1, 1, h.length).setValues([v]);
+    n++;
+  });
+  return n;
 }
