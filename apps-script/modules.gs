@@ -250,5 +250,5 @@ function installUiV2Feature_() {
     });
   }
   invalidateLineUsersCache_();
-  return { text: LINE_USERS_SHEET + ' 補上：' + UI_V2_FEATURE + '（預設只開管理者 ' + admins + ' 人）' };
+  return { changed: true, text: LINE_USERS_SHEET + ' 補上：' + UI_V2_FEATURE + '（預設只開管理者 ' + admins + ' 人）' };
 }

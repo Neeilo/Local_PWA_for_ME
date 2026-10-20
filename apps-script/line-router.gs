@@ -635,8 +635,10 @@ function handleCategoryCommand_(text, userId) {
 }
 
 /**
- * 初始化的步驟。每一步回 { level: 'ok'|'warn', text }；丟例外＝這一步失敗。
+ * 初始化的步驟。每一步回 { level: 'ok'|'warn', text, changed }；丟例外＝這一步失敗。
  * 新的 ADR 有部署後要跑的安裝函式，就往這裡加一步——它們本來就都要能重複執行。
+ * label 只寫「這一步是什麼」，不寫 ADR 編號（會出現在 LINE 回覆）；changed＝這次真的有補／建／改，
+ * 回覆只列 changed 與 ⚠️ 的步驟，其餘一句帶過（ADR-022 PR-0，initReplyText_）。
  *
  * ADR-014 D-23：以前這裡沒有到期提醒的排程，安裝函式要人記得去編輯器跑，
  * 結果 9/30 上線後一次都沒跑過。現在「初始化」一次裝好全部排程。
@@ -645,44 +647,44 @@ function handleCategoryCommand_(text, userId) {
 function initSteps_() {
   var adr013 = null;
   return [
-    { label: '欄位（ADR-009／014）', run: function () {
+    { label: '欄位', run: function () {
       var r = ensureAdr009Columns();
-      var lines = [], warn = false;
+      var lines = [], warn = false, changed = false;
       Object.keys(r).forEach(function (name) {
         var x = r[name];
         if (x.reason) { warn = true; lines.push('⚠️ ' + name + '：' + (x.reason === 'sheet_missing' ? '找不到分頁' : '沒有表頭') + '，沒有補'); }
-        else if (x.added.length) lines.push(name + ' 補上：' + x.added.join('、'));
+        else if (x.added.length) { changed = true; lines.push(name + ' 補上：' + x.added.join('、')); }
       });
       var g = ensureColumnsOnSheet_(ensureLineGroupsSheet_(), ['notify_due']);
       if (g.reason) { warn = true; lines.push('⚠️ ' + LINE_GROUPS_SHEET + ' 沒有表頭，沒有補 notify_due'); }
-      else if (g.added.length) lines.push(LINE_GROUPS_SHEET + ' 補上：notify_due');
-      return { level: warn ? 'warn' : 'ok', text: lines.length ? lines.join('\n　') : '欄位已齊備' };
+      else if (g.added.length) { changed = true; lines.push(LINE_GROUPS_SHEET + ' 補上：notify_due'); }
+      return { level: warn ? 'warn' : 'ok', changed: changed, text: lines.length ? lines.join('\n　') : '欄位已齊備' };
     } },
-    { label: '待辦／提醒歸類（ADR-018）', run: function () {
+    { label: '待辦／提醒歸類', run: function () {
       var k = classifyTaskKinds_();
       if (k.reason) return { level: 'warn', text: k.reason === 'sheet_missing' ? '找不到 tasks 分頁，沒有歸類' : 'tasks 還沒有 kind 欄，沒有歸類' };
-      return { level: 'ok', text: '歸為提醒 ' + k.reminder + ' 筆、待辦 ' + k.todo + ' 筆（已有分類的不動；歸錯的到 App 改）' };
+      return { level: 'ok', changed: k.reminder + k.todo > 0, text: '歸為提醒 ' + k.reminder + ' 筆、待辦 ' + k.todo + ' 筆（已有分類的不動；歸錯的到 App 改）' };
     } },
-    { label: '模組登記表（ADR-021）', run: function () {
+    { label: '模組登記表', run: function () {
       var r = ensureModuleRegistry_();
-      return { level: 'ok', text: (r.created ? '新建 ' : '') + MODULE_REGISTRY_SHEET +
+      return { level: 'ok', changed: !!r.created || r.added.length > 0, text: (r.created ? '新建 ' : '') + MODULE_REGISTRY_SHEET +
         (r.added.length ? (r.created ? '' : ' 補上') + '：' + r.added.join('、') : ' 已齊備') + '（已關掉的模組不會被打開）' };
     } },
-    { label: '總覽 Widget 設定表（ADR-021）', run: function () {
+    { label: '總覽 Widget 設定表', run: function () {
       var r = ensureWidgetConfigSheet_();
       var hasKey = !!String(PropertiesService.getScriptProperties().getProperty(WEATHER_KEY_PROP) || '').trim();
-      return { level: hasKey ? 'ok' : 'warn', text: (r.created ? '新建 ' : '') + WIDGET_CONFIG_SHEET + (r.created ? '' : ' 已存在') +
+      return { level: hasKey ? 'ok' : 'warn', changed: !!r.created, text: (r.created ? '新建 ' : '') + WIDGET_CONFIG_SHEET + (r.created ? '' : ' 已存在') +
         (hasKey ? '；天氣授權碼已設定' : '\n　⚠️ 還沒設 WEATHER_API（專案設定 → 指令碼屬性），天氣 Widget 會一直沒資料') };
     } },
-    { label: '2.0 介面權限（ADR-021）', run: function () {
+    { label: '2.0 介面權限', run: function () {
       var r = installUiV2Feature_();
-      return { level: r.warn ? 'warn' : 'ok', text: r.text };
+      return { level: r.warn ? 'warn' : 'ok', changed: !!r.changed, text: r.text };
     } },
-    { label: '給自己的一段話（ADR-018）', run: function () {
+    { label: '給自己的一段話', run: function () {
       var r = ensureSelfNotesSheet_();
-      return { level: 'ok', text: r.created ? '新建 ' + SELF_NOTES_SHEET : SELF_NOTES_SHEET + ' 已存在' };
+      return { level: 'ok', changed: !!r.created, text: r.created ? '新建 ' + SELF_NOTES_SHEET : SELF_NOTES_SHEET + ' 已存在' };
     } },
-    { label: 'ADR-013 記帳分類', run: function () {
+    { label: '記帳分類', run: function () {
       adr013 = installAdr013();
       var cols = adr013.columns || {};
       var lines = [
@@ -694,38 +696,40 @@ function initSteps_() {
       ];
       (adr013.warnings || []).forEach(function (w) { lines.push('⚠️ ' + w); });
       var warn = !adr013.config_ok || !!cols.reason || (adr013.warnings || []).length > 0;
-      return { level: warn ? 'warn' : 'ok', text: lines.join('\n　') };
+      return { level: warn ? 'warn' : 'ok', changed: (cols.added || []).length > 0 || adr013.migrated > 0, text: lines.join('\n　') };
     } },
-    { label: '股票（ADR-015）', run: installStock_ },
-    { label: 'Gmail 控制員（ADR-016）', run: installGmail_ },
-    { label: '收藏搜集器（ADR-020）', run: installClips_ },
+    { label: '股票', run: installStock_ },
+    { label: 'Gmail 控制員', run: installGmail_ },
+    { label: '收藏搜集器', run: installClips_ },
     // RD-HF1：兩個補救都可重複執行；要在補欄（installClips_ 補 video_saved）之後
-    { label: '收藏 content.md 重產（RD-HF1）', run: function () {
+    { label: '收藏 content.md 重產', run: function () {
       var r = clipsRebuildContentMd_();
       if (r.already) return { level: 'ok', text: '之前已重產過，略過' };
       var lines = ['用 raw.json 重產 ' + r.fixed + ' 篇（舊檔在垃圾桶，沒有重抓 Apify）'];
       r.failed.forEach(function (f) { lines.push('⚠️ ' + f); });
       if (r.failed.length) lines.push('⚠️ 有沒重產到的，下次初始化會再試');
-      return { level: r.failed.length ? 'warn' : 'ok', text: lines.join('\n　') };
+      return { level: r.failed.length ? 'warn' : 'ok', changed: r.fixed > 0, text: lines.join('\n　') };
     } },
-    { label: '收藏 Reels 補存影片（RD-HF1）', run: function () {
+    { label: '收藏 Reels 補存影片', run: function () {
       var r = clipsRequeueReels_();
-      return { level: 'ok', text: r.requeued ? '排回重抓 ' + r.requeued + ' 篇（排程總管會整篇重抓、存 video.mp4）' : '沒有要補的' };
+      return { level: 'ok', changed: r.requeued > 0, text: r.requeued ? '排回重抓 ' + r.requeued + ' 篇（排程總管會整篇重抓、存 video.mp4）' : '沒有要補的' };
     } },
-    { label: '排程總管（ADR-019）', run: function () {
+    { label: '排程總管', run: function () {
       var r = installScheduler_();      // 刪掉所有舊的時間觸發器，只裝每 5 分鐘的 runScheduler
       refreshGuide();                   // 以前裝 _guide 觸發器時順便更新一次，這裡照舊
-      return { level: 'ok', text: '只留一個觸發器 ' + SCHEDULER_FUNCTION + '（每 ' + SCHEDULER_MINUTES + ' 分鐘，依序派工）；移除舊觸發器 ' +
-        r.removed + ' 個；_guide 已更新\n　登記的工作：\n　・' + schedulerJobList_().join('\n　・') };
+      // 登記的工作不放這裡：回覆的排程段與 logs 都另外列（initReplyText_、initJobsLine_）
+      return { level: 'ok', changed: r.old > 0, text: (r.old ? '換掉舊觸發器 ' + r.old + ' 個；' : '') + '只留一個觸發器 ' +
+        SCHEDULER_FUNCTION + '（每 ' + SCHEDULER_MINUTES + ' 分鐘，依序派工）；_guide 已更新' };
     } },
     // 2026-10-08：原本要進編輯器跑的兩件事也併進來。都可重複執行，排在最後，失敗不擋前面的安裝
     { label: '日誌重複列清理', run: function () {
       var r = dedupeReviewsRun_(false);       // 不另外拿鎖：handleInitCommand_ 已經拿著 ScriptLock
       if (r.error === 'sheet_not_found') return { level: 'ok', text: '沒有 reviews 分頁，略過' };
       if (r.error) return { level: 'warn', text: '沒有清理（' + r.error + '）' };
+      var changed = r.deleted > 0;
       var lines = [r.deleted ? '刪除重複 ' + r.deleted + ' 列，先備份到「' + r.backup + '」（確認沒問題後可手動刪掉這張分頁）' : '沒有重複'];
       if (r.ambiguous_dates.length) lines.push('⚠️ 看不出是誰的、原樣留著：' + r.ambiguous_dates.join('、'));
-      return { level: r.ambiguous_dates.length ? 'warn' : 'ok', text: lines.join('\n　') };
+      return { level: r.ambiguous_dates.length ? 'warn' : 'ok', changed: changed, text: lines.join('\n　') };
     } },
     { label: '封存寄信', run: function () {
       var quota;
@@ -768,26 +772,89 @@ function triggerSummary_() {
   });
 }
 
-/** 依序跑 initSteps_：一步失敗就停，後面的不跑（CLAUDE.md Rule 12） */
+/**
+ * 依序跑 initSteps_：一步失敗就停，後面的不跑（CLAUDE.md Rule 12；後面的步驟有的依賴前面補的欄位）。
+ * steps：每步的結構化結果，給 initReplyText_ 組回覆；lines：完整明細，寫 logs 與編輯器的 console。
+ */
 function runInstallSteps_() {
-  var lines = [];
+  var lines = [], steps = [];
   var failed = false, warned = false;
   initSteps_().forEach(function (step) {
-    if (failed) { lines.push('⏭️ ' + step.label + '：前一步失敗，沒有執行'); return; }
+    if (failed) {
+      steps.push({ label: step.label, level: 'skip' });
+      lines.push('⏭️ ' + step.label + '：前一步失敗，沒有執行');
+      return;
+    }
     try {
-      var r = step.run();
+      var r = step.run() || {};
       if (r.level === 'warn') warned = true;
+      steps.push({ label: step.label, level: r.level === 'warn' ? 'warn' : 'ok', changed: !!r.changed, text: String(r.text || '') });
       lines.push((r.level === 'warn' ? '⚠️ ' : '✅ ') + step.label + '\n　' + r.text);
     } catch (err) {
       failed = true;
       console.log('初始化失敗（' + step.label + '）：' + (err && err.stack || err));
+      steps.push({ label: step.label, level: 'fail', text: String(err && err.message || err) });
       lines.push('❌ ' + step.label + '：' + String(err && err.message || err));
     }
   });
   var triggers = [];
   try { triggers = triggerSummary_(); } catch (err) { triggers = ['⚠️ 讀不到觸發器：' + String(err && err.message || err)]; }
   var head = failed ? '🛑 初始化沒有完成' : warned ? '🛠️ 初始化完成，但有要處理的地方' : '🛠️ 初始化完成';
-  return { failed: failed, warned: warned, head: head, lines: lines, triggers: triggers };
+  return { failed: failed, warned: warned, head: head, lines: lines, steps: steps, triggers: triggers };
+}
+
+/** 觸發器裡要處理的：不是「剛好一個 runScheduler」的都算（重複、舊的、沒有） */
+function initTriggerIssues_(triggers) {
+  var issues = triggers.filter(function (t) { return t.indexOf('⏰ ' + SCHEDULER_FUNCTION + '（') !== 0; })
+    .map(function (t) { return t.replace(/^(⚠️|⏰) /, ''); });
+  var hasScheduler = triggers.some(function (t) { return t.indexOf(SCHEDULER_FUNCTION) !== -1; });
+  if (!hasScheduler && !issues.length) issues.push('沒有 ' + SCHEDULER_FUNCTION);
+  return issues;
+}
+
+/** 排程總管登記的工作，一行帶完（給 logs 與編輯器 console） */
+function initJobsLine_() {
+  try { return '登記的工作：' + schedulerJobList_().join('、'); } catch (err) { return '⚠️ 讀不到登記的工作：' + String(err && err.message || err); }
+}
+
+/** 一步的明細拆成行（步驟回的 text 用「換行＋全形空白」接） */
+function initTextLines_(text) {
+  return String(text || '').split('\n').map(function (l) { return l.replace(/^　+/, ''); }).filter(Boolean);
+}
+
+/**
+ * LINE 回覆（ADR-022 PR-0）：手機一個畫面看完。
+ * 第一行結論 → 要處理的（⚠️ 只列那幾行）→ 這次有變的 → 其餘一句帶過 → 排程（一行一個）→ 明細見 LOG。
+ * 不寫 ADR 編號、不列沒變的明細；完整明細在 logs（handleInitCommand_ 照寫）。
+ */
+function initReplyText_(out) {
+  var issues = [], changes = [], quiet = 0, failedAt = '', skipped = [];
+  out.steps.forEach(function (s) {
+    if (s.level === 'skip') { skipped.push(s.label); return; }
+    if (s.level === 'fail') { failedAt = s.label; issues.push('❌ ' + s.label + '：' + s.text); return; }
+    var lines = initTextLines_(s.text);
+    if (s.level === 'warn') {
+      var warns = lines.filter(function (l) { return l.indexOf('⚠️') === 0; });
+      lines = (warns.length ? warns : lines).map(function (l) { return l.replace(/^⚠️\s*/, ''); });
+      issues.push('⚠️ ' + s.label + (lines.length === 1 ? '：' + lines[0] : '\n　' + lines.join('\n　')));
+      return;
+    }
+    if (s.changed) { changes.push('🆕 ' + s.label + (lines.length === 1 ? '：' + lines[0] : '\n　' + lines.join('\n　'))); return; }
+    quiet++;
+  });
+  initTriggerIssues_(out.triggers).forEach(function (t) { issues.push('⚠️ 觸發器：' + t); });
+
+  var todo = issues.filter(function (l) { return l.indexOf('⚠️') === 0; }).length;
+  var head = failedAt ? '🛑 初始化沒有完成，停在「' + failedAt + '」'
+    : todo ? '⚠️ 初始化完成，' + todo + ' 項要處理' : '✅ 初始化完成，全部正常';
+  var body = [head].concat(issues);
+  if (skipped.length) body.push('⏭️ 沒有執行：' + skipped.join('、'));
+  body = body.concat(changes);
+  if (quiet) body.push('其餘 ' + quiet + ' 項已齊備');
+  body.push('⏰ 排程（' + SCHEDULER_FUNCTION + ' 每 ' + SCHEDULER_MINUTES + ' 分鐘一輪）：');
+  schedulerJobList_().forEach(function (j) { body.push('・' + j); });
+  body.push('📄 明細見 LOG（可重複執行，已做過的不會重做）');
+  return body.join('\n');
 }
 
 /**
@@ -796,7 +863,7 @@ function runInstallSteps_() {
  */
 function installAll() {
   var out = runInstallSteps_();
-  console.log(out.head + '\n' + out.lines.join('\n') + '\n目前的觸發器：\n' + out.triggers.join('\n'));
+  console.log(out.head + '\n' + out.lines.join('\n') + '\n目前的觸發器：\n' + out.triggers.join('\n') + '\n' + initJobsLine_());
   return out;
 }
 
@@ -805,7 +872,7 @@ function installAll() {
  *
  * 一步失敗就停，後面的不跑，回覆講清楚停在哪一步、原因是什麼（CLAUDE.md Rule 12：
  * 「初始化完成」如果有一步沒做到，這句話就是錯的）。同一時間只准一個在跑。
- * 回覆最後列出目前的觸發器，讓管理者一眼確認排程真的在。
+ * 回覆只列結論、要處理的、這次有變的與排程（initReplyText_）；完整明細寫 logs。
  */
 function handleInitCommand_(text, userId) {
   if (!truthy_((lineUserById_(userId) || {}).is_admin)) {
@@ -823,9 +890,8 @@ function handleInitCommand_(text, userId) {
   }
 
   logTransaction_('同步', out.failed ? '失敗' : '成功', text, out.head.replace(/^\S+ /, ''),
-    out.lines.concat(out.triggers).join('｜'), '', userId);
-  return out.head + '\n' + out.lines.join('\n') + '\n\n目前的排程：\n' + out.triggers.join('\n') +
-    '\n（可重複執行，已做過的不會重做）';
+    out.lines.concat(out.triggers, [initJobsLine_()]).join('｜'), '', userId);
+  return initReplyText_(out);
 }
 
 /**

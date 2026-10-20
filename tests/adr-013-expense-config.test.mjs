@@ -625,14 +625,17 @@ describe('LINE「初始化」：管理者在手機上跑部署後的安裝步驟
   const initEnv = (over = {}) => env(Object.assign({ properties: { APIFY_TOKEN: 't', WEATHER_API: 'k' } }, over, { extraFiles: ['sheet-guide.gs'],
     sheets: Object.assign(DATA_SHEETS(), { expenses: OLD_EXPENSES() }, over.sheets || {}) }));
 
-  test('管理者：補欄位、建設定表、遷移、更新 _guide，回覆逐步列出結果並寫 logs', () => {
+  // ADR-022 PR-0：回覆只列這次有變的與要處理的；逐步明細在 logs 那一列
+  const initDetail = (e) => e.transactions.filter((t) => t[2] === '初始化').pop()[4];
+
+  test('管理者：補欄位、建設定表、遷移、更新 _guide，回覆列出這次有變的並寫 logs', () => {
     const e = initEnv();
     const reply = line(e, ME, '初始化');
-    assert.match(reply, /^🛠️ 初始化完成\n/);
-    assert.match(reply, /✅ ADR-013 記帳分類\n　補上欄位：subcategory、targets、plan_id、plan_seq/);
+    assert.match(reply, /^✅ 初始化完成，全部正常\n/);
+    assert.match(reply, /🆕 記帳分類\n　補上欄位：subcategory、targets、plan_id、plan_seq/);
     assert.match(reply, /分類設定讀得到（8 個大類）/);
     assert.match(reply, /餐飲→飲食：改了 1 列/);
-    assert.match(reply, /✅ 排程總管（ADR-019）\n　只留一個觸發器 runScheduler.*_guide 已更新/);
+    assert.match(initDetail(e), /✅ 排程總管\n　只留一個觸發器 runScheduler.*_guide 已更新/);
     assert.deepEqual(e.sheets.expenses.values[0].slice(-4), ['subcategory', 'targets', 'plan_id', 'plan_seq']);
     assert.equal(e.sheets.expenses.toRecords()[0].category, '飲食');
     assert.ok(e.ss.getSheetByName('_expense_config'));
@@ -646,8 +649,9 @@ describe('LINE「初始化」：管理者在手機上跑部署後的安裝步驟
     line(e, ME, '初始化');
     const before = JSON.stringify(e.sheets.expenses.values);
     const reply = line(e, ME, '初始化');
-    assert.match(reply, /欄位已齊備/);
-    assert.match(reply, /改了 0 列/);
+    assert.match(initDetail(e), /欄位已齊備/);
+    assert.match(initDetail(e), /改了 0 列/);
+    assert.doesNotMatch(reply, /記帳分類/, '沒變的不列在回覆');
     assert.equal(JSON.stringify(e.sheets.expenses.values), before);
   });
 
@@ -664,9 +668,10 @@ describe('LINE「初始化」：管理者在手機上跑部署後的安裝步驟
   test('一步失敗就停：後面的不跑，回覆講清楚停在哪一步與原因，不說「完成」', () => {
     const e = initEnv({ overrides: { installAdr013: () => { throw new Error('Sheet 暫時無法存取'); } } });
     const reply = line(e, ME, '初始化');
-    assert.match(reply, /^🛑 初始化沒有完成/);
-    assert.match(reply, /❌ ADR-013 記帳分類：Sheet 暫時無法存取/);
-    assert.match(reply, /⏭️ 排程總管（ADR-019）：前一步失敗，沒有執行/);
+    assert.match(reply, /^🛑 初始化沒有完成，停在「記帳分類」/);
+    assert.match(reply, /❌ 記帳分類：Sheet 暫時無法存取/);
+    assert.match(reply, /⏭️ 沒有執行：.*排程總管/);
+    assert.match(initDetail(e), /⏭️ 排程總管：前一步失敗，沒有執行/);
     assert.doesNotMatch(reply, /初始化完成/);
     assert.equal(e.ss.getSheetByName('_guide'), null, '_guide 沒有被跑');
     assert.ok(e.transactions.some((t) => t[1] === '失敗' && t[2] === '初始化'));
@@ -680,9 +685,9 @@ describe('LINE「初始化」：管理者在手機上跑部署後的安裝步驟
       ['sub', '外食', '飲食', '', '', '', 2, '']
     ]) } });
     const reply = line(e, ME, '初始化');
-    assert.match(reply, /^🛠️ 初始化完成，但有要處理的地方/);
-    assert.match(reply, /⚠️ 細項「外食」重複/);
-    assert.match(reply, /✅ 排程總管（ADR-019）/);
+    assert.match(reply, /^⚠️ 初始化完成，\d+ 項要處理/);
+    assert.match(reply, /⚠️ 記帳分類[：\n　][^]*細項「外食」重複/);
+    assert.match(initDetail(e), /✅ 排程總管/);
   });
 
   test('另一個初始化正在跑：不重疊執行', () => {

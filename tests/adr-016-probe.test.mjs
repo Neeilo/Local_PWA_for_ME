@@ -251,7 +251,7 @@ describe('「初始化」建 gmail_rules', () => {
   test('收進初始化步驟清單', () => {
     const e = loadCodeGs({ extraFiles: ['line-router.gs'] });
     const labels = e.read('initSteps_().map(function (s) { return s.label; })');
-    assert.ok(labels.includes('Gmail 控制員（ADR-016）'), labels.join('｜'));
+    assert.ok(labels.includes('Gmail 控制員'), labels.join('｜'));
   });
 });
 

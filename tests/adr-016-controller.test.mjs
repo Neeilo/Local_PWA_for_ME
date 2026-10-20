@@ -409,7 +409,7 @@ describe('T1／T4「初始化」', () => {
   test('收進「初始化」，排程清單講得出時段', () => {
     const e = loadCodeGs({ extraFiles: INIT_FILES });
     const labels = e.read('initSteps_().map(function (s) { return s.label; })');
-    assert.ok(labels.includes('Gmail 控制員（ADR-016）'), labels.join('｜'));
+    assert.ok(labels.includes('Gmail 控制員'), labels.join('｜'));
     // ADR-019：時段在排程總管的登記表
     assert.ok(e.read('schedulerJobList_()').includes('Gmail 控制員（每天 9 點後第一輪）'));
   });
