@@ -512,6 +512,8 @@ function bootAdminExtras_(out, perf) {
   out.perf_rows = perfStage_(perf, 'perf_rows', perfRowCount_);
   var alert = perfStage_(perf, 'unauth_alert', unauthAlert_);
   if (alert) out.unauth_alert = alert;
+  var apiAlerts = perfStage_(perf, 'api_alerts', apiAlerts_);   // ADR-022 PR-C：免費額度用到 100%（讀一個屬性）
+  if (apiAlerts.length) out.api_alerts = apiAlerts;
   var usage = perfStage_(perf, 'clips_usage', clipsUsage_);      // RD-HF1：讀一個指令碼屬性，不讀 Sheet
   if (usage) out.clips_usage = usage;
 }
@@ -796,6 +798,7 @@ function routePwaSync_(body, perf) {
   // ADR-022 PR-B：查價只回差異；確認才寫（都限管理者）
   if (body.action === 'apiPriceCheck') return jsonOut(apiPriceCheck_(caller));
   if (body.action === 'apiPriceApply') return jsonOut(apiPriceApply_(caller, body));
+  if (body.action === 'apiCostSummary') return jsonOut(apiCostSummary_(caller));
   if (body.action === 'commandDict') return jsonOut(commandDictForPwa_(caller));
   if (body.action === 'moduleSet') return jsonOut(moduleSet_(caller, body.module_id, body.enabled === true));
   if (body.action === 'taskDone') return jsonOut(taskDone_(caller, body));
