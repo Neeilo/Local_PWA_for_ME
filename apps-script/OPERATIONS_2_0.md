@@ -38,7 +38,7 @@
 - **資料不一致**：先看當次裝置／使用者、`logs`、雲端列與 revision，不要直接用本機 state 覆蓋 Sheet。
 - **權限被拒**：辨識 `authDevice_`、`line_users` feat_*、`_module_registry` 是否停用，拒絕和連線錯誤處理不同。
 - **首頁慢**：比對 `performance` 的 `ui` 標記，區分 core boot、延後的財務／股票 Widget 與停留頁面輪詢，不做全表重新讀取。
-- **天氣沒資料**：檢查 `WEATHER_API`、地點設定、排程更新、`weather_cache`，勿把失敗當作「沒有下雨」。
+- **天氣沒資料**：檢查 `WEATHER_API`、地點設定、排程更新、`weather_cache`（Apps Script **指令碼屬性**，由 `widgets.gs` 的 `WEATHER_CACHE_KEY` 指定，**不是 Google Sheets 分頁**），勿把失敗當作「沒有下雨」。
 - **Library 故障**：檢查 Apify 用量／成功率、`clips` status、Drive 原始素材；AI 整理失敗不得覆蓋 `caption` 或 `note`。
 - **搜尋慢**：按需搜尋會讀取多張 Sheet，觀察資料量及時間，切勿改成開機自動搜尋。
 - **新分頁**：同步更新 `guideRegistry_()`；執行初始化只補缺少的欄位／表，不得重置使用者設定。
