@@ -1372,7 +1372,12 @@ nav button:active{opacity:.6;}
     <div class="slot-card" id="costCard" hidden>
       <div class="place-head"><h2>💸 用量與成本</h2></div>
       <div id="costBody"></div>
-      <p class="slot-hint">目前只有收藏（Apify）的用量；AI（查/）用量還沒有記錄。</p>
+      <!-- ADR-022 PR-B：查價只回差異，按確認才寫進價目表（改價＝新增一列，舊帳不動） -->
+      <div id="priceBody"></div>
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap">
+        <button class="btn" id="priceCheckBtn" onclick="priceCheck()">🔄 重新查價</button>
+      </div>
+      <p class="slot-hint">目前只有收藏（Apify）的用量；AI 用量從 ADR-022 起逐筆記帳，卡片顯示在下一版。單價取自 LiteLLM 社群價目，看過再確認。</p>
     </div>
 
     <!-- ⏱️ 效能紀錄（ADR-012 D-7）。摘要由雲端算好，點開才抓。刪舊紀錄是手動的，不開排程 -->
@@ -3286,6 +3291,77 @@ function renderCostCard(){
   const el=document.getElementById('costBody');
   if(on && el) el.innerHTML=clipsUsageHtml(clipsUsage) || '<div class="empty-hint">還沒有用量資料（排程總管跑過一次就會有）</div>';
 }
+/* 查價（ADR-022 PR-B）：查只回差異，Neil 看過按確認才寫。畫面以「每 1M tokens」顯示，送回雲端換回每 token */
+let priceCheckData=null;
+async function priceCheck(){
+  const btn=document.getElementById('priceCheckBtn');
+  if(btn) btn.disabled=true;
+  const el=document.getElementById('priceBody');
+  if(el) el.innerHTML='<p class="perf-sub">查價中…（抓 LiteLLM 價目，約幾秒）</p>';
+  let r=null;
+  try{ r=await cloudPost({action:'apiPriceCheck', trigger:'manual'}); }catch(e){ r=null; }
+  if(btn) btn.disabled=false;
+  if(!r || !r.success){
+    priceCheckData=null;
+    if(el) el.innerHTML=`<div class="sys-warn">⚠️ ${esc(!r ? '連不上雲端，請稍後再試' : r.error==='forbidden' ? '只有管理者可以查價' : '查價失敗（'+(r.error||'')+(r.detail?'：'+r.detail:'')+'）')}</div>`;
+    return;
+  }
+  priceCheckData=r;
+  renderPriceCheck();
+}
+function perM(x){ return (x===''||x==null) ? '—' : '$'+(+(x*1e6).toPrecision(4)); }
+function priceLine(p){ return p ? `入 ${perM(p.input)}／出 ${perM(p.output)}`+(p.cacheRead!==''&&p.cacheRead!=null?`／快取讀 ${perM(p.cacheRead)}`:'') : '—'; }
+const PRICE_STATUS={same:'沒變', changed:'改價', new:'第一次定價', missing:'⚠️ 未定價'};
+function renderPriceCheck(){
+  const el=document.getElementById('priceBody'), d=priceCheckData;
+  if(!el || !d) return;
+  const rows=d.items.map((it,i)=>{
+    const tone = it.big ? ' style="background:var(--accent-soft); border-radius:8px; padding:4px 6px"' : '';
+    const body = it.status==='missing'
+      ? `LiteLLM 查不到「${esc(it.price_key)}」。手動填（每 1M tokens，USD）：
+         <input class="input" style="width:90px" id="pIn${i}" placeholder="輸入" inputmode="decimal">
+         <input class="input" style="width:90px" id="pOut${i}" placeholder="輸出" inputmode="decimal">`
+      : it.status==='same' ? esc(priceLine(it.new))
+      : esc((it.old?priceLine(it.old)+' → ':'')+priceLine(it.new))+(it.big?'　<b>變動超過 50%，請確認</b>':'');
+    return `<div class="sys-row"${tone}><div class="who">${esc(it.model)}<small>${esc(it.api_id)}・${PRICE_STATUS[it.status]||it.status}</small></div><div class="meta">${body}</div></div>`;
+  }).join('');
+  const quotas=(d.quotas||[]).map((q,i)=>`<div class="sys-row"><div class="who">${esc(q.api_id)}<small>額度${q.checked_at?'・核價 '+esc(q.checked_at):''}</small></div>
+    <div class="meta"><input class="input" style="width:110px" id="qVal${i}" value="${esc(q.quota)}" placeholder="（未填）" inputmode="numeric"> ／ ${esc(q.quota_period||'—')} ${esc(q.quota_unit||'')}</div></div>`).join('');
+  el.innerHTML=`<p class="perf-sub">單價：每 1M tokens（USD）。來源 LiteLLM 社群價目，查價日 ${esc(d.today)}。按確認前不會寫入。</p>${rows}
+    ${quotas?'<p class="perf-sub">免費額度（改了才會新增一列）</p>'+quotas:''}
+    <div style="margin-top:8px"><button class="btn" onclick="priceApply()">✅ 確認寫入</button></div>`;
+}
+async function priceApply(){
+  const d=priceCheckData; if(!d) return;
+  const prices=[], checked=[], quotas=[];
+  const tok=v=>{ const x=String(v||'').trim(); return x==='' ? null : Number(x)/1e6; };
+  d.items.forEach((it,i)=>{
+    if(it.status==='same') checked.push({api_id:it.api_id, model:it.model});
+    else if(it.status==='changed' || it.status==='new') prices.push({api_id:it.api_id, model:it.model, input:it.new.input, output:it.new.output,
+      cache_read:it.new.cacheRead, cache_write:it.new.cacheWrite, source:'litellm'});
+    else {
+      const a=tok((document.getElementById('pIn'+i)||{}).value), b=tok((document.getElementById('pOut'+i)||{}).value);
+      if(a!=null && b!=null) prices.push({api_id:it.api_id, model:it.model, input:a, output:b, cache_read:'', cache_write:'', source:'manual'});
+    }
+  });
+  (d.quotas||[]).forEach((q,i)=>{
+    const v=String((document.getElementById('qVal'+i)||{}).value||'').trim();
+    if(v!==String(q.quota)) quotas.push({api_id:q.api_id, quota:v===''?'':Number(v), quota_period:q.quota_period, quota_unit:q.quota_unit});
+  });
+  if(!prices.length && !checked.length && !quotas.length){ toast('沒有要寫入的'); return; }
+  const big=d.items.filter(it=>it.big).length;
+  if(!confirm(`寫入價目表：改價／補價 ${prices.length} 個、額度 ${quotas.length} 個、只更新核價日 ${checked.length} 個`+(big?`\n其中 ${big} 個變動超過 50%`:'')+'？')) return;
+  let r=null;
+  try{ r=await cloudPost({action:'apiPriceApply', prices, quotas, checked, trigger:'write'}); }catch(e){ r=null; }
+  if(!r || !r.success){
+    toast(!r ? '⚠️ 沒寫進去：連不上雲端' : r.error==='invalid' ? '⚠️ 沒寫進去：「'+(r.item||'')+'」的數字不合理' : r.error==='busy' ? '⚠️ 雲端忙碌中，請稍後再試' : '⚠️ 沒寫進去（'+(r.error||'')+'）');
+    return;
+  }
+  toast(`✅ 已寫入 ${r.added} 列、核價 ${r.checked} 個`+(r.backfilled?`，回填 ${r.backfilled} 筆未定價費用`:''));
+  priceCheckData=null;
+  const el=document.getElementById('priceBody'); if(el) el.innerHTML='';
+}
+
 /* Apify 本月金額＋近 3 天收藏成功率（RD-HF1 HF-C）。超過 US$3 或低於 80% 變紅，對應 ADR-020 的備案條件；不推播 */
 const CLIPS_USAGE_RED_USD=3, CLIPS_RATE_RED=0.8;
 function clipsUsageHtml(u){

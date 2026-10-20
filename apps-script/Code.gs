@@ -793,6 +793,9 @@ function routePwaSync_(body, perf) {
   if (body.action === 'selfNoteSet') return jsonOut(selfNoteSet_(caller, body.text));
   if (body.action === 'aiConfigGet') return jsonOut(aiConfigGet_(caller));
   if (body.action === 'aiConfigSet') return jsonOut(aiConfigSet_(caller, body.provider, body.model));
+  // ADR-022 PR-B：查價只回差異；確認才寫（都限管理者）
+  if (body.action === 'apiPriceCheck') return jsonOut(apiPriceCheck_(caller));
+  if (body.action === 'apiPriceApply') return jsonOut(apiPriceApply_(caller, body));
   if (body.action === 'commandDict') return jsonOut(commandDictForPwa_(caller));
   if (body.action === 'moduleSet') return jsonOut(moduleSet_(caller, body.module_id, body.enabled === true));
   if (body.action === 'taskDone') return jsonOut(taskDone_(caller, body));
