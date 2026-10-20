@@ -795,6 +795,8 @@ function routePwaSync_(body, perf) {
   if (body.action === 'clipNote') return jsonOut(clipNote_(caller, body.id, body.note, body.revision));
   if (body.action === 'clipAi') return jsonOut(clipAi_(caller, body.id, body.discard === true));
   if (body.action === 'clipAdd') return jsonOut(clipAdd_(caller, body.url));
+  // 搜尋（ADR-021 PR-F，search.gs）：只搜自己的（白板例外），按了才跑
+  if (body.action === 'search') return perfJsonOut_(perf, search_(caller, body.q));
 
   if (NO_PWA_WRITE.indexOf(body.sheet) !== -1 || isBackupSheet_(body.sheet)) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');

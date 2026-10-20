@@ -252,6 +252,15 @@
   .clip-block{margin-top:14px; padding-top:12px; border-top:1px solid var(--line);}
   .clip-block-head{display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;}
   .clip-block textarea{width:100%; box-sizing:border-box; min-height:120px; font-size:16px;}
+  /* 搜尋（ADR-021 D-5） */
+  .search-bar{display:flex; gap:8px;}
+  .search-bar input{flex:1; min-width:0; font-size:16px;}
+  .search-bar .btn{width:auto; flex:none;}
+  .search-hit{display:block; width:100%; text-align:left; background:none; border:none; border-bottom:1px solid var(--line); padding:10px 2px; color:inherit;}
+  .search-hit:last-of-type{border-bottom:none;}
+  .search-hit b{display:block; font-weight:600; font-size:14px;}
+  .search-hit span{display:block; font-size:13px; color:var(--muted); margin-top:2px;}
+  .search-hit small{font-size:11px; color:var(--muted);}
   .clip-other{background:var(--line); border-radius:10px; padding:8px 10px; margin:6px 0 8px; font-size:14px;}
   .note-item:last-child{border-bottom:none;}
   .note-txt{white-space:pre-wrap; word-break:break-word;}
@@ -977,8 +986,15 @@ nav button:active{opacity:.6;}
     <div id="widgetList"></div>
   </section>
   <section class="view" id="view-apps"><div id="appsGrid"></div></section>
+  <!-- 搜尋（ADR-021 D-5）：按了才搜，雲端比對；只搜自己的（白板例外） -->
   <section class="view" id="view-search">
-    <div class="v2-empty"><span class="big">🔎</span>搜尋即將上線<br><small>任務、提醒、雜記、圖書館、記帳備註</small></div>
+    <div class="card">
+      <form class="search-bar" onsubmit="event.preventDefault(); runSearch();">
+        <input type="text" id="searchInput" enterkeyhint="search" autocomplete="off" maxlength="50" placeholder="找任務、提醒、雜記、圖書館、記帳備註">
+        <button class="btn" type="submit">搜尋</button>
+      </form>
+    </div>
+    <div id="searchResults"></div>
   </section>
 
   <section class="view" id="view-plans">
@@ -4057,6 +4073,7 @@ function switchView(name){
   if(name==='plans') renderPlansView();
   if(name==='stocks') renderStocksView();
   if(name==='mail') openMailView();
+  if(name==='search') renderSearch();
   renderModuleSettings();
   window.scrollTo(0,0);
   renderNav();
@@ -5099,7 +5116,7 @@ function renderNotes(){
   const list=state.notes.filter(inScope);
   if(!list.length){el.innerHTML='<div class="empty-hint">雜項、靈感、備忘都丟這裡</div>'; return;}
   el.innerHTML=list.map(n=>`
-    <div class="note-item">
+    <div class="note-item" id="note-${esc(n.id)}">
       <div class="note-txt">${esc(n.txt)}</div>
       <div class="note-meta">
         <span class="mood-meta">${fmtTime(n.ts)}</span>
@@ -5383,6 +5400,57 @@ async function addClipUrl(){
   if(input) input.value='';
   toast(r.kind==='link' ? '已收進圖書館（🔗 只存連結）' : '收到 ✅ 幾分鐘後收齊全文');
   await loadClips('manual');
+  return true;
+}
+
+/* ---------- 🔎 搜尋（ADR-021 D-5｜PR-F） ----------
+   按了才搜（action=search），不進開機、不輪詢。結果是雲端比好的：依模組分組、每組最新 20 筆＋總數。
+   點一下直開該筆：任務／提醒打開那一筆的編輯、記帳載入表單、雜記捲到那一則、圖書館開閱讀頁。
+   模組這次開 App 還沒讀過時，goView 會先讀（ADR-021 D-1），讀完才找那一筆 */
+const SEARCH_ERRORS={ empty_query:'先打要找的字', too_long:'關鍵字太長（上限 50 字）' };
+const SEARCH_ICON={ todo:'☑️', reminder:'🔔', notes:'📎', clips:'📚', expenses:'💰' };
+let searchState={q:'', loading:false, result:null, error:''};
+async function runSearch(){
+  const q=String((document.getElementById('searchInput')||{}).value||'').trim();
+  if(!q){ toast(SEARCH_ERRORS.empty_query); return false; }
+  if(searchState.loading) return false;
+  searchState={q, loading:true, result:null, error:''}; renderSearch();
+  let r=null;
+  try{ r=await cloudPost({action:'search', q, trigger:'manual'}); }catch(e){ r=null; }
+  searchState.loading=false;
+  if(r && r.success && Array.isArray(r.groups)) searchState.result=r;
+  else searchState.error = r ? (SEARCH_ERRORS[r.error]||'搜尋失敗，稍後再試') : '連不上雲端，這次沒有搜尋';
+  renderSearch();
+  return !!(r && r.success);
+}
+function renderSearch(){
+  const el=document.getElementById('searchResults');
+  if(!el) return;
+  const s=searchState;
+  if(s.loading){ el.innerHTML='<div class="empty-hint">搜尋中…</div>'; return; }
+  if(s.error){ el.innerHTML=`<div class="empty-hint">⚠️ ${esc(s.error)}</div>`; return; }
+  if(!s.result){ el.innerHTML='<div class="v2-empty"><span class="big">🔎</span>只搜你自己的<br><small>釘在白板上的大家都找得到；郵件、股票不在範圍內</small></div>'; return; }
+  const groups=s.result.groups||[];
+  if(!groups.length){ el.innerHTML=`<div class="empty-hint">找不到「${esc(s.result.q)}」</div>`; return; }
+  el.innerHTML=groups.map(g=>`<div class="card">
+      <h2>${SEARCH_ICON[g.key]||''} ${esc(g.label)} <small class="dash-sub">${Number(g.total)||0}</small></h2>
+      ${(g.items||[]).map(it=>`<button class="search-hit" onclick="openSearchHit('${esc(g.key)}','${esc(it.id)}')">
+        <b>${esc(it.title||'（沒有標題）')}</b>${it.snippet && it.snippet!==it.title ? `<span>${esc(it.snippet)}</span>` : ''}<small>${esc(it.date||'')}</small></button>`).join('')}
+      ${g.total>(g.items||[]).length ? `<div class="empty-hint">只列最新 ${(g.items||[]).length} 筆，共 ${g.total} 筆；多打一個關鍵字縮小範圍</div>` : ''}
+    </div>`).join('');
+}
+const SEARCH_VIEW={ todo:'tasks', reminder:'reminders', notes:'notes', expenses:'expenses' };
+async function openSearchHit(key, id){
+  if(key==='clips') return openClipFromWidget(id);
+  if(!SEARCH_VIEW[key]) return false;
+  await goView(SEARCH_VIEW[key]);
+  const same=x=>String(x.id)===String(id);
+  const list = key==='notes' ? state.notes : key==='expenses' ? state.expenses : state.tasks;
+  const rec=(list||[]).find(same);
+  if(!rec){ toast('找不到這一筆，可能剛被刪掉或改過，按搜尋再找一次'); return false; }
+  if(key==='expenses') editExpense(rec.id);
+  else if(key==='notes'){ const n=document.getElementById('note-'+rec.id); if(n && n.scrollIntoView) n.scrollIntoView({block:'center'}); }
+  else if(editingTaskId!==rec.id) openTaskEdit(rec.id);
   return true;
 }
 
