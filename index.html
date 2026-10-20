@@ -805,6 +805,9 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
 .widget.dragging{position:relative; z-index:5; box-shadow:0 8px 24px rgba(0,0,0,.18); cursor:grabbing;}
 .widget:not(.editing):active{transform:scale(.99);}
 .w-edit-bar{display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 0 12px; font-size:13px; color:var(--muted);}
+.weather-form{display:flex; flex-direction:column; gap:10px;}
+.weather-form label{display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--muted);}
+.weather-form select,.weather-form input{width:100%; box-sizing:border-box; font-size:16px;}
 .w-edit-bar .btn{width:auto; flex:none; padding:8px 18px;}
 .w-tools{display:flex; gap:6px;}
 .w-tools button,.app-tools button,.w-hidden button{background:none; border:1px solid var(--line); border-radius:8px; padding:2px 8px; font-size:12px; color:var(--text);}
@@ -4627,8 +4630,10 @@ function renderWeatherCard(){
   const el=document.getElementById('weatherForm');
   if(!isV2() || !el) return;
   const c=widgetCfg();
-  el.innerHTML=`<div class="row"><select id="weatherCounty">${WEATHER_COUNTIES.map(n=>`<option${n===c.weather_county?' selected':''}>${n}</option>`).join('')}</select>
-    <input type="text" id="weatherDistrict" value="${esc(c.weather_district)}" maxlength="10" placeholder="鄉鎮市區，例如 中正區">
+  // 縣市、鄉鎮各佔一整行（擠在同一列時鄉鎮框被壓到看不見字，Neil 2026-10-20）
+  el.innerHTML=`<div class="weather-form">
+    <label><span>縣市</span><select id="weatherCounty">${WEATHER_COUNTIES.map(n=>`<option${n===c.weather_county?' selected':''}>${n}</option>`).join('')}</select></label>
+    <label><span>鄉鎮市區</span><input type="text" id="weatherDistrict" value="${esc(c.weather_district)}" maxlength="10" placeholder="例如 中正區"></label>
     <button class="btn" onclick="saveWeatherLocation()">儲存</button></div>`;
 }
 async function saveWeatherLocation(){
