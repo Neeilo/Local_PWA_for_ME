@@ -63,6 +63,8 @@ function schedulerJobs_() {
     // RD-HF1 HF-C：Apify 本月用量＋近 3 天收藏成功率，給管理員頁看（ADR-020 的備案條件）
     { name: 'apifyUsage', module: 'library', label: 'Apify 用量', when: '每天 ' + CLIPS_USAGE_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: CLIPS_USAGE_HOUR },
       run: function (now) { return runApifyUsageJob_(now); } },
+    { name: 'weather', label: '天氣', when: '每小時', rule: { kind: 'hourly' },
+      run: function (now) { return runWeatherJob_(now); } },
     { name: 'perfFlush', label: '效能紀錄落地', when: '每 ' + PERF_QUEUE_MINUTES + ' 分鐘', rule: { kind: 'every', minutes: PERF_QUEUE_MINUTES },
       run: function () { return flushPerfQueue(); } }
   ];

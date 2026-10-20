@@ -668,6 +668,12 @@ function initSteps_() {
       return { level: 'ok', text: (r.created ? '新建 ' : '') + MODULE_REGISTRY_SHEET +
         (r.added.length ? (r.created ? '' : ' 補上') + '：' + r.added.join('、') : ' 已齊備') + '（已關掉的模組不會被打開）' };
     } },
+    { label: '總覽 Widget 設定表（ADR-021）', run: function () {
+      var r = ensureWidgetConfigSheet_();
+      var hasKey = !!String(PropertiesService.getScriptProperties().getProperty(WEATHER_KEY_PROP) || '').trim();
+      return { level: hasKey ? 'ok' : 'warn', text: (r.created ? '新建 ' : '') + WIDGET_CONFIG_SHEET + (r.created ? '' : ' 已存在') +
+        (hasKey ? '；天氣授權碼已設定' : '\n　⚠️ 還沒設 WEATHER_API（專案設定 → 指令碼屬性），天氣 Widget 會一直沒資料') };
+    } },
     { label: '2.0 介面權限（ADR-021）', run: function () {
       var r = installUiV2Feature_();
       return { level: r.warn ? 'warn' : 'ok', text: r.text };

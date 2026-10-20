@@ -800,6 +800,28 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
 .w-row{display:flex; flex-direction:column; align-items:flex-start; gap:2px; background:none; border:none; padding:4px 0; text-align:left; color:var(--text);}
 .w-row .lbl{font-size:12px; color:var(--muted);}
 .w-more{align-self:flex-end; background:none; border:none; color:var(--accent); font-size:13px; padding:4px 0;}
+.widget.editing{touch-action:none; user-select:none; cursor:grab;}
+.widget.editing .w-in{pointer-events:none; opacity:.85;}
+.widget.dragging{position:relative; z-index:5; box-shadow:0 8px 24px rgba(0,0,0,.18); cursor:grabbing;}
+.widget:not(.editing):active{transform:scale(.99);}
+.w-edit-bar{display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 0 12px; font-size:13px; color:var(--muted);}
+.w-edit-bar .btn{width:auto; flex:none; padding:8px 18px;}
+.w-tools{display:flex; gap:6px;}
+.w-tools button,.app-tools button,.w-hidden button{background:none; border:1px solid var(--line); border-radius:8px; padding:2px 8px; font-size:12px; color:var(--text);}
+.w-tools button.on,.app-tools button.on{border-color:var(--accent); color:var(--accent);}
+.w-hidden{display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0 12px;}
+.w-hidden .lbl{font-size:12px; color:var(--muted);}
+.w-fin{display:flex; align-items:center; justify-content:space-between; gap:8px; background:none; border:none; padding:0; text-align:left; color:var(--text); width:100%;}
+.w-fin > span{display:flex; flex-direction:column; gap:2px;}
+.w-fin .lbl{font-size:12px; color:var(--muted);}
+.w-warn{font-size:13px; color:var(--danger);}
+.w-umbrella{font-size:14px; font-weight:600; color:var(--accent);}
+.w-rebal{border-top:1px solid var(--line); padding-top:8px;}
+.app-cell{display:flex; flex-direction:column; gap:4px;}
+.app-tile.editing{animation:none; outline:1px dashed var(--line);}
+.app-tools{display:flex; gap:4px; justify-content:center;}
+::view-transition-group(app-zoom){animation-duration:.28s; animation-timing-function:cubic-bezier(.2,.8,.2,1);}
+nav button:active{opacity:.6;}
 .mod-row{display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0;}
 .avatar-dot{position:absolute; top:0; right:0; width:10px; height:10px; border-radius:50%; background:var(--danger); border:2px solid var(--bg);}
 .avatar-dot[hidden]{display:none;}
@@ -938,9 +960,9 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
         </div>
       </div>
     </div>
-    <!-- Widget（PR-B：Tasks、Reading）。各自載入、各自失敗：骨架 → 淡入；失敗只換那一格 -->
-    <div class="card widget" id="wTasks" hidden></div>
-    <div class="card widget" id="wReading" hidden></div>
+    <!-- Widget（PR-B／PR-C）。各自載入、各自失敗：骨架 → 淡入；失敗只換那一格。順序依 WidgetConfig＋盤中規則（visibleWidgets）；
+         長按任一張進編輯模式（拖曳、隱藏、📌 釘選） -->
+    <div id="widgetList"></div>
   </section>
   <section class="view" id="view-apps"><div id="appsGrid"></div></section>
   <section class="view" id="view-search">
@@ -1229,6 +1251,12 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
       <div class="place-head"><h2>🧭 介面</h2></div>
       <p class="slot-hint">現在用的是 2.0。只記在這台裝置，換回去會整頁重新載入，資料是同一份。</p>
       <button class="btn" onclick="switchUi('v1')">回到 1.0</button>
+    </div>
+    <!-- 天氣地點（ADR-021 D-15）：只在 2.0，存在個人的 WidgetConfig -->
+    <div class="slot-card" id="weatherCard" hidden>
+      <div class="place-head"><h2>🌤 天氣地點</h2></div>
+      <div id="weatherForm"></div>
+      <p class="slot-hint">中央氣象署鄉鎮預報，每小時更新。只有你看得到。</p>
     </div>
     <!-- 📖 指令字典（ADR-018 B-3）：跟 LINE 的 ? 同一份登記表（雲端 COMMANDS）。點開才抓（commandDict），不進開機 -->
     <div class="slot-card fold" id="dictCard">
@@ -1664,6 +1692,7 @@ function retryBoot(){
    股票寫入之後各打一次；同一時間只跑一趟。只在財務區、有 feat_stock 時打（wantStock）。
    讀不到（網路）就留著這次 session 上一份、畫面照 cloudOnline 講連線異常；雲端說沒權限就清掉 */
 let stockPromise=null;
+let stockAt=0;                   // 報價這一份的時間（2.0 股票 Widget 顯示「更新 HH:MM」）
 function refreshStock(trigger){
   if(!wantStock() || !myLineId || gateMode) return Promise.resolve(false);
   if(stockPromise) return stockPromise;
@@ -1673,7 +1702,7 @@ function refreshStock(trigger){
     if(!j) return false;
     if(j.error==='forbidden'){ stockData=null; stockFailed=false; }
     else if(j.error) stockFailed=true;
-    else applyStockData(j.stock);
+    else{ applyStockData(j.stock); stockAt=Date.now(); }
     renderStockParts();
     return !j.error;
   })().finally(()=>{ stockPromise=null; });
@@ -1681,6 +1710,7 @@ function refreshStock(trigger){
 }
 function renderStockParts(){
   renderDashStocks();
+  if(isV2()) renderStocksWidget();
   if(currentView()==='stocks') renderStocksView();
 }
 
@@ -1724,10 +1754,13 @@ async function runBootCore(trigger){
   const cur=currentView();
   if(V2_SHEETS_OF[cur] && !(await v2LoadSheets(V2_SHEETS_OF[cur], trigger))) return false;
   cloudOnline=true;
+  if(j.widget_config && typeof j.widget_config==='object') widgetConfig=j.widget_config;
+  if(j.widgets_meta) widgetsMeta=j.widgets_meta;
   applyWidgets(j.widgets);
   applyIdentity();
   renderConnState();
   flushOutbox();
+  loadSlowWidgets();
   return true;
 }
 /* boot 與 boot core 共用：身份、名單、管理員提示、一段話、模組登記 */
@@ -4075,7 +4108,7 @@ function switchUi(v){
 /* 5 格 Tab（D-4），順序 Apps｜圖書館｜總覽｜搜尋｜設定（總覽在中間，Neil 2026-10-19）。設定是蓋版、不是一頁；圖書館先接既有的收藏列表（雜記頁的收藏分段，PR-E 才搬家）。
    沒權限的格子留空佔位，其他格不移位。主色固定金黃（D-3：沿用財務區的 data-zone） */
 const V2_TABS=[
-  { key:'apps',     ico:'🧩', label:'Apps', tap:"goView('apps')" },
+  { key:'apps',     ico:'🧩', label:'Apps', tap:'backToApps()' },
   { key:'library',  ico:'📚', label:'圖書館', tap:'openLibrary()' },
   { key:'overview', ico:'🧭', label:'總覽', tap:"goView('overview')" },
   { key:'search',   ico:'🔎', label:'搜尋', tap:"goView('search')" },
@@ -4114,7 +4147,11 @@ function openLibrary(){
 const V2_SHEETS_OF={ expenses:['expenses'], plans:['expenses'], tasks:['tasks'], reminders:['tasks'], notes:['notes'] };
 let v2Loaded={};                 // 表 → 這次開 App 讀過了
 function v2NeedsLoad(view){ return isV2() && (V2_SHEETS_OF[view]||[]).some(s=>!v2Loaded[s]); }
-function stockOnScreen(){ return !isV2() || currentView()==='stocks'; }
+function stockOnScreen(){
+  if(!isV2()) return true;
+  const cur=currentView();
+  return cur==='stocks' || (cur==='overview' && visibleWidgets().includes('stocks'));   // 總覽上有股票 Widget 也算
+}
 async function v2LoadSheets(sheets, trigger){
   let j=null;
   const groups=sheets.includes('tasks');            // 群組名開機沒帶，讀任務時順便要
@@ -4140,7 +4177,11 @@ async function v2OpenModule(name){
 }
 /* 進一頁時補上那一頁要的（不擋畫面）：讀過的模組背景重讀一次、總覽超過一輪沒更新就拿摘要、股票頁拿報價 */
 function v2AfterEnter(name){
-  if(name==='overview'){ if(Date.now()-widgets.at>POLL_INTERVAL) refreshWidgets('manual'); return; }
+  if(name==='overview'){
+    if(Date.now()-widgets.lastAt>POLL_INTERVAL) refreshWidgets('manual');
+    if(visibleWidgets().includes('stocks')) refreshStock('manual');
+    return;
+  }
   if(name==='stocks'){ refreshStock('manual'); return; }
   if(V2_SHEETS_OF[name]) v2LoadSheets(V2_SHEETS_OF[name], 'manual');
 }
@@ -4154,51 +4195,88 @@ function v2Pull(meta){
 /* ---------- 總覽 Widget（ADR-021 D-6、D-13｜PR-B：Tasks、Reading） ----------
    資料是雲端算好的摘要（Widget 不直接讀模組的表）。各自的狀態：讀取中（骨架）→ 有資料（淡入）／失敗（只換那一格「連不上・重試」）。
    摘要沒帶＝沒權限或總開關關掉：那一格不出現 */
-let widgets={ data:null, at:0, loading:false, failed:false };
+/* data：key → 摘要（或 {error}）；at：key → 那一份的時間；loading：key → 這一趟還沒回；booted：開機那一趟回來過了。
+   PR-C 起不是一次全部：開機帶快的（任務、閱讀、郵件、天氣），財務開機後另外要、股票走報價（action=stock） */
+let widgets={ data:{}, at:{}, loading:{}, booted:false, lastAt:0 };
 let widgetSyncing={};            // 首頁勾完成、雲端還沒回的 id（ADR-021：雲端確認後才顯示已完成）
 let widgetDoneIds={};            // 剛勾完、雲端確認過的：這一輪照樣列著、打勾劃線，下次更新才收起
 let v2TaskSeg='todo';
-function applyWidgets(w){
-  widgets.data = w && typeof w==='object' ? w : {};
-  widgets.at=Date.now(); widgets.failed=false; widgetDoneIds={};
+/* keys：這次回來的是哪幾個（沒帶＝開機那一趟：快的那幾個）。沒回的＝沒權限，那一格不出現 */
+const WIDGET_FAST=['tasks','reading','mail','weather'];
+function applyWidgets(w, keys){
+  const got = w && typeof w==='object' ? w : {};
+  const now=Date.now();
+  (keys || WIDGET_FAST).forEach(k=>{
+    if(got[k]===undefined) delete widgets.data[k]; else widgets.data[k]=got[k];
+    widgets.at[k]=now; delete widgets.loading[k];
+    if(k==='finance' && got.finance && got.finance.expense_config) applyExpenseConfig(got.finance.expense_config);
+  });
+  if(!keys || keys.includes('tasks')) widgetDoneIds={};
+  widgets.booted=true; widgets.lastAt=now;
   renderOverview();
 }
-async function refreshWidgets(trigger){
-  if(widgets.loading) return false;
-  widgets.loading=true;
+/* only：要哪幾個（沒帶＝畫面上那幾個，股票除外——它走報價）。一趟失敗：那幾格「連不上・重試」 */
+async function refreshWidgets(trigger, only){
+  const keys=(only || visibleWidgets()).filter(k=>k!=='stocks');
+  if(!keys.length) return true;
+  keys.forEach(k=>{ widgets.loading[k]=true; });
   let j=null;
-  try{ j=await cloudPost({action:'widgets', trigger:trigger||'manual'}); }catch(e){ j=null; }
-  widgets.loading=false;
-  if(!j || j.error || !j.widgets || typeof j.widgets!=='object'){ widgets.failed=true; renderOverview(); return false; }
+  try{ j=await cloudPost({action:'widgets', only:keys, trigger:trigger||'manual'}); }catch(e){ j=null; }
+  if(!j || j.error || !j.widgets || typeof j.widgets!=='object'){
+    keys.forEach(k=>{ widgets.data[k]={error:'request_failed'}; delete widgets.loading[k]; });
+    renderOverview();
+    return false;
+  }
   if(typeof j.self_note==='string' && !selfNoteEditing) selfNote=j.self_note;
+  if(j.widgets_meta) widgetsMeta=j.widgets_meta;
   cloudOnline=true;
-  applyWidgets(j.widgets);
+  applyWidgets(j.widgets, keys);
   return true;
+}
+/* 開機後另外要的（財務要讀 expenses、股票要打報價：不拖慢冷開機） */
+function loadSlowWidgets(){
+  const v=visibleWidgets();
+  if(v.includes('finance')) refreshWidgets('manual', ['finance']);
+  if(v.includes('stocks')) refreshStock('manual');
 }
 /* loading｜ok｜failed｜none（沒帶＝不顯示） */
 function widgetState(key){
-  if(!widgets.data) return widgets.failed ? 'failed' : 'loading';
   const w=widgets.data[key];
-  if(w===undefined) return 'none';
-  if(widgets.failed || (w && w.error)) return 'failed';
-  return 'ok';
+  if(w && w.error) return 'failed';
+  if(w) return 'ok';
+  if(widgets.loading[key] || !widgets.booted) return 'loading';
+  return 'none';
 }
 function hhmm(ms){ const d=new Date(ms); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
-function widgetShell(id, title, key, body){
+function widgetShell(id, title, key, body, st, at, retry){
   const el=document.getElementById(id);
   if(!el) return;
-  const st=widgetState(key);
+  st = st || widgetState(key);
   el.hidden = st==='none';
   if(st==='none') return;
-  const head=`<div class="w-head"><h2>${title}</h2>${st==='ok' && widgets.at ? `<span class="w-at">更新 ${hhmm(widgets.at)}</span>` : ''}</div>`;
+  at = at===undefined ? widgets.at[key] : at;
+  const tools = widgetEditing ? widgetEditTools(key) : '';
+  const head=`<div class="w-head"><h2>${title}</h2>${tools || (st==='ok' && at ? `<span class="w-at">更新 ${hhmm(at)}</span>` : '')}</div>`;
   el.innerHTML = head + (st==='loading' ? '<div class="w-skel"></div><div class="w-skel short"></div>'
-    : st==='failed' ? `<button class="w-retry" onclick="refreshWidgets('manual')">連不上・重試</button>`
+    : st==='failed' ? `<button class="w-retry" onclick="${retry || `refreshWidgets('manual',['${key}'])`}">連不上・重試</button>`
     : `<div class="w-in">${body()}</div>`);
 }
+const WIDGET_EL={ tasks:'wTasks', finance:'wFinance', mail:'wMail', stocks:'wStocks', reading:'wReading', weather:'wWeather' };
+const WIDGET_RENDER={ tasks:()=>renderTasksWidget(), finance:()=>renderFinanceWidget(), mail:()=>renderMailWidget(),
+  stocks:()=>renderStocksWidget(), reading:()=>renderReadingWidget(), weather:()=>renderWeatherWidget() };
 function renderOverview(){
   renderSelfNote();
-  renderTasksWidget();
-  renderReadingWidget();
+  if(widgetDrag) return;                       // 拖曳中不重畫：卡片會從手指底下消失
+  const list=document.getElementById('widgetList');
+  const ids=widgetEditing ? widgetEditList() : visibleWidgets();
+  if(list){
+    list.innerHTML = (widgetEditing ? `<div class="w-edit-bar"><span>拖曳排序・📌 釘選・隱藏</span><button class="btn" onclick="exitWidgetEdit(true)">完成</button></div>` : '')
+      + ids.map(id=>`<div class="card widget${widgetEditing?' editing':''}" id="${WIDGET_EL[id]}" data-wid="${id}"
+        onpointerdown="widgetPointerDown(event,'${id}')" onpointermove="widgetPointerMove(event)" onpointerup="widgetPointerUp(event)"
+        onpointercancel="widgetPointerUp(event)"></div>`).join('')
+      + (widgetEditing ? widgetHiddenListHtml() : '');
+  }
+  ids.forEach(id=>WIDGET_RENDER[id]());
 }
 
 /* Tasks Widget：頂部最急兩件＋待辦｜提醒｜白板三段（跟 1.0 首頁同一套判斷：urgentItems、byPriority、boardItems） */
@@ -4286,6 +4364,280 @@ function renderReadingWidget(){
 function openClipFromWidget(id){
   return openLibrary().then(()=>{ if((clipsData||[]).some(c=>String(c.id)===String(id))) openClip(id); });
 }
+
+/* ---------- Finance／Mail／Stocks／Weather Widget（ADR-021 D-6、D-15、D-16｜PR-C） ---------- */
+/* 財務：本月支出（沿用記帳頁的雙環圖彙總）＋分期摘要。點了去記帳頁的雙環圖 */
+function renderFinanceWidget(){
+  if(!viewAllowed('expenses')){ setHidden('wFinance', true); return; }
+  widgetShell('wFinance', '💰 財務', 'finance', ()=>{
+    const d=widgets.data.finance||{};
+    const rows=(d.rows||[]).filter(r=>r.id).map(expenseFromCloud);
+    const mk=monthKey();
+    const total=monthTotal(mk,'expense',rows);
+    const donut = total ? miniDonutSVG(categoryBreakdown(mk, rows), total) : '';
+    const f=dashPlanFigures(rows, d.installments||[]);
+    const plan = moduleOn('plans') ? `<button class="w-row" onclick="goView('plans')"><span class="lbl">分期</span>
+      <span class="txt">${f.plans||f.left ? `${f.plans} 筆進行中・本月應繳 NT$ ${fmtAmount(f.month)}` : '沒有進行中的'}</span></button>` : '';
+    return `<button class="w-fin" onclick="openExpenseDonut()"><span><span class="lbl">本月支出</span>
+      <span class="t-big"><span class="cur">NT$</span>${fmtAmount(total)}</span>
+      <span class="t-sub">${total ? '點開看雙環圖與明細' : fmtMonth(mk)+'　還沒有支出紀錄'}</span></span>${donut}</button>` + plan;
+  });
+}
+/* 郵件（D-16）：控制員既有產出——今日各標籤筆數＋異常警告。點了去郵件模組 */
+function renderMailWidget(){
+  if(!viewAllowed('mail')){ setHidden('wMail', true); return; }
+  widgetShell('wMail', '📬 郵件', 'mail', ()=>{
+    const m=widgets.data.mail||{};
+    const warn=(m.warnings||[]).map(w=>`<div class="w-warn">⚠️ ${esc(w)}</div>`).join('');
+    return `<button class="w-row" onclick="goView('mail')"><span class="lbl">今天 ${Number(m.today)||0} 封</span>
+      <span class="txt">帳單 ${Number(m.bill)||0}・電子報 ${Number(m.newsletter)||0}・ETC ${Number(m.etag)||0}</span>
+      <small>近 3 天新帳單 ${Number(m.bills_3d)||0} 封</small></button>` + warn;
+  });
+}
+/* 股票：自選股＋再平衡（再平衡限管理者＋有持股＋有現金，照 ADR-015；雲端只給符合的人）。報價走 action=stock */
+function renderStocksWidget(){
+  if(!viewAllowed('stocks')){ setHidden('wStocks', true); return; }
+  const st = stockFailed ? 'failed' : stockData ? 'ok' : 'loading';
+  widgetShell('wStocks', '📈 股票', 'stocks', ()=>{
+    const watch=(stockData||{}).watch||[];
+    const mini = watch.length ? `<div class="stk-mini">${watch.map(w=>{
+      const q=(stockData.quotes||{})[w.symbol];
+      return `<button class="${stockHits(w.symbol).length?'hit':''}" onclick="goView('stocks')">
+        <b>${esc(w.symbol)}</b>${q?fmtStk(q.price,4):'—'}<br><small class="${q?stkTone(q.change):''}">${q&&q.changePct!==''?signedStk(q.changePct,2)+'%':''}</small></button>`;
+    }).join('')}</div>` : '<div class="empty-hint">還沒有自選股</div>';
+    const rb=rebalHtml();
+    return (widgetsMeta.trading ? '<div class="w-at">盤中</div>' : '') + mini + (rb ? `<div class="w-rebal">${rb}</div>` : '');
+  }, st, stockData ? stockAt : 0, "refreshStock('manual')");
+}
+/* 天氣（D-15）：雲端每小時抓、存好的那一份。≥50% 提示帶傘；地點在設定裡改 */
+function renderWeatherWidget(){
+  const w=widgets.data.weather;
+  const notFound = w && w.error==='district_not_found';
+  widgetShell('wWeather', '🌤 天氣', 'weather', ()=>{
+    const d=widgets.data.weather||{};
+    const where=`${esc(d.county||'')}${esc(d.district||'')}`;
+    if(d.pending) return `<div class="w-row"><span class="lbl">${where}</span><span class="txt">第一次更新中（最多一小時）</span></div>`;
+    const temp = d.min!=null && d.max!=null ? `${d.min}–${d.max}°C` : '';
+    return `<div class="w-row"><span class="lbl">${where}・${esc(d.period||'今天')}</span>
+      <span class="txt">${esc(d.wx||'—')}　${temp}</span>
+      ${d.pop!=null ? `<small>降雨機率 ${d.pop}%</small>` : ''}</div>`
+      + (d.umbrella ? '<div class="w-umbrella">☔ 記得帶傘</div>' : '');
+  }, notFound ? 'ok' : undefined);
+  if(notFound){
+    const el=document.getElementById('wWeather');
+    if(el) el.innerHTML=`<div class="w-head"><h2>🌤 天氣</h2></div><div class="w-warn">找不到「${esc(w.district||'')}」，到設定改天氣地點</div>`;
+  }
+}
+
+/* ---------- Widget 順序與個人設定（ADR-021 D-7、D-8｜PR-C） ---------- */
+const WIDGET_IDS=['tasks','finance','mail','stocks','reading','weather'];
+const WIDGET_DEFAULT_ORDER=['tasks','finance','mail','stocks','reading','weather'];
+const WIDGET_NAMES={ tasks:'☑️ 任務', finance:'💰 財務', mail:'📬 郵件', stocks:'📈 股票', reading:'📚 閱讀', weather:'🌤 天氣' };
+let widgetConfig=null;          // 雲端那份（boot core 帶回）；null＝還沒讀到，用預設
+let widgetsMeta={ trading:false };
+function widgetCfg(){
+  return widgetConfig || { order:WIDGET_DEFAULT_ORDER.slice(), hidden:[], pinned:[], apps_pinned:[], apps_hidden:[],
+    weather_county:'臺北市', weather_district:'中正區' };
+}
+/* 沒權限（或總開關關掉）的 Widget 不出現（D-8） */
+function widgetAllowed(id){
+  if(id==='tasks') return viewAllowed('tasks');
+  if(id==='finance') return viewAllowed('expenses');
+  if(id==='mail') return viewAllowed('mail');
+  if(id==='stocks') return viewAllowed('stocks');
+  if(id==='reading') return featureAllowed('clips');
+  return id==='weather';
+}
+/* 排序（純函式，D-7／D-8）：📌 釘選的永遠在最上（照使用者的順序）；盤中 Stocks 排在已釘選之下第一個；
+   其餘照使用者的順序；隱藏的、沒權限的不出現。順序裡漏掉的依預設順序接在後面 */
+function widgetOrder(cfg, allowed, trading){
+  const base=(cfg.order||[]).filter(id=>WIDGET_IDS.includes(id));
+  WIDGET_DEFAULT_ORDER.forEach(id=>{ if(!base.includes(id)) base.push(id); });
+  const shown=base.filter(id=>allowed(id) && !(cfg.hidden||[]).includes(id));
+  const pinned=shown.filter(id=>(cfg.pinned||[]).includes(id));
+  let rest=shown.filter(id=>!pinned.includes(id));
+  if(trading && rest.includes('stocks')) rest=['stocks'].concat(rest.filter(id=>id!=='stocks'));
+  return pinned.concat(rest);
+}
+function visibleWidgets(){ return widgetOrder(widgetCfg(), widgetAllowed, !!widgetsMeta.trading); }
+
+/* 存雲端（一人一份，D-8）。先改畫面、存不上去就還原並講出來 */
+async function saveWidgetConfig(patch){
+  const before=widgetCfg();
+  widgetConfig=Object.assign({}, before, patch);
+  renderOverview(); renderApps();
+  let r=null;
+  try{ r=await cloudPost({action:'widgetConfigSet', config:patch, trigger:'write'}); }catch(e){ r=null; }
+  if(r && r.success && r.config){ widgetConfig=r.config; renderOverview(); renderApps(); return true; }
+  widgetConfig=before; renderOverview(); renderApps();
+  toast(r && r.error==='invalid_location' ? '⚠️ 地點看不懂，請選縣市、填鄉鎮市區（例如 中正區）' : '⚠️ 沒有存到雲端，請稍後再試');
+  return false;
+}
+
+/* 長按（D-8）：按住 500ms、沒移動超過 8px 才算。移動或放開就取消 */
+const LONG_PRESS_MS=500, LONG_PRESS_SLOP=8;
+let longPress=null;
+function longPressStart(ev, fn){
+  longPressCancel();
+  longPress={ x:ev.clientX, y:ev.clientY, timer:setTimeout(()=>{ longPress=null; fn(); }, LONG_PRESS_MS) };
+}
+function longPressMove(ev){
+  if(longPress && (Math.abs(ev.clientX-longPress.x)>LONG_PRESS_SLOP || Math.abs(ev.clientY-longPress.y)>LONG_PRESS_SLOP)) longPressCancel();
+}
+function longPressCancel(){ if(longPress){ clearTimeout(longPress.timer); longPress=null; } }
+
+/* ---------- 總覽編輯模式：拖曳排序、隱藏、📌 釘選（D-8、D-19） ---------- */
+let widgetEditing=false, widgetEditIds=null, widgetDrag=null;
+function enterWidgetEdit(){
+  if(widgetEditing || !isV2()) return;
+  widgetEditing=true;
+  widgetEditIds=widgetOrder(widgetCfg(), widgetAllowed, false);     // 編輯時照使用者自己的順序（不套盤中規則）
+  renderOverview();
+}
+function widgetEditList(){ return widgetEditIds || []; }
+function widgetEditTools(id){
+  const c=widgetCfg();
+  return `<span class="w-tools"><button class="${(c.pinned||[]).includes(id)?'on':''}" onclick="toggleWidgetPin('${id}')" aria-label="釘選">📌</button>
+    <button onclick="toggleWidgetHidden('${id}')">隱藏</button></span>`;
+}
+function widgetHiddenListHtml(){
+  const hid=(widgetCfg().hidden||[]).filter(id=>widgetAllowed(id));
+  return hid.length ? `<div class="w-hidden"><span class="lbl">已隱藏</span>${hid.map(id=>`<button onclick="toggleWidgetHidden('${id}')">${WIDGET_NAMES[id]} ＋</button>`).join('')}</div>` : '';
+}
+function toggleWidgetPin(id){
+  const c=widgetCfg();
+  const pinned=(c.pinned||[]).includes(id) ? c.pinned.filter(x=>x!==id) : (c.pinned||[]).concat([id]);
+  widgetConfig=Object.assign({}, c, {pinned});
+  widgetEditIds=widgetOrder(widgetConfig, widgetAllowed, false);
+  renderOverview();
+}
+function toggleWidgetHidden(id){
+  const c=widgetCfg();
+  const hidden=(c.hidden||[]).includes(id) ? c.hidden.filter(x=>x!==id) : (c.hidden||[]).concat([id]);
+  widgetConfig=Object.assign({}, c, {hidden});
+  widgetEditIds=widgetOrder(widgetConfig, widgetAllowed, false);
+  renderOverview();
+}
+/* 完成＝存雲端。順序：編輯清單的順序在前，隱藏的、沒權限的照原本的位置接在後面 */
+function exitWidgetEdit(save){
+  if(!widgetEditing) return Promise.resolve(false);
+  widgetEditing=false;
+  const c=widgetCfg();
+  const order=widgetEditList().concat((c.order||WIDGET_DEFAULT_ORDER).filter(id=>!widgetEditList().includes(id)));
+  widgetEditIds=null;
+  if(!save){ renderOverview(); return Promise.resolve(false); }
+  return saveWidgetConfig({ order, pinned:c.pinned||[], hidden:c.hidden||[] });
+}
+function widgetPointerDown(ev, id){
+  if(!widgetEditing){ longPressStart(ev, enterWidgetEdit); return; }
+  if(ev.target && ev.target.closest && ev.target.closest('button')) return;      // 點的是 📌／隱藏
+  const card=ev.currentTarget;
+  if(!card || !card.getBoundingClientRect) return;
+  const els=Array.prototype.slice.call(document.querySelectorAll('#widgetList .widget'));
+  const items=els.map(el=>{ const r=el.getBoundingClientRect(); return { id:el.dataset.wid, el, top:r.top, h:r.height }; });
+  const from=items.findIndex(x=>x.id===id);
+  if(from<0) return;
+  try{ card.setPointerCapture(ev.pointerId); }catch(e){}
+  widgetDrag={ id, card, items, from, to:from, startY:ev.clientY, dy:0, lastY:ev.clientY, lastT:Date.now(), v:0 };
+  card.classList.add('dragging');
+}
+function widgetPointerMove(ev){
+  longPressMove(ev);
+  const d=widgetDrag;
+  if(!d) return;
+  const now=Date.now();
+  d.v = (ev.clientY-d.lastY) / Math.max(now-d.lastT, 1) * 1000;      // px/s，放手時給彈簧的初速
+  d.lastY=ev.clientY; d.lastT=now;
+  d.dy=ev.clientY-d.startY;                                           // 1:1 黏手指：位移就是手指的位移（抓哪裡就是哪裡）
+  d.card.style.transform=`translateY(${d.dy}px)`;
+  // 往下拖：卡片底邊過了下一張的中線就換位；往上拖：頂邊過了上一張的中線。高的卡片（任務）不用拖到半張以上才動
+  const me=d.items[d.from], top=me.top+d.dy, bottom=top+me.h;
+  let to=d.from;
+  d.items.forEach((x,i)=>{ if(i===d.from) return; const mid=x.top+x.h/2; if(i<d.from && top<mid) to=Math.min(to,i); if(i>d.from && bottom>mid) to=Math.max(to,i); });
+  d.to=to;
+  const gap=d.items.length>1 ? Math.abs(d.items[1].top-(d.items[0].top+d.items[0].h)) : 0;
+  d.items.forEach((x,i)=>{
+    if(i===d.from) return;
+    const shift = d.from<to && i>d.from && i<=to ? -(me.h+gap) : d.from>to && i<d.from && i>=to ? (me.h+gap) : 0;
+    x.el.style.transform = shift ? `translateY(${shift}px)` : '';
+  });
+}
+/* 放手：彈簧落位（critically damped，不回彈）；減少動態就直接放到位。落定才改順序、重畫 */
+function widgetPointerUp(){
+  longPressCancel();
+  const d=widgetDrag;
+  if(!d) return;
+  const me=d.items[d.from];
+  const gap=d.items.length>1 ? Math.abs(d.items[1].top-(d.items[0].top+d.items[0].h)) : 0;
+  const target = d.to>d.from ? d.items.slice(d.from+1, d.to+1).reduce((s,x)=>s+x.h+gap,0)
+    : d.to<d.from ? -d.items.slice(d.to, d.from).reduce((s,x)=>s+x.h+gap,0) : 0;
+  const commit=()=>{
+    const ids=widgetEditList().slice();
+    const [moved]=ids.splice(d.from,1);
+    ids.splice(d.to,0,moved);
+    widgetEditIds=ids;
+    d.items.forEach(x=>{ x.el.style.transform=''; });
+    d.card.classList.remove('dragging');
+    widgetDrag=null;
+    renderOverview();
+  };
+  if(reducedMotion() || typeof requestAnimationFrame!=='function'){ commit(); return; }
+  springTo(d.dy, target, d.v, x=>{ d.card.style.transform=`translateY(${x}px)`; }, commit);
+}
+/* x(t)＝目標＋(x0＋(v0＋ωx0)t)e^(−ωt)：臨界阻尼，最快回到位置且不過頭（不彈跳，D-19） */
+const SPRING_OMEGA=22;
+function springTo(from, to, v0, step, done){
+  const x0=from-to, t0=Date.now();
+  const tick=()=>{
+    const t=(Date.now()-t0)/1000;
+    const x=to+(x0+(v0+SPRING_OMEGA*x0)*t)*Math.exp(-SPRING_OMEGA*t);
+    step(x);
+    if(Math.abs(x-to)<0.5 && t>0.05) done(); else requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+/* ---------- Apps 編輯模式：📌 常用、隱藏圖示（D-9 ③） ---------- */
+let appsEditing=false;
+function appPointerDown(ev){ if(!appsEditing) longPressStart(ev, ()=>{ appsEditing=true; renderApps(); }); }
+function toggleAppPin(id){
+  const c=widgetCfg();
+  const apps_pinned=(c.apps_pinned||[]).includes(id) ? c.apps_pinned.filter(x=>x!==id) : (c.apps_pinned||[]).concat([id]);
+  widgetConfig=Object.assign({}, c, {apps_pinned});
+  renderApps();
+}
+function toggleAppHidden(id){
+  const c=widgetCfg();
+  const apps_hidden=(c.apps_hidden||[]).includes(id) ? c.apps_hidden.filter(x=>x!==id) : (c.apps_hidden||[]).concat([id]);
+  widgetConfig=Object.assign({}, c, {apps_hidden});
+  renderApps();
+}
+function exitAppsEdit(save){
+  appsEditing=false;
+  const c=widgetCfg();
+  if(!save){ renderApps(); return Promise.resolve(false); }
+  return saveWidgetConfig({ apps_pinned:c.apps_pinned||[], apps_hidden:c.apps_hidden||[] });
+}
+
+/* ---------- 設定：天氣地點（D-15，只在 2.0） ---------- */
+const WEATHER_COUNTIES=['臺北市','新北市','基隆市','桃園市','新竹市','新竹縣','苗栗縣','臺中市','彰化縣','南投縣','雲林縣',
+  '嘉義市','嘉義縣','臺南市','高雄市','屏東縣','宜蘭縣','花蓮縣','臺東縣','澎湖縣','金門縣','連江縣'];
+function renderWeatherCard(){
+  setHidden('weatherCard', !isV2());
+  const el=document.getElementById('weatherForm');
+  if(!isV2() || !el) return;
+  const c=widgetCfg();
+  el.innerHTML=`<div class="row"><select id="weatherCounty">${WEATHER_COUNTIES.map(n=>`<option${n===c.weather_county?' selected':''}>${n}</option>`).join('')}</select>
+    <input type="text" id="weatherDistrict" value="${esc(c.weather_district)}" maxlength="10" placeholder="鄉鎮市區，例如 中正區">
+    <button class="btn" onclick="saveWeatherLocation()">儲存</button></div>`;
+}
+async function saveWeatherLocation(){
+  const county=(document.getElementById('weatherCounty')||{}).value||'';
+  const district=String((document.getElementById('weatherDistrict')||{}).value||'').trim();
+  if(!await saveWidgetConfig({ weather_county:county, weather_district:district })) return false;
+  toast('已儲存，天氣更新中');
+  return refreshWidgets('manual', ['weather']);
+}
 /* Apps Grid（D-9 ①②）：依登記表的 sort、分類分組；總開關關掉的、沒權限的不出現。
    白板沒有獨立頁，等 PR-B 的 Tasks Widget 再放（Neil 2026-10-19） */
 const APP_VIEW={ expenses:'expenses', plans:'plans', stocks:'stocks', tasks:'tasks', reminders:'reminders',
@@ -4295,26 +4647,65 @@ function appAllowed(m){
   if(!v || m.enabled===false) return false;
   return v==='library' ? featureAllowed('clips') : viewAllowed(v);
 }
+/* 個人整理（D-9 ③，跟 Widget 同一份雲端設定）：📌 釘到最上面的「常用」、隱藏圖示（只動畫面）。
+   常用的不再在分類裡重複一次；編輯模式下隱藏的列在最後「已隱藏」 */
 function appsGridItems(){
-  const groups=[];
-  modules.slice().sort((a,b)=>(Number(a.sort)||0)-(Number(b.sort)||0)).filter(appAllowed).forEach(m=>{
+  const cfg=widgetCfg();
+  const sorted=modules.slice().sort((a,b)=>(Number(a.sort)||0)-(Number(b.sort)||0)).filter(appAllowed);
+  const pinned=(cfg.apps_pinned||[]).map(id=>sorted.find(m=>m.module_id===id)).filter(m=>m && !(cfg.apps_hidden||[]).includes(m.module_id));
+  const groups=pinned.length ? [{category:'常用', items:pinned}] : [];
+  sorted.forEach(m=>{
+    if(pinned.includes(m) || (cfg.apps_hidden||[]).includes(m.module_id)) return;
     let g=groups.find(x=>x.category===m.category);
     if(!g){ g={category:m.category||'', items:[]}; groups.push(g); }
     g.items.push(m);
   });
+  if(appsEditing){
+    const hid=sorted.filter(m=>(cfg.apps_hidden||[]).includes(m.module_id));
+    if(hid.length) groups.push({category:'已隱藏', items:hid});
+  }
   return groups;
 }
-function openApp(id){
+/* 模組從圖示展開、收回同一處（D-19）：View Transitions（不支援、減少動態、這次要先讀資料的就直接換） */
+let appZoomFrom=null;
+function canZoom(){ return typeof document.startViewTransition==='function' && !reducedMotion(); }
+function openApp(id, tile){
+  if(appsEditing) return;
   const v=APP_VIEW[id];
-  if(v==='library') openLibrary(); else goView(v);
+  if(v==='library') return openLibrary();
+  const viewEl=document.getElementById('view-'+(v==='reminders'?'tasks':v));
+  if(!tile || !viewEl || !canZoom() || v2NeedsLoad(v)) return goView(v);
+  appZoomFrom=id;
+  tile.style.viewTransitionName='app-zoom';
+  const t=document.startViewTransition(()=>{ tile.style.viewTransitionName=''; viewEl.style.viewTransitionName='app-zoom'; goView(v); });
+  t.finished.finally(()=>{ viewEl.style.viewTransitionName=''; });
+}
+/* 從模組回 Apps：收回剛才點的那個圖示 */
+function backToApps(){
+  const id=appZoomFrom; appZoomFrom=null;
+  const v=id ? APP_VIEW[id] : null;
+  const viewEl=v ? document.getElementById('view-'+(v==='reminders'?'tasks':v)) : null;
+  if(!viewEl || !canZoom() || currentView()==='apps') return goView('apps');
+  viewEl.style.viewTransitionName='app-zoom';
+  const t=document.startViewTransition(()=>{
+    viewEl.style.viewTransitionName='';
+    goView('apps');
+    const tile=document.querySelector(`[data-app="${id}"]`);
+    if(tile) tile.style.viewTransitionName='app-zoom';
+  });
+  t.finished.finally(()=>{ const tile=document.querySelector(`[data-app="${id}"]`); if(tile) tile.style.viewTransitionName=''; });
 }
 function renderApps(){
   const el=document.getElementById('appsGrid');
   if(!el) return;
   const groups=appsGridItems();
-  el.innerHTML = groups.length ? groups.map(g=>`<div class="apps-cat"><h2>${esc(g.category)}</h2><div class="apps-grid">${
-    g.items.map(m=>`<button class="app-tile" onclick="openApp('${m.module_id}')"><span class="ico">${esc(m.icon)}</span>${esc(m.name)}</button>`).join('')
-  }</div></div>`).join('') : '<div class="v2-empty">目前沒有可用的模組</div>';
+  const cfg=widgetCfg();
+  const tools=m=>appsEditing ? `<span class="app-tools"><button class="${(cfg.apps_pinned||[]).includes(m.module_id)?'on':''}" onclick="toggleAppPin('${m.module_id}')" aria-label="釘到常用">📌</button><button onclick="toggleAppHidden('${m.module_id}')">${(cfg.apps_hidden||[]).includes(m.module_id)?'顯示':'隱藏'}</button></span>` : '';
+  el.innerHTML = (appsEditing ? `<div class="w-edit-bar"><span>📌 釘到常用・隱藏圖示</span><button class="btn" onclick="exitAppsEdit(true)">完成</button></div>` : '')
+    + (groups.length ? groups.map(g=>`<div class="apps-cat"><h2>${esc(g.category)}</h2><div class="apps-grid">${
+    g.items.map(m=>`<div class="app-cell"><button class="app-tile${appsEditing?' editing':''}" data-app="${m.module_id}" onclick="openApp('${m.module_id}', this)"
+      onpointerdown="appPointerDown(event)" onpointermove="longPressMove(event)" onpointerup="longPressCancel()" onpointercancel="longPressCancel()"><span class="ico">${esc(m.icon)}</span>${esc(m.name)}</button>${tools(m)}</div>`).join('')
+  }</div></div>`).join('') : '<div class="v2-empty">目前沒有可用的模組</div>');
 }
 /* 設定：個人區「回到 1.0」、管理區「模組總開關」，都只在 2.0（1.0 的設定頁不變） */
 function renderUiCard(){ setHidden('uiCard', !isV2()); }
@@ -4799,15 +5190,16 @@ function sortExpenses(){
 }
 /* 「只看我的」在這裡收斂：月小計、圓餅圖與當月明細全部共用這個出口，
    一個地方改完三處跟著對。編輯與刪除仍是以 id 直接對 state 操作，不受影響。 */
-function expensesOfMonth(mk){ return state.expenses.filter(e=>e.date.slice(0,7)===mk && inScope(e)); }
-function monthTotal(mk,type='expense'){
-  return expensesOfMonth(mk).filter(e=>e.type===type).reduce((s,e)=>s+e.amount,0);
+// src：2.0 財務 Widget 拿的是雲端算好的那幾列（ADR-021 PR-C），不是 state.expenses；同一套彙總
+function expensesOfMonth(mk, src){ return (src||state.expenses).filter(e=>e.date.slice(0,7)===mk && inScope(e)); }
+function monthTotal(mk,type='expense',src){
+  return expensesOfMonth(mk, src).filter(e=>e.type===type).reduce((s,e)=>s+e.amount,0);
 }
 /* 依設定的大類順序彙總（細項不影響，D-16），只回傳有金額者；超過 MAX_DONUT_SEGMENTS 時尾端併入「其他」。
    設定裡沒有的名字（設定還沒載入時）接在最後，總額才對得上 */
-function categoryBreakdown(mk){
+function categoryBreakdown(mk, src){
   const sums={};
-  expensesOfMonth(mk).filter(e=>e.type==='expense').forEach(e=>{
+  expensesOfMonth(mk, src).filter(e=>e.type==='expense').forEach(e=>{
     sums[e.category]=(sums[e.category]||0)+e.amount;
   });
   const order=expenseCategories().map(c=>c.name);
@@ -5407,13 +5799,13 @@ async function saveSelfNote(){
 }
 
 /* 分期：本月應付＝這個月的各期加總；剩餘＝今天之後還沒到期的各期加總（都在 state.expenses 裡） */
-function dashPlanFigures(){
+function dashPlanFigures(src, plans){
   const mk=monthKey(), today=todayKey();
-  const rows=state.expenses.filter(e=>e.plan_id && e.plan_seq && e.type!=='income' && inScope(e));
+  const rows=(src||state.expenses).filter(e=>e.plan_id && e.plan_seq && e.type!=='income' && inScope(e));
   return {
     month: rows.filter(e=>e.date.slice(0,7)===mk).reduce((s,e)=>s+e.amount,0),
     left:  rows.filter(e=>e.date>today).reduce((s,e)=>s+e.amount,0),
-    plans: installmentPlans.filter(p=>p.status==='active').length
+    plans: (plans||installmentPlans).filter(p=>p.status==='active').length
   };
 }
 function renderDashPlans(){
@@ -5733,7 +6125,7 @@ function renderSettings(){
   }
   setHidden('setPersonal', settingsTab!=='personal');
   setHidden('setAdmin', settingsTab!=='admin');
-  renderMeCard(); renderMyDevices(); renderSetEmail(); renderThemeCard(); renderUiCard(); renderModuleCard();
+  renderMeCard(); renderMyDevices(); renderSetEmail(); renderThemeCard(); renderUiCard(); renderModuleCard(); renderWeatherCard();
   renderAdminCard(); renderSysCard(); renderPushCard(); renderAiCard(); renderPerfCard(); renderArchiveCard(); renderLogCard();
   renderFolds();
 }
