@@ -3382,6 +3382,8 @@ const GMAIL_ERRORS = {
 function sysGmailHtml(d){
   const types=d.mail_types||Object.keys(GMAIL_TYPE_LABEL), parsers=d.parsers||[];
   const opt=(list,cur,label)=>list.map(v=>`<option value="${esc(v)}" ${String(cur)===v?'selected':''}>${esc(label?label(v):v)}</option>`).join('');
+  // 規則上留著雲端不認得的解析器：照實列出來並選著（控制員當留白），改選「不解析」才清得掉
+  const odd=p=>(p && !parsers.includes(String(p))) ? `<option value="${esc(p)}" selected>${esc(p)}（不認得，當留白）</option>` : '';
   const list=(d.rules||[]).map((r,i)=>{
     const on=truthy(r.is_active);
     const input=(f,ph)=>`<input type="text" placeholder="${ph}" value="${esc(r[f])}" onchange="setGmailRule(${i},'${f}',this.value)">`;
@@ -3391,7 +3393,7 @@ function sysGmailHtml(d){
       <div class="row">${input('from','寄件者（可用 OR）')}${input('subject_kw','主旨關鍵字')}</div>
       <div class="row">${input('label','Gmail 標籤')}
         <select onchange="setGmailRule(${i},'mail_type',this.value)">${opt(types,r.mail_type,t=>GMAIL_TYPE_LABEL[t]||t)}</select>
-        <select onchange="setGmailRule(${i},'parser',this.value)"><option value="">（不解析）</option>${opt(parsers,r.parser)}</select></div>
+        <select onchange="setGmailRule(${i},'parser',this.value)"><option value="">（不解析）</option>${opt(parsers,r.parser)}${odd(r.parser)}</select></div>
       <div class="adm-grid">${flag('is_active',on?'✅ 啟用中':'已停用')}${flag('save_attachment','📎 存 PDF')}${flag('notify','📣 列入彙總')}</div>
     </div>`;
   }).join('');

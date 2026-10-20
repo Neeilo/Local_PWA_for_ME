@@ -692,6 +692,17 @@ describe('給 App 的管理員 API（gmailView／gmailRuleSet）', () => {
     assert.equal(e.call('gmailRuleSet_', ADMIN, { rule_id: 7, is_active: true }).error, 'invalid_mail_type');
   });
 
+  test('規則上留著不認得的解析器：改其他欄（例如取消存 PDF）照常存；控制員本來就當留白（Neil 2026-10-20）', () => {
+    const e = apiEnv({ rules: [Object.assign({}, BILL, { parser: 'cathay' })] });
+    const r = e.call('gmailRuleSet_', ADMIN, { rule_id: 1, save_attachment: false });
+    assert.equal(r.success, true);
+    const saved = e.sheets.gmail_rules.toRecords()[0];
+    assert.equal(saved.save_attachment, 'FALSE');
+    assert.equal(saved.parser, 'cathay', '沒送 parser 就不動它');
+    assert.equal(e.call('gmailRuleSet_', ADMIN, { rule_id: 1, parser: '' }).success, true, '清成「不解析」也存得進去');
+    assert.equal(e.call('gmailRuleSet_', ADMIN, { rule_id: 1, parser: 'nope' }).error, 'unknown_parser', '主動選不認得的照樣擋');
+  });
+
   test('經過 PWA 路由：要帶 token，管理員拿得到', () => {
     const TOK = 'tok-neil';
     const e = loadCodeGs({ extraFiles: ['line-router.gs', 'sheet-guide.gs'], tokens: { [TOK]: ME },

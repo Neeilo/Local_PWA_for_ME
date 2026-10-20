@@ -174,6 +174,16 @@ describe('設定頁「信件規則」', () => {
     assert.match(html, /<option value="">（不解析）<\/option>/);
   });
 
+  test('規則上留著雲端不認得的解析器：照實顯示「不認得」並選著，改選「不解析」就清得掉', async () => {
+    const odd = Object.assign({}, RULES, { rules: [Object.assign({}, RULES.rules[0], { parser: 'cathay' })] });
+    const e = env({ respond: (b) => (b.action === 'gmailView' ? odd : { success: true, rule: Object.assign({}, odd.rules[0], b.record) }) });
+    await e.callRaw('openSysTab', 'gmail');
+    assert.match(e.els.sysBody.innerHTML, /<option value="cathay" selected>cathay（不認得，當留白）<\/option>/);
+    await e.callRaw('setGmailRule', 0, 'parser', '');
+    assert.deepEqual(e.sent.filter((b) => b.action === 'gmailRuleSet').pop().record, { rule_id: 1, parser: '' });
+    assert.doesNotMatch(e.els.sysBody.innerHTML, /不認得/);
+  });
+
   test('停用送 gmailRuleSet { rule_id, is_active:false }；改欄位只送那一欄', async () => {
     const e = env();
     await e.callRaw('openSysTab', 'gmail');
