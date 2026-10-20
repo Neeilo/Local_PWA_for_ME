@@ -211,12 +211,14 @@ function schedulerJobList_() {
  * 可重複執行，跑幾次都只有一個。**整份原始碼只有這裡建觸發器**（測試守門）。
  */
 function installScheduler_() {
-  var removed = 0;
+  var removed = 0, oldRemoved = 0;
   var old = schedulerOldHandlers_();
   ScriptApp.getProjectTriggers().forEach(function (t) {
     var fn = t.getHandlerFunction();
     if (fn === SCHEDULER_FUNCTION || old.indexOf(fn) !== -1) { ScriptApp.deleteTrigger(t); removed++; }
+    if (old.indexOf(fn) !== -1) oldRemoved++;
   });
   ScriptApp.newTrigger(SCHEDULER_FUNCTION).timeBased().everyMinutes(SCHEDULER_MINUTES).create();
-  return { removed: removed, created: SCHEDULER_FUNCTION };
+  // old：其中幾個是舊的各自觸發器（不算總管自己）——「初始化」的回覆用來判斷這次有沒有變
+  return { removed: removed, old: oldRemoved, created: SCHEDULER_FUNCTION };
 }

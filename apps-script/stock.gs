@@ -579,7 +579,7 @@ function stockSheetSpecs_() {
  */
 function installStock_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var lines = [], warn = false;
+  var lines = [], warn = false, changed = false;
   stockSheetSpecs_().forEach(function (spec) {
     var sheet = ss.getSheetByName(spec.name);
     if (!sheet || sheet.getLastRow() === 0) {
@@ -588,10 +588,11 @@ function installStock_() {
       sheet.getRange(1, 1, rows.length, spec.headers.length).setValues(rows);
       keepSymbolsText_(sheet);
       lines.push('建立 ' + spec.name);
+      changed = true;
       return;
     }
     var r = ensureColumnsOnSheet_(sheet, spec.headers);
-    if (r.added.length) lines.push(spec.name + ' 補上：' + r.added.join('、'));
+    if (r.added.length) { changed = true; lines.push(spec.name + ' 補上：' + r.added.join('、')); }
     keepSymbolsText_(sheet);
     var broken = numericSymbolRows_(sheet);
     if (broken.length) {
@@ -611,6 +612,7 @@ function installStock_() {
       warn = true;
       lines.push('⚠️ ' + LINE_USERS_SHEET + ' 沒有表頭，沒有補欄位');
     } else if (u.added.length) {
+      changed = true;
       lines.push(LINE_USERS_SHEET + ' 補上：' + u.added.join('、'));
       if (u.added.indexOf('feat_stock') !== -1) {
         var headers = sheetHeaders_(users);
@@ -629,7 +631,7 @@ function installStock_() {
       }
     }
   }
-  return { level: warn ? 'warn' : 'ok', text: lines.length ? lines.join('\n　') : '股票分頁與欄位已齊備' };
+  return { level: warn ? 'warn' : 'ok', changed: changed, text: lines.length ? lines.join('\n　') : '股票分頁與欄位已齊備' };
 }
 
 /**

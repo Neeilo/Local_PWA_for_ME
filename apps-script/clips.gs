@@ -878,7 +878,7 @@ function clipsVisibleTo_(rows, user) {
 function installClips_() {
   var c = ensureClipsSheet_();
   var lines = [c.created ? '新建 ' + CLIPS_SHEET : CLIPS_SHEET + ' 已存在' + (c.added.length ? '（補上欄位：' + c.added.join('、') + '）' : '')];
-  var warn = false;
+  var warn = false, changed = !!c.created || c.added.length > 0;
   var users = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LINE_USERS_SHEET);
   if (!users) {
     warn = true;
@@ -902,6 +902,7 @@ function installClips_() {
         });
       }
       invalidateLineUsersCache_();
+      changed = true;
       lines.push(LINE_USERS_SHEET + ' 補上：' + CLIPS_FEATURE + '（預設只開管理者 ' + admins + ' 人）');
     }
   }
@@ -909,7 +910,7 @@ function installClips_() {
     warn = true;
     lines.push('⚠️ 還沒設 APIFY_TOKEN（專案設定 → 指令碼屬性），收藏會一直失敗');
   }
-  return { level: warn ? 'warn' : 'ok', text: lines.join('\n　') };
+  return { level: warn ? 'warn' : 'ok', changed: changed, text: lines.join('\n　') };
 }
 
 /* -------------------------------------------------------------------------- */

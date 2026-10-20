@@ -89,6 +89,9 @@ const actionsOf = (msg) => Array.from((msg && msg.quickReply && msg.quickReply.i
 const btn = (msg, re) => actionsOf(msg).find((a) => re.test(a.label));
 
 /* ========================================================================== */
+// ADR-022 PR-0：回覆只列結論、要處理的、這次有變的與排程；逐步明細改看 logs 那一列
+const initDetail = (e) => e.transactions.filter((t) => t[2] === '初始化').pop()[4];
+
 describe('T1 排程修復：「初始化」一次裝好所有排程與欄位', () => {
 
   // ADR-019 D-1：只剩排程總管一個觸發器，各工作的時段列在回覆的「登記的工作」
@@ -96,7 +99,7 @@ describe('T1 排程修復：「初始化」一次裝好所有排程與欄位', (
     const e = env();
     for (let i = 0; i < 3; i++) say(e, ME, '初始化', 'user');
     assert.deepEqual(e.triggers.map((t) => t.handler), ['runScheduler']);
-    assert.match(e.lastText(), /runScheduler（每 5 分鐘，排程總管）/);
+    assert.match(initDetail(e), /runScheduler（每 5 分鐘，排程總管）/);
     assert.match(e.lastText(), /到期提醒（每天 9 點後第一輪）/);
     assert.match(e.lastText(), /_guide 導覽（每天 6 點後第一輪）/);
     assert.match(e.lastText(), /未驗證彙總（每小時）/);
@@ -485,7 +488,7 @@ describe('2026-10-08：原本要進編輯器的也併進「初始化」', () => 
       ['2026-09-20', '', '卡住', '', '', ''],
       ['2026-09-20', '跑步', '', '', ME, '']]) } });
     say(e, ME, '初始化', 'user');
-    assert.match(e.lastText(), /✅ 日誌重複列清理\n　刪除重複 1 列，先備份到「_reviews_backup_/);
+    assert.match(e.lastText(), /🆕 日誌重複列清理：刪除重複 1 列，先備份到「_reviews_backup_/);
     const rows = e.sheets.reviews.toRecords();
     assert.equal(rows.length, 1);
     assert.equal(rows[0].stuck, '卡住', '被刪那列的內容要併進留下的那列');
@@ -493,14 +496,15 @@ describe('2026-10-08：原本要進編輯器的也併進「初始化」', () => 
     assert.equal(backups().length, 1);
 
     say(e, ME, '初始化', 'user');
-    assert.match(e.lastText(), /✅ 日誌重複列清理\n　沒有重複/);
+    assert.match(initDetail(e), /✅ 日誌重複列清理\n　沒有重複/);
+    assert.doesNotMatch(e.lastText(), /日誌重複列清理/, '沒變的不列在回覆');
     assert.equal(backups().length, 1, '沒東西要刪就不再建備份分頁');
   });
 
   test('沒有 reviews 分頁 → 略過，不算警告', () => {
     const e = env();
     say(e, ME, '初始化', 'user');
-    assert.match(e.lastText(), /✅ 日誌重複列清理\n　沒有 reviews 分頁，略過/);
+    assert.match(initDetail(e), /✅ 日誌重複列清理\n　沒有 reviews 分頁，略過/);
   });
 
   test('看不出是誰的重複 → 原樣留著，標 ⚠️', () => {
@@ -520,13 +524,13 @@ describe('2026-10-08：原本要進編輯器的也併進「初始化」', () => 
       [ME, 'Neil', 'TRUE', 'TRUE', 'neil@example.com'].concat(FEATS.map(() => 'TRUE'))]);
     const e = env({ users });
     say(e, ME, '初始化', 'user');
-    assert.match(e.lastText(), /✅ 封存寄信\n　已授權，今天還能寄 100 封；封存信寄給 neil@example\.com/);
+    assert.match(initDetail(e), /✅ 封存寄信\n　已授權，今天還能寄 100 封；封存信寄給 neil@example\.com/);
   });
 
   test('寄信權限還沒授權 → 提醒要在編輯器跑 authorizeArchiveMail，但前面的安裝照樣完成', () => {
     const e = env({ overrides: { MailApp: { getRemainingDailyQuota: () => { throw new Error('Authorization is required'); } } } });
     say(e, ME, '初始化', 'user');
-    assert.match(e.lastText(), /⚠️ 封存寄信\n　寄信權限還沒授權.*authorizeArchiveMail/);
+    assert.match(e.lastText(), /⚠️ 封存寄信：寄信權限還沒授權.*authorizeArchiveMail/);
     assert.doesNotMatch(e.lastText(), /初始化沒有完成/);
     assert.ok(e.triggers.some((t) => t.handler === 'runScheduler'), '排程照樣裝好');
   });

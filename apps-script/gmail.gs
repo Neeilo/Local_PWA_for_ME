@@ -98,13 +98,13 @@ function installGmailRules_() {
   if (!sheet || sheet.getLastRow() === 0) {
     sheet = sheet || ss.insertSheet(GMAIL_RULES_SHEET);
     sheet.getRange(1, 1, 1, GMAIL_RULES_HEADERS.length).setValues([GMAIL_RULES_HEADERS]);
-    return { level: 'ok', text: '新建 ' + GMAIL_RULES_SHEET + '（只有表頭）：把規則盤點表填進去，再到編輯器執行 probeGmail()' };
+    return { level: 'ok', changed: true, text: '新建 ' + GMAIL_RULES_SHEET + '（只有表頭）：把規則盤點表填進去，再到編輯器執行 probeGmail()' };
   }
   var r = ensureColumnsOnSheet_(sheet, GMAIL_RULES_HEADERS);
   if (r.reason) return { level: 'warn', text: GMAIL_RULES_SHEET + ' 沒有表頭，沒有補欄位' };
   var lines = [GMAIL_RULES_SHEET + ' 已存在（' + (sheet.getLastRow() - 1) + ' 列規則）'];
   if (r.added.length) lines.push(GMAIL_RULES_SHEET + ' 補上：' + r.added.join('、'));
-  return { level: 'ok', text: lines.join('\n　') };
+  return { level: 'ok', changed: r.added.length > 0, text: lines.join('\n　') };
 }
 
 /* ========================================================================== */
@@ -571,6 +571,7 @@ function installGmail_() {
   var lines = [], warn = false;
   var rules = installGmailRules_();
   if (rules.level === 'warn') warn = true;
+  var changed = !!rules.changed;
   lines.push(rules.text);
 
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -579,23 +580,30 @@ function installGmail_() {
     log = log || ss.insertSheet(GMAIL_LOG_SHEET);
     log.getRange(1, 1, 1, GMAIL_LOG_HEADERS.length).setValues([GMAIL_LOG_HEADERS]);
     lines.push('新建 ' + GMAIL_LOG_SHEET);
+    changed = true;
   } else {
     var l = ensureColumnsOnSheet_(log, GMAIL_LOG_HEADERS);
+    if (l.added.length) changed = true;
     lines.push(GMAIL_LOG_SHEET + ' 已存在（' + (log.getLastRow() - 1) + ' 列）' +
       (l.added.length ? '，補上：' + l.added.join('、') : ''));
   }
 
   var users = installGmailFeature_();
   if (users.warn) warn = true;
+  if (users.changed) changed = true;
   lines.push(users.text);
 
   var g = ensureColumnsOnSheet_(ensureLineGroupsSheet_(), ['cmd_gmail', 'notify_gmail']);
   if (g.reason) { warn = true; lines.push('⚠️ ' + LINE_GROUPS_SHEET + ' 沒有表頭，沒有補 cmd_gmail／notify_gmail'); }
-  else lines.push(g.added.length ? LINE_GROUPS_SHEET + ' 補上：' + g.added.join('、') : LINE_GROUPS_SHEET + ' 欄位已齊備');
+  else {
+    if (g.added.length) changed = true;
+    lines.push(g.added.length ? LINE_GROUPS_SHEET + ' 補上：' + g.added.join('、') : LINE_GROUPS_SHEET + ' 欄位已齊備');
+  }
 
   try {
     var f = gmailFolder_(GMAIL_DRIVE_ROOT);
     lines.push('Drive 資料夾 ' + GMAIL_DRIVE_ROOT.join('/') + '：' + (f.created ? '新建' : '已存在'));
+    if (f.created) changed = true;
   } catch (err) {
     warn = true;
     lines.push('⚠️ Drive 還沒授權，資料夾沒有建：' + GMAIL_AUTH_HINT + '（會要求整個雲端硬碟的權限，GAS 的限制）');
@@ -611,7 +619,7 @@ function installGmail_() {
 
   // 觸發器由排程總管統一管（ADR-019 D-1），這裡不再自己裝
   lines.push('排程：由排程總管每天 ' + GMAIL_CONTROLLER_HOUR + ' 點後第一輪執行');
-  return { level: warn ? 'warn' : 'ok', text: lines.join('\n　') };
+  return { level: warn ? 'warn' : 'ok', changed: changed, text: lines.join('\n　') };
 }
 
 /**
@@ -635,7 +643,7 @@ function installGmailFeature_() {
     });
   }
   invalidateLineUsersCache_();
-  return { text: LINE_USERS_SHEET + ' 補上：feat_gmail（預設只開管理者 ' + admins + ' 人）' };
+  return { changed: true, text: LINE_USERS_SHEET + ' 補上：feat_gmail（預設只開管理者 ' + admins + ' 人）' };
 }
 
 

@@ -674,10 +674,10 @@ describe('初始化：建表、補欄位、feat_stock 只預設開管理者', ()
     assert.equal(e.sheets.line_users.toRecords()[0].feat_stock, '');
   });
 
-  test('「初始化」的回覆列出股票那一步', () => {
+  test('「初始化」的回覆列出股票那一步（第一次建表算「這次有變」）', () => {
     const e = env();
     const reply = line(e, NEIL, '初始化');
-    assert.match(reply, /股票（ADR-015）/);
+    assert.match(reply, /🆕 股票/);
   });
 });
 

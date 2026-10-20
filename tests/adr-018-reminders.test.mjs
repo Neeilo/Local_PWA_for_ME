@@ -204,7 +204,8 @@ describe('初始化：補 kind 欄並歸類', () => {
     rows[1][rows[0].indexOf('kind')] = 'todo';
     const again = textOf(say(e, ME, '初始化'));
     assert.equal(byId(e, '1').kind, 'todo');
-    assert.match(again, /歸為提醒 0 筆/);
+    assert.doesNotMatch(again, /待辦／提醒歸類/, '沒有新歸類的就不列在回覆（ADR-022 PR-0）');
+    assert.match(e.transactions.filter((t) => t[2] === '初始化').pop()[4], /歸為提醒 0 筆/);
   });
 });
 

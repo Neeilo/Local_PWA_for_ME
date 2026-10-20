@@ -232,9 +232,11 @@ describe('「初始化」只裝總管', () => {
   test('初始化的回覆列出登記的工作與總管排程', () => {
     const e = env();
     const step = e.read('initSteps_().filter(function (s) { return /排程總管/.test(s.label); })[0].label');
-    assert.match(step, /ADR-019/);
-    const text = e.read('initSteps_().filter(function (s) { return /排程總管/.test(s.label); })[0].run().text');
-    for (const w of ['到期提醒', 'Gmail', '_guide', '股票提醒規則', '盤後收盤價', '未驗證彙總', '效能紀錄落地']) assert.match(text, new RegExp(w));
+    assert.doesNotMatch(step, /ADR-/, 'ADR-022 PR-0：步驟名會出現在 LINE 回覆，不帶 ADR 編號');
+    e.read('initSteps_().filter(function (s) { return /排程總管/.test(s.label); })[0].run().text');
+    // ADR-022 PR-0：登記的工作由回覆的排程段列出（initReplyText_），一行一個
+    const reply = e.read('initReplyText_({ steps: [], triggers: triggerSummary_() })');
+    for (const w of ['到期提醒', 'Gmail', '_guide', '股票提醒規則', '盤後收盤價', '未驗證彙總', '效能紀錄落地']) assert.match(reply, new RegExp('\\n・' + w));
     assert.deepEqual(e.triggers.map((t) => t.handler), ['runScheduler']);
     assert.match(e.read('triggerSummary_().join("|")'), /runScheduler（每 5 分鐘/);
   });

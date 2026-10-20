@@ -373,7 +373,7 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
       getUserLabelByName: () => null,
       search: () => { throw new Error('測試不碰 Gmail（要測的請用 overrides 換掉 GmailApp）'); }
     },
-    DriveApp: { getRootFolder: () => fakeFolder() },
+    DriveApp: (() => { const root = fakeFolder(); return { getRootFolder: () => root }; })(),   // 同一個環境裡建過的資料夾要留著（跟真的一樣）
     LockService: {
       getScriptLock: () => ({
         tryLock: () => { if (lock.busy) return false; lock.held = true; return true; },
