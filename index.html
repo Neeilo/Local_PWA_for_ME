@@ -974,7 +974,8 @@ nav button:active{opacity:.6;}
 
   <section class="view" id="view-plans">
     <div class="card">
-      <h2>進行中的分期</h2>
+      <!-- 「含已結束」只在 2.0 給管理者：原本在設定▸系統設定▸分期，ADR-021 D-14 搬回分期模組 -->
+      <div class="clip-head"><h2 id="planListTitle">進行中的分期</h2><button class="btn-ghost" id="planAllBtn" hidden onclick="togglePlanEnded()">含已結束</button></div>
       <div id="planList"></div>
     </div>
     <p class="slot-hint">要新增分期：到「記帳」點一筆支出，按「轉成分期」。</p>
@@ -1112,6 +1113,14 @@ nav button:active{opacity:.6;}
       <div class="exp-filter"><button class="cat-btn" id="expUnsortedBtn" onclick="toggleExpUnsorted()">只看未細分</button></div>
       <div id="expList"></div>
     </div>
+    <!-- 🗂️ 分類設定（ADR-021 D-14）：2.0 從設定▸系統設定▸分類搬來，同一套畫面與動作；1.0 仍在設定頁 -->
+    <div class="card fold" id="expCfgCard" hidden>
+      <button class="fold-head" onclick="toggleFold('expCfg')"><h2>🗂️ 分類設定</h2><span class="fold-arrow" id="foldArrow-expCfg">▾</span></button>
+      <div class="fold-body" id="fold-expCfg" hidden>
+        <div id="expCfgBody"></div>
+        <p class="slot-hint">改動即時寫回 Sheet，每一筆都記在 LOG（來源「設定」）。</p>
+      </div>
+    </div>
   </section>
 
   <!-- 任務 -->
@@ -1184,6 +1193,14 @@ nav button:active{opacity:.6;}
       <div class="seg" id="mailSeg"></div>
       <div id="mailBody"></div>
       <div style="margin-top:10px"><button class="btn ghost" onclick="reloadMail()">重新整理</button></div>
+    </div>
+    <!-- ⚙️ 信件規則（ADR-021 D-14）：2.0 從設定▸系統設定▸信件規則搬來，同一套畫面與動作；1.0 仍在設定頁 -->
+    <div class="card fold" id="mailRulesCard" hidden>
+      <button class="fold-head" onclick="toggleFold('gmailRules')"><h2>⚙️ 信件規則</h2><span class="fold-arrow" id="foldArrow-gmailRules">▾</span></button>
+      <div class="fold-body" id="fold-gmailRules" hidden>
+        <div id="mailRulesBody"></div>
+        <p class="slot-hint">改動即時寫回 Sheet，每一筆都記在 LOG（來源「設定」）。</p>
+      </div>
     </div>
   </section>
 
@@ -1318,6 +1335,13 @@ nav button:active{opacity:.6;}
         <div id="aiBody"></div>
         <p class="slot-hint">切換立即生效、全家共用。API key 設在 Apps Script 的指令碼屬性；沒有 key 的那一家不能選。失敗不會自動換家。模型：輕量最便宜，標準與進階答得更細但比較貴。</p>
       </div>
+    </div>
+
+    <!-- 💸 用量與成本（ADR-021 D-14）：只在 2.0。1.0 的 Apify 用量照舊在系統設定卡頂端。AI（查/）用量還沒有記錄 -->
+    <div class="slot-card" id="costCard" hidden>
+      <div class="place-head"><h2>💸 用量與成本</h2></div>
+      <div id="costBody"></div>
+      <p class="slot-hint">目前只有收藏（Apify）的用量；AI（查/）用量還沒有記錄。</p>
     </div>
 
     <!-- ⏱️ 效能紀錄（ADR-012 D-7）。摘要由雲端算好，點開才抓。刪舊紀錄是手動的，不開排程 -->
@@ -3147,21 +3171,22 @@ const SYS_TABS = [['groups','群組'],['config','分類'],['plans','分期'],['g
 const SYS_COLORS = ['c1','c2','c3','c4','c5','c6','c7','c8'];
 let sysTab = null;
 let sysData = {};          // { groups:{rows}, config:{rows,warnings}, guide:{headers,rows} }
-let sysLoading = false;
+let sysLoading = {};       // 分頁 → 讀取中（2.0 的模組頁與設定頁各看各的）
 function renderSysCard(){
+  renderModuleSettings();                              // 2.0 搬回模組頁的那幾張，跟著同一份資料重畫
   const card=document.getElementById('sysCard');
   if(!card) return;
   card.hidden=!isAdmin();
   if(!isAdmin()) return;
   const cnt=document.getElementById('sysCount');       // 摘要只用 boot 已有的資料，不為它多發請求
-  if(cnt){ const n=installmentPlans.filter(p=>p.status==='active').length; cnt.textContent=n?'分期 '+n+' 筆進行中':''; }
+  if(cnt){ const n=isV2() ? 0 : installmentPlans.filter(p=>p.status==='active').length; cnt.textContent=n?'分期 '+n+' 筆進行中':''; }
   const usage=document.getElementById('sysClipsUsage');
-  if(usage) usage.innerHTML=clipsUsageHtml(clipsUsage);
-  document.getElementById('sysTabs').innerHTML=SYS_TABS.map(([k,l])=>
+  if(usage) usage.innerHTML=isV2() ? '' : clipsUsageHtml(clipsUsage);     // 2.0 在「用量與成本」卡
+  document.getElementById('sysTabs').innerHTML=sysTabsShown().map(([k,l])=>
     `<button class="${sysTab===k?'sel':''}" onclick="openSysTab('${k}')">${l}</button>`).join('');
   const body=document.getElementById('sysBody');
   if(!sysTab){ body.innerHTML='<div class="empty-hint">選一個分頁</div>'; return; }
-  if(sysLoading){ body.innerHTML='<div class="empty-hint">讀取中…</div>'; return; }
+  if(sysLoading[sysTab]){ body.innerHTML='<div class="empty-hint">讀取中…</div>'; return; }
   const d=sysData[sysTab];
   if(sysTab!=='plans' && (!d || !d.success)){
     body.innerHTML=`<div class="empty-hint">讀不到（${esc((d&&d.error)||'連線失敗')}），再按一次分頁重試</div>`; return;
@@ -3175,15 +3200,60 @@ function renderSysCard(){
 async function openSysTab(tab){
   sysTab=tab;
   if(tab==='plans'){ renderSysCard(); return; }       // 計畫列 boot／輪詢已經帶回來了
-  sysLoading=true; renderSysCard();
+  await loadSysTab(tab);
+}
+async function loadSysTab(tab){
+  sysLoading[tab]=true; renderSysCard();
   let r=null;
   try{
     r=await cloudPost(tab==='gmail' ? {action:'gmailView', what:'rules', trigger:'manual'}
                                     : {action:'adminView', what:tab, trigger:'manual'});
   }catch(e){ r=null; }
-  sysLoading=false;
+  sysLoading[tab]=false;
   sysData[tab]=r||{success:false};
   renderSysCard();
+}
+
+/* ---------- 2.0：模組自己的設定搬回模組（ADR-021 D-14｜PR-D） ----------
+   只搬位置、不改邏輯：資料（sysData）、畫面（sysGmailHtml／sysConfigHtml／planRowsHtml）、動作（gmailRuleSet／configSet…）
+   都是系統設定那一套；1.0 的設定頁一個都不動。模組進不去（總開關關掉、沒權限）＝它的設定也不出現。
+   設定▸管理▸系統設定在 2.0 只留跨模組的：LINE 群組（記帳／任務／查詢／推播共用）、分頁導覽 */
+const SYS_TABS_V2 = ['groups','guide'];
+const MODULE_SETTINGS = [
+  { card:'mailRulesCard', body:'mailRulesBody', view:'mail',     tab:'gmail',  html:d=>sysGmailHtml(d) },
+  { card:'expCfgCard',    body:'expCfgBody',    view:'expenses', tab:'config', html:d=>sysConfigHtml(d) }
+];
+/* 群組推播是一整張卡（不是系統設定的分頁）：2.0 把那張卡本身搬到任務頁，id 與動作都不變 */
+const V2_CARD_HOME = { pushCard:'view-tasks' };
+function sysTabsShown(){ return isV2() ? SYS_TABS.filter(([k])=>SYS_TABS_V2.includes(k)) : SYS_TABS; }
+function moduleSettingOn(view){ return isV2() && isAdmin() && viewAllowed(view); }
+function renderModuleSettings(){
+  MODULE_SETTINGS.forEach(m=>{
+    const on=moduleSettingOn(m.view);
+    setHidden(m.card, !on);
+    const el=document.getElementById(m.body);
+    if(!on || !el) return;
+    const d=sysData[m.tab];
+    el.innerHTML = sysLoading[m.tab] ? '<div class="empty-hint">讀取中…</div>'
+      : !d ? ''
+      : !d.success ? `<div class="empty-hint">讀不到（${esc(d.error||'連線失敗')}） <button class="link" onclick="loadSysTab('${m.tab}')">重試</button></div>`
+      : m.html(d);
+  });
+  setHidden('planAllBtn', !moduleSettingOn('plans'));
+}
+function v2PlaceCards(){
+  if(!isV2()) return;
+  Object.keys(V2_CARD_HOME).forEach(id=>{
+    const card=document.getElementById(id), host=document.getElementById(V2_CARD_HOME[id]);
+    if(card && host && host.appendChild && card.parentNode!==host) host.appendChild(card);
+  });
+}
+/* 用量與成本（2.0 管理）：目前只有 Apify，資料是 boot 帶的 clips_usage */
+function renderCostCard(){
+  const on=isV2() && isAdmin();
+  setHidden('costCard', !on);
+  const el=document.getElementById('costBody');
+  if(on && el) el.innerHTML=clipsUsageHtml(clipsUsage) || '<div class="empty-hint">還沒有用量資料（排程總管跑過一次就會有）</div>';
 }
 /* Apify 本月金額＋近 3 天收藏成功率（RD-HF1 HF-C）。超過 US$3 或低於 80% 變紅，對應 ADR-020 的備案條件；不推播 */
 const CLIPS_USAGE_RED_USD=3, CLIPS_RATE_RED=0.8;
@@ -3408,11 +3478,21 @@ function renderMailView(){
 
 /* 分期：所有計畫一覽，結束／刪除走記帳分頁同一組動作 */
 function sysPlansHtml(){ return planRowsHtml(installmentPlans, '還沒有分期計畫'); }
-/* 分期頁（ADR-014 D-7）：只列進行中的計畫，同一套列表 */
+/* 分期頁（ADR-014 D-7）：只列進行中的計畫，同一套列表。
+   2.0 的管理者可切「含已結束」＝原本設定▸系統設定▸分期那份清單（ADR-021 D-14） */
+let planShowEnded=false;
 function renderPlansView(){
+  const all=planShowEnded && moduleSettingOn('plans');
   const el=document.getElementById('planList');
-  if(el) el.innerHTML=planRowsHtml(installmentPlans.filter(p=>p.status==='active'), '沒有進行中的分期');
+  if(el) el.innerHTML = all ? planRowsHtml(installmentPlans, '還沒有分期計畫')
+                            : planRowsHtml(installmentPlans.filter(p=>p.status==='active'), '沒有進行中的分期');
+  setHidden('planAllBtn', !moduleSettingOn('plans'));
+  const b=document.getElementById('planAllBtn');
+  if(b) b.textContent = all ? '只看進行中' : '含已結束';
+  const h=document.getElementById('planListTitle');
+  if(h) h.textContent = all ? '所有分期' : '進行中的分期';
 }
+function togglePlanEnded(){ planShowEnded=!planShowEnded; renderPlansView(); }
 function planRowsHtml(plans, empty){
   if(!plans.length) return `<div class="empty-hint">${empty}</div>`;
   const label={active:'進行中', ended:'已結束'};
@@ -3960,6 +4040,7 @@ function switchView(name){
   if(name==='plans') renderPlansView();
   if(name==='stocks') renderStocksView();
   if(name==='mail') openMailView();
+  renderModuleSettings();
   window.scrollTo(0,0);
   renderNav();
 }
@@ -4125,6 +4206,7 @@ function v2ActiveTab(){
 let uiV2Applied=false;
 function renderNavV2(nav){
   uiV2Applied=true;
+  v2PlaceCards();
   if(document.documentElement){
     document.documentElement.setAttribute('data-zone','finance');
     document.documentElement.setAttribute('data-ui','v2');
@@ -6083,6 +6165,8 @@ let myDevices=null;          // null＝還沒抓；{loading}／{failed}／{list}
 const FOLD_LOAD={
   members: ()=>{},
   sys:     ()=>{ if(!sysTab) openSysTab('groups'); },
+  gmailRules: ()=>{ if(!(sysData.gmail||{}).success) loadSysTab('gmail'); },     // 2.0 郵件頁（D-14）
+  expCfg:  ()=>{ if(!(sysData.config||{}).success) loadSysTab('config'); },       // 2.0 記帳頁（D-14）
   push:    ()=>{ if(!pushState.groups) loadPushGroups(); },
   perf:    ()=>{ if(!perfSummaryCache) loadPerfSummary(); },
   ai:      ()=>{ if(!aiState.cfg) loadAiConfig(); },
@@ -6131,7 +6215,7 @@ function renderSettings(){
   setHidden('setPersonal', settingsTab!=='personal');
   setHidden('setAdmin', settingsTab!=='admin');
   renderMeCard(); renderMyDevices(); renderSetEmail(); renderThemeCard(); renderUiCard(); renderModuleCard(); renderWeatherCard();
-  renderAdminCard(); renderSysCard(); renderPushCard(); renderAiCard(); renderPerfCard(); renderArchiveCard(); renderLogCard();
+  renderAdminCard(); renderSysCard(); renderPushCard(); renderAiCard(); renderCostCard(); renderPerfCard(); renderArchiveCard(); renderLogCard();
   renderFolds();
 }
 function renderFolds(){
@@ -6207,9 +6291,10 @@ function pushQuotaText(p){
 function renderPushCard(){
   const card=document.getElementById('pushCard');
   if(!card) return;
-  card.hidden=!isAdmin();
+  const on=isAdmin() && (!isV2() || viewAllowed('tasks'));     // 2.0 住在任務頁（D-14）：任務關掉就跟著不見
+  card.hidden=!on;
   const el=document.getElementById('pushBody');
-  if(!el || !isAdmin()) return;
+  if(!el || !on) return;
   if(pushState.loading){ el.innerHTML='<div class="empty-hint">讀取中…</div>'; return; }
   if(!pushState.groups){ el.innerHTML='<div class="empty-hint">讀不到群組 <button class="link" onclick="loadPushGroups()">重試</button></div>'; return; }
   if(!pushState.groups.length){ el.innerHTML='<div class="empty-hint">沒有啟用中的群組。到「系統設定 ▸ 群組」打開。</div>'; return; }
