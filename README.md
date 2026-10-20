@@ -72,4 +72,4 @@ npm run preflight
 
 相關文件：[2.0 Pilot](docs/NEILOS_2_0_PILOT.md) · [Apps Script 維運速查](apps-script/OPERATIONS_2_0.md) · [Apps Script 詳細紀錄](apps-script/README.md)。
 
-> 歷史 1.0 規格請查 git history、既有 ADR 與測試；此首頁文件反映當前試營運，而不是保證全部未來願景已完成。
+> 1.0 詳細歷史規格（LINE 配對／自行註冊、離線與部署順序、單元測試、ADR-007 部署管道）可查 [本檔在 git history 的舊版本](https://github.com/Neeilo/Local_PWA_for_ME/commits/main/README.md)、既有 ADR 與 [Apps Script 詳細維運紀錄](apps-script/README.md)。此首頁文件反映當前試營運，不代表所有未來願景已完成。
