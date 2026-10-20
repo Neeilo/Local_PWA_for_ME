@@ -20,7 +20,9 @@ var CLIPS_HEADERS = ['id', 'line_id', 'source_text', 'url', 'shortcode', 'kind',
   'author', 'posted_at', 'caption', 'media_expected', 'media_saved', 'drive_folder_id', 'image_ids', 'category',
   'collected_at', 'last_collected_at', 'del', 'created_at', 'updated_at', 'video_saved',
   // ADR-021 D-13：閱讀狀態（未讀／已讀兩態；開閱讀頁即已讀＋時間）。加在最右邊，1.0 讀到陌生欄位照常
-  'read_status', 'last_read_at'];
+  'read_status', 'last_read_at',
+  // ADR-021 D-10／D-11：筆記（一篇一份，存檔比對 note_revision）、AI 整理（另存，不覆蓋原文與筆記）。同樣加在最右邊
+  'note', 'note_revision', 'note_updated_at', 'ai_output', 'ai_provider', 'ai_at'];
 var CLIPS_FEATURE = 'feat_clips';
 var CLIPS_LOG_SOURCE = '收藏';
 var CLIPS_PER_ROUND = 5;
@@ -52,6 +54,17 @@ var CLIPS_USAGE_HOUR = 8;
 var CLIPS_USAGE_RED_USD = 3;
 var CLIPS_RATE_RED = 0.8;
 var CLIPS_RATE_DAYS = 3;
+/**
+ * 只存連結（ADR-021 D-12）：IG 以外的網址（含 Threads／FB／X）不抓取、不抓標題，只記網址與收藏時間。
+ * kind 與 status 都是 'link'：排程只挑 pending，所以不會送 Apify；網域由網址現算，不另開欄
+ */
+var CLIP_LINK = 'link';
+var CLIP_LINK_MAX = 2000;
+var CLIP_URL_RE = /https?:\/\/[^\s<>"'）)】」]+/g;
+/** 筆記上限：一格 Sheet 最多 5 萬字，留餘裕；超過就擋下講明，不偷偷截斷 */
+var CLIP_NOTE_MAX = 20000;
+/** 送給 AI 的原文上限（筆記另計）：太長只會變貴，整理重點用不到 */
+var CLIP_AI_INPUT_MAX = 20000;
 
 /* -------------------------------------------------------------------------- */
 /* 共用：網址、Apify、欄位解析（探針 lab-clip.gs 也用）                             */
@@ -216,7 +229,7 @@ function clipItemFor_(post, items) {
 function clipExtractUrls_(text) {
   var out = [];
   var seen = {};
-  (String(text || '').match(/https?:\/\/[^\s<>"'）)】」]+/g) || []).forEach(function (u) {
+  (String(text || '').match(CLIP_URL_RE) || []).forEach(function (u) {
     var n = clipNormalizeUrl_(u);
     if (!n || seen[n.key]) return;
     seen[n.key] = true;
@@ -225,32 +238,80 @@ function clipExtractUrls_(text) {
   return out;
 }
 
-/** Threads／FB／X：不收（A-3），但要回一句話，不然分享了沒反應會以為壞了 */
-function clipOtherSocial_(text) {
-  return /https?:\/\/(?:[a-z0-9-]+\.)*(?:threads\.net|threads\.com|facebook\.com|fb\.watch|fb\.com|x\.com|twitter\.com)\//i.test(String(text || ''));
+/**
+ * IG 貼文以外的網址（ADR-021 D-12：只存連結）。句尾標點不算網址；同一則重複只算一筆。
+ * IG 貼文交給 clipExtractUrls_；IG 的個人頁之類不是貼文的，一樣當一般連結
+ */
+function clipLinkUrls_(text) {
+  var out = [];
+  var seen = {};
+  (String(text || '').match(CLIP_URL_RE) || []).forEach(function (u) {
+    if (clipNormalizeUrl_(u)) return;
+    u = u.replace(/[.,;:!?。，、；：！？]+$/, '');
+    if (u.length > CLIP_LINK_MAX || seen[u]) return;
+    seen[u] = true;
+    out.push({ url: u, shortcode: '', kind: CLIP_LINK });
+  });
+  return out;
+}
+
+/** 一則訊息裡要收的：IG 貼文（排隊抓）在前、其他網址（只存連結）在後 */
+function clipFoundIn_(text) {
+  return clipExtractUrls_(text).concat(clipLinkUrls_(text));
+}
+
+/** https://www.example.com/a → example.com（只存連結的標題用；不抓網頁） */
+function clipDomain_(url) {
+  var m = String(url || '').match(/^https?:\/\/([^\/?#:]+)/i);
+  return m ? m[1].toLowerCase().replace(/^www\./, '') : '';
+}
+
+/**
+ * 登記（LINE 與 PWA「＋ 加網址」共用）。IG 貼文一篇一列 pending，重複的交給排程合併（clipsPick_）；
+ * 只存連結不會進排程，所以在這裡去重：同一人已有同網址的連結 → 只更新 last_collected_at。回最後寫入的列號
+ */
+function clipsRegister_(lineId, sourceText, found) {
+  var sheet = ensureClipsSheet_().sheet;
+  var now = new Date().toISOString();
+  var rowNumber = '';
+  var table = null;
+  found.forEach(function (f, i) {
+    if (f.kind === CLIP_LINK) {
+      table = table || clipsTable_(sheet);
+      var dup = table.rows.filter(function (x) {
+        return !clipDeleted_(x.rec) && String(x.rec.line_id).trim() === lineId && x.rec.kind === CLIP_LINK && x.rec.url === f.url;
+      })[0];
+      if (dup) { clipsPatch_(sheet, dup.rec.id, { last_collected_at: now }); return; }
+    }
+    rowNumber = appendToSheet_(CLIPS_SHEET, {
+      id: 'clip_' + Date.now() + '_' + i + '_' + Math.floor(Math.random() * 1e6), line_id: lineId,
+      source_text: String(sourceText || ''), url: f.url, shortcode: f.shortcode, kind: f.kind,
+      status: f.kind === CLIP_LINK ? CLIP_LINK : 'pending', attempts: 0,
+      next_try_at: '', error: '', category: '', collected_at: now, last_collected_at: now, del: '', created_at: now, updated_at: now
+    });
+  });
+  return rowNumber;
+}
+
+/** logs 的結果欄：IG 等排程、連結只存 */
+function clipRegisterResult_(found) {
+  var links = found.filter(function (f) { return f.kind === CLIP_LINK; }).length;
+  var posts = found.length - links;
+  return [posts ? '登記 ' + posts + ' 篇，等排程收齊' : '', links ? links + ' 個只存連結' : ''].filter(String).join('；');
 }
 
 /**
  * 一對一聊天、「不屬於任何指令」的訊息（routeLineMessage_ 查不到前綴才會到這裡）。
- * 有 IG 網址＋本人有 feat_clips → 一篇寫一列 pending、回「收到 ✅」；只有 Threads／FB／X → 回不支援。
- * 不是收藏的事回 null，交回原本的「看不懂這個指令」。白名單已由 handleLineEvent_ 的 writeGate_ 把關。
+ * 本人有 feat_clips：IG 貼文一篇寫一列 pending；其他網址（含 Threads／FB／X）只存連結（ADR-021 D-12）；回「收到 ✅」。
+ * 沒有網址回 null，交回原本的「看不懂這個指令」。白名單已由 handleLineEvent_ 的 writeGate_ 把關。
  */
 function clipLineReply_(text, userId) {
   if (!canUse_(lineUserById_(userId), CLIPS_FEATURE)) return null;
-  var found = clipExtractUrls_(text);
-  if (!found.length) return clipOtherSocial_(text) ? '目前只支援 Instagram' : null;
+  var found = clipFoundIn_(text);
+  if (!found.length) return null;
   try {
-    ensureClipsSheet_();
-    var now = new Date().toISOString();
-    var rowNumber = '';
-    found.forEach(function (f, i) {
-      rowNumber = appendToSheet_(CLIPS_SHEET, {
-        id: 'clip_' + Date.now() + '_' + i + '_' + Math.floor(Math.random() * 1e6), line_id: String(userId || '').trim(),
-        source_text: String(text || ''), url: f.url, shortcode: f.shortcode, kind: f.kind, status: 'pending', attempts: 0,
-        next_try_at: '', error: '', category: '', collected_at: now, last_collected_at: now, del: '', created_at: now, updated_at: now
-      });
-    });
-    logTransaction_(CLIPS_LOG_SOURCE, '成功', text, '登記 ' + found.length + ' 篇，等排程收齊',
+    var rowNumber = clipsRegister_(String(userId || '').trim(), text, found);
+    logTransaction_(CLIPS_LOG_SOURCE, '成功', text, clipRegisterResult_(found),
       found.map(function (f) { return f.url; }).join('、'), rowNumber, userId);
     return found.length === 1 ? '收到 ✅' : '收到 ✅（' + found.length + ' 篇）';
   } catch (err) {
@@ -635,15 +696,9 @@ function clipsRecordResult_(sheet, rec, result, nowMs) {
  * 重跑：→ pending、attempts=0、清 next_try_at；刪除：del（Drive 不動）
  */
 function clipPwaAction_(caller, action, id) {
-  if (!canUse_(caller.user, CLIPS_FEATURE)) return { error: 'forbidden', permanent: true, reason: 'feature' };
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CLIPS_SHEET);
-  if (!sheet || !id) return { error: 'not_found', permanent: true };
-  var rec = clipsTable_(sheet).rows.map(function (x) { return x.rec; }).filter(function (r) { return String(r.id) === String(id); })[0];
-  if (!rec || clipDeleted_(rec)) return { error: 'not_found', permanent: true };
-  if (String(rec.line_id).trim() !== String(caller.line_id).trim()) {
-    logTransaction_(CLIPS_LOG_SOURCE, '失敗', action + ' ' + id, '不是擁有者，拒絕', '', '', caller.line_id);
-    return { error: 'forbidden', permanent: true, reason: 'not_owner' };
-  }
+  var own = clipOwnRow_(caller, action, id);
+  if (own.error) return own;
+  var sheet = own.sheet, rec = own.rec;
   var patch = action === 'clipDelete' ? { del: 'TRUE' }
     : action === 'clipRead' ? { read_status: 'read', last_read_at: new Date().toISOString() }
     : { status: 'pending', attempts: 0, next_try_at: '', error: '' };
@@ -657,8 +712,129 @@ function clipPwaAction_(caller, action, id) {
   return { success: true };
 }
 
+/** 擁有者才能動的那一列 → { sheet, headers, rec }；不是就回永久拒絕（clipPwaAction_、筆記、AI 共用） */
+function clipOwnRow_(caller, action, id) {
+  if (!canUse_(caller.user, CLIPS_FEATURE)) return { error: 'forbidden', permanent: true, reason: 'feature' };
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CLIPS_SHEET);
+  if (!sheet || !id) return { error: 'not_found', permanent: true };
+  var t = clipsTable_(sheet);
+  var rec = t.rows.map(function (x) { return x.rec; }).filter(function (r) { return String(r.id) === String(id); })[0];
+  if (!rec || clipDeleted_(rec)) return { error: 'not_found', permanent: true };
+  if (String(rec.line_id).trim() !== String(caller.line_id).trim()) {
+    logTransaction_(CLIPS_LOG_SOURCE, '失敗', action + ' ' + id, '不是擁有者，拒絕', '', '', caller.line_id);
+    return { error: 'forbidden', permanent: true, reason: 'not_owner' };
+  }
+  return { sheet: sheet, headers: t.headers, rec: rec };
+}
+
+/** 「初始化」還沒補欄時，寫進去的欄位會被 clipsWriteRow_ 默默略過——先擋下講明（可重試：補完欄就好） */
+function clipColsMissing_(headers, cols) {
+  return cols.some(function (c) { return headers.indexOf(c) === -1; }) ? { error: 'not_ready' } : null;
+}
+
 /**
- * Reading Widget 摘要（ADR-021 D-13）：「上次在讀」＝最後閱讀時間最新的一篇；「未讀」＝收齊（done／partial）且沒讀過的。
+ * 筆記（ADR-021 D-10、EXP-03）：一篇一份，帶著手上的 revision 來存；鎖內重讀比對，不一致就拒絕並回新版
+ * （前端顯示新版、使用者打的字留在框裡）。衝突不是永久拒絕：拿新版的 revision 再存就會過
+ */
+function clipNote_(caller, id, note, revision) {
+  var own = clipOwnRow_(caller, 'clipNote', id);
+  if (own.error) return own;
+  var missing = clipColsMissing_(own.headers, ['note', 'note_revision', 'note_updated_at']);
+  if (missing) return missing;
+  var text = String(note == null ? '' : note);
+  if (text.length > CLIP_NOTE_MAX) return { error: 'too_long', permanent: true, max: CLIP_NOTE_MAX };
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return { error: 'busy' };
+  try {
+    var t = clipsTable_(own.sheet);
+    var hit = t.rows.filter(function (x) { return String(x.rec.id) === String(id); })[0];
+    if (!hit || clipDeleted_(hit.rec)) return { error: 'not_found', permanent: true };
+    var cur = Number(hit.rec.note_revision) || 0;
+    if (Number(revision) !== cur) {
+      logTransaction_(CLIPS_LOG_SOURCE, '失敗', 'clipNote ' + id, '筆記衝突：另一台已更新',
+        '手上 ' + revision + '｜雲端 ' + cur, '', caller.line_id);
+      return { error: 'conflict', note: String(hit.rec.note == null ? '' : hit.rec.note), revision: cur,
+        note_updated_at: String(hit.rec.note_updated_at || '') };
+    }
+    var at = new Date().toISOString();
+    clipsWriteRow_(own.sheet, t.headers, hit, { note: text, note_revision: cur + 1, note_updated_at: at });
+    return { success: true, revision: cur + 1, note_updated_at: at };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * 給 AI 的提示詞（D-11）：只送文字。原文的圖片沒有送，要它標「圖片內容未辨識」、不編造。
+ * 只存連結的那篇沒有原文，講明只能讀筆記。純函式
+ */
+function clipAiPrompt_(rec) {
+  var body = String(rec.caption || '').slice(0, CLIP_AI_INPUT_MAX);
+  var note = String(rec.note || '').slice(0, CLIP_NOTE_MAX);
+  var lines = [
+    '你是我的閱讀整理助手。用繁體中文整理下面這篇收藏：',
+    '1. 先列 3～5 點重點；2. 再列出我的筆記裡的想法或待辦（沒有就略過）。',
+    '規則：只根據下面提供的文字，不要編造；原文附的圖片沒有提供給你，內容提到圖片時標註「（圖片內容未辨識）」；不要開場白。'
+  ];
+  if (rec.kind === CLIP_LINK) lines.push('這篇只存了連結（' + String(rec.url || '') + '），沒有抓原文，只能根據我的筆記整理。');
+  else lines.push('', '【原文】', body || '（沒有內文）');
+  lines.push('', '【我的筆記】', note || '（沒有筆記）');
+  return lines.join('\n');
+}
+
+/**
+ * AI 整理（D-11）：按了才跑；結果另存 ai_output／ai_provider／ai_at，**不動 caption 與 note**；一篇留最新一份。
+ * discard＝捨棄（清空三欄，不呼叫 AI）。失敗不寫半份、舊的留著。沿用 ADR-017 的 callAi_（選定的那一家，失敗不換家）
+ */
+function clipAi_(caller, id, discard) {
+  var own = clipOwnRow_(caller, discard ? 'clipAiDiscard' : 'clipAi', id);
+  if (own.error) return own;
+  var missing = clipColsMissing_(own.headers, ['ai_output', 'ai_provider', 'ai_at']);
+  if (missing) return missing;
+  var rec = own.rec;
+  if (discard) {
+    try { clipsPatch_(own.sheet, id, { ai_output: '', ai_provider: '', ai_at: '' }); } catch (err) { return { error: 'busy' }; }
+    logTransaction_(CLIPS_LOG_SOURCE, '成功', 'clipAi ' + id, '捨棄 AI 整理', String(rec.url || ''), '', caller.line_id);
+    return { success: true };
+  }
+  if (!String(rec.caption || '').trim() && !String(rec.note || '').trim()) return { error: 'empty', permanent: true };
+  var res = callAi_(clipAiPrompt_(rec));
+  var who = 'provider=' + res.provider + '｜model=' + res.model;
+  if (!res.ok) {
+    logTransaction_(CLIPS_LOG_SOURCE, '失敗', 'clipAi ' + id, res.reason === 'no_key' ? res.missingKey + ' 未設定' : res.reason,
+      who + '｜' + (res.detail || ''), '', caller.line_id);
+    return { error: res.reason === 'no_key' ? 'no_key' : 'ai_failed', reason: res.reason, label: res.label, missingKey: res.missingKey };
+  }
+  var at = new Date().toISOString();
+  try {
+    clipsPatch_(own.sheet, id, { ai_output: res.text, ai_provider: res.label, ai_at: at });
+  } catch (err) {
+    return { error: 'busy' };
+  }
+  logTransaction_(CLIPS_LOG_SOURCE, '成功', 'clipAi ' + id, (res.truncated ? 'AI 整理（被截斷）' : 'AI 整理'),
+    who + '｜' + String(rec.url || ''), '', caller.line_id);
+  return { success: true, ai_output: res.text, ai_provider: res.label, ai_at: at, truncated: !!res.truncated };
+}
+
+/** PWA「＋ 加網址」（D-12）：一次一個網址；IG 貼文照舊排隊，其他只存連結。不是 http(s) 網址＝永久拒絕 */
+function clipAdd_(caller, url) {
+  if (!canUse_(caller.user, CLIPS_FEATURE)) return { error: 'forbidden', permanent: true, reason: 'feature' };
+  var u = String(url || '').trim();
+  var found = /^https?:\/\/\S+$/i.test(u) && u.length <= CLIP_LINK_MAX ? clipFoundIn_(u).slice(0, 1) : [];
+  if (!found.length) return { error: 'invalid_url', permanent: true };
+  var lineId = String(caller.line_id || '').trim();
+  try {
+    var rowNumber = clipsRegister_(lineId, u, found);
+    logTransaction_(CLIPS_LOG_SOURCE, '成功', u, 'PWA 加網址：' + clipRegisterResult_(found), found[0].url, rowNumber, lineId);
+  } catch (err) {
+    logTransaction_(CLIPS_LOG_SOURCE, '失敗', u, 'PWA 加網址失敗', String(err && err.stack || err), '', lineId);
+    return { error: 'busy' };
+  }
+  return { success: true, kind: found[0].kind };
+}
+
+/**
+ * Reading Widget 摘要（ADR-021 D-13）：「上次在讀」＝最後閱讀時間最新的一篇；「未讀」＝收齊（done／partial）或只存連結、且沒讀過的。
  * 只看自己的、刪掉的不算。title 取內文第一行（沒有就作者、網址）
  */
 function readingWidget_(ss, user) {
@@ -667,7 +843,7 @@ function readingWidget_(ss, user) {
   var mine = clipsVisibleTo_(read.rows, user).filter(function (r) { return !clipDeleted_(r); });
   var unread = mine.filter(function (r) {
     var st = String(r.status || '').trim();
-    return (st === 'done' || st === 'partial') && String(r.read_status || '').trim() !== 'read';
+    return (st === 'done' || st === 'partial' || st === CLIP_LINK) && String(r.read_status || '').trim() !== 'read';
   }).length;
   var last = null, lastMs = 0;
   mine.forEach(function (r) {
@@ -678,7 +854,7 @@ function readingWidget_(ss, user) {
     unread: unread,
     last: last ? {
       id: String(last.id), author: String(last.author || ''),
-      title: String(last.caption || '').split('\n')[0].trim().slice(0, 60) || String(last.author || '') || String(last.url || ''),
+      title: String(last.caption || '').split('\n')[0].trim().slice(0, 60) || String(last.author || '') || clipDomain_(last.url) || String(last.url || ''),
       last_read_at: new Date(lastMs).toISOString()
     } : null,
     at: new Date().toISOString()
@@ -819,7 +995,7 @@ function clipsSuccessRate_(rows, nowMs) {
   var since = nowMs - CLIPS_RATE_DAYS * 86400000;
   var done = 0, total = 0;
   (rows || []).forEach(function (r) {
-    if (clipDeleted_(r)) return;
+    if (clipDeleted_(r) || r.kind === CLIP_LINK) return;     // 只存連結不經過 Apify
     var t = r.collected_at instanceof Date ? r.collected_at.getTime() : Date.parse(String(r.collected_at));
     if (isNaN(t) || t < since) return;
     total++;

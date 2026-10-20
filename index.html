@@ -245,6 +245,14 @@
   .clip-img{flex:none; width:100%; max-height:70vh; object-fit:contain; scroll-snap-align:center; border-radius:12px; background:var(--line);}
   .clip-caption{white-space:pre-wrap; word-break:break-word; font-size:15px; line-height:1.6; color:var(--ink);}
   .clip-times{font-size:12px; color:var(--muted); margin:10px 0;}
+  /* 圖書館（ADR-021 D-10～D-12）：筆記一塊、AI 整理另一塊；加網址一列 */
+  .clip-add{display:flex; gap:8px; margin:8px 0;}
+  .clip-add input{flex:1; min-width:0; font-size:16px;}
+  .clip-add .btn{width:auto; flex:none;}
+  .clip-block{margin-top:14px; padding-top:12px; border-top:1px solid var(--line);}
+  .clip-block-head{display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;}
+  .clip-block textarea{width:100%; box-sizing:border-box; min-height:120px; font-size:16px;}
+  .clip-other{background:var(--line); border-radius:10px; padding:8px 10px; margin:6px 0 8px; font-size:14px;}
   .note-item:last-child{border-bottom:none;}
   .note-txt{white-space:pre-wrap; word-break:break-word;}
   .note-meta{display:flex; justify-content:space-between; align-items:center; margin-top:4px;}
@@ -316,6 +324,7 @@
   .cat-btn .lg-dot{width:9px; height:9px; border-radius:50%;}
   .cat-btn.sel{border-color:var(--ink); color:var(--ink); background:var(--card);}
   .seg{display:flex; gap:6px; margin-bottom:10px;}
+  .seg[hidden]{display:none;}   /* 明寫，否則 display:flex 會蓋掉 [hidden]（2026-10-20：雜記｜收藏、個人｜管理分段一直沒藏起來） */
   .seg button{
     flex:1; background:var(--field); border:1.5px solid var(--line); border-radius:10px;
     padding:8px 4px; font-size:14px; font-weight:600; color:var(--muted);
@@ -1226,6 +1235,12 @@ nav button:active{opacity:.6;}
     <div id="clipCards" hidden>
       <div class="card" id="clipListCard">
         <div class="clip-head"><h2>📚 收藏</h2><button class="btn-ghost" onclick="loadClips('manual')">重新整理</button></div>
+        <!-- 2.0（ADR-021 D-12、D-13）：全部／未讀、＋ 加網址。1.0 不出現 -->
+        <div class="seg" id="clipFilterSeg" hidden></div>
+        <div class="clip-add" id="clipAddRow" hidden>
+          <input type="text" id="clipAddUrl" inputmode="url" autocomplete="off" placeholder="貼上網址">
+          <button class="btn" onclick="addClipUrl()">＋ 加網址</button>
+        </div>
         <div id="clipList"></div>
       </div>
       <div class="card" id="clipReader" hidden></div>
@@ -3382,6 +3397,8 @@ const GMAIL_ERRORS = {
 function sysGmailHtml(d){
   const types=d.mail_types||Object.keys(GMAIL_TYPE_LABEL), parsers=d.parsers||[];
   const opt=(list,cur,label)=>list.map(v=>`<option value="${esc(v)}" ${String(cur)===v?'selected':''}>${esc(label?label(v):v)}</option>`).join('');
+  // 規則上留著雲端不認得的解析器：照實列出來並選著（控制員當留白），改選「不解析」才清得掉
+  const odd=p=>(p && !parsers.includes(String(p))) ? `<option value="${esc(p)}" selected>${esc(p)}（不認得，當留白）</option>` : '';
   const list=(d.rules||[]).map((r,i)=>{
     const on=truthy(r.is_active);
     const input=(f,ph)=>`<input type="text" placeholder="${ph}" value="${esc(r[f])}" onchange="setGmailRule(${i},'${f}',this.value)">`;
@@ -3391,7 +3408,7 @@ function sysGmailHtml(d){
       <div class="row">${input('from','寄件者（可用 OR）')}${input('subject_kw','主旨關鍵字')}</div>
       <div class="row">${input('label','Gmail 標籤')}
         <select onchange="setGmailRule(${i},'mail_type',this.value)">${opt(types,r.mail_type,t=>GMAIL_TYPE_LABEL[t]||t)}</select>
-        <select onchange="setGmailRule(${i},'parser',this.value)"><option value="">（不解析）</option>${opt(parsers,r.parser)}</select></div>
+        <select onchange="setGmailRule(${i},'parser',this.value)"><option value="">（不解析）</option>${opt(parsers,r.parser)}${odd(r.parser)}</select></div>
       <div class="adm-grid">${flag('is_active',on?'✅ 啟用中':'已停用')}${flag('save_attachment','📎 存 PDF')}${flag('notify','📣 列入彙總')}</div>
     </div>`;
   }).join('');
@@ -4058,6 +4075,7 @@ function goView(name){
   if(isV2() && !v2JustLoaded) v2AfterEnter(name);
   v2JustLoaded=false;  if(name==='reminders'){ openTasksSeg('reminder'); return; }
   if(name==='tasks' && taskSeg!=='todo') pickTaskSeg('todo');
+  if(name==='notes' && isV2() && noteSeg!=='notes') pickNoteSeg('notes');   // 2.0 雜記沒有收藏分段：從圖書館過來要切回雜記
   switchView(name);
 }
 
@@ -4217,10 +4235,14 @@ function renderNavV2(nav){
     return `<button data-tab="${t.key}" class="${active===t.key?'active':''}" onclick="${t.tap}"><span class="ico">${t.ico}</span><span class="tab-label">${t.label}</span></button>`;
   }).join('');
 }
-function openLibrary(){
+function openLibrary(filter){
   if(!featureAllowed('clips')){ toast('這個功能還沒對你開放'); return Promise.resolve(false); }
   noteSeg='clips';
+  if(filter) clipFilter=filter;                                  // Reading Widget 的「未讀 N 篇」直接切到未讀
   switchView('notes');                                           // 圖書館只要收藏：不為它讀整張雜記
+  const title=document.getElementById('viewTitle');
+  if(title) title.textContent='圖書館';
+  renderNoteSeg();                                               // 2.0 不顯示「雜記｜收藏」分段
   const p=pickNoteSeg('clips');
   renderNav();
   return p;
@@ -4443,7 +4465,7 @@ function renderReadingWidget(){
     const last=d.last ? `<button class="w-row" onclick="openClipFromWidget('${esc(d.last.id)}')"><span class="lbl">上次在讀</span>
       <span class="txt">${esc(d.last.title||'（沒有標題）')}</span>${d.last.author?`<small>${esc(d.last.author)}</small>`:''}</button>`
       : '<div class="empty-hint">還沒讀過收藏</div>';
-    return last + `<button class="w-more" onclick="openLibrary()">未讀 ${Number(d.unread)||0} 篇 →</button>`;
+    return last + `<button class="w-more" onclick="openLibrary('unread')">未讀 ${Number(d.unread)||0} 篇 →</button>`;
   });
 }
 function openClipFromWidget(id){
@@ -5100,7 +5122,7 @@ let clipOpenId=null;
 
 function renderNoteSeg(){
   const ok=featureAllowed('clips');
-  setHidden('noteSeg', !ok);
+  setHidden('noteSeg', !ok || isV2());          // 2.0 收藏住在圖書館 Tab（ADR-021 D-4）：雜記頁不再分段
   if(!ok && noteSeg==='clips') pickNoteSeg('notes');
 }
 function pickNoteSeg(seg){
@@ -5149,18 +5171,19 @@ function clipTpe(v){
   return new Date(t+8*3600000).toISOString().slice(0,16).replace('T',' ');
 }
 function clipsListHtml(list){
-  if(!list || !list.length) return '<div class="empty-hint">在 LINE 私訊 bot 貼 IG 網址（分享到 LINE 也可以），幾分鐘後就收進這裡</div>';
+  if(!list || !list.length) return clipFilter==='unread' && isV2() ? '<div class="empty-hint">沒有未讀的收藏 🎉</div>'
+    : '<div class="empty-hint">在 LINE 私訊 bot 貼 IG 網址（分享到 LINE 也可以），幾分鐘後就收進這裡</div>';
   return clipsSorted(list).map(c=>{
-    const ids=clipImages(c), bad=clipBad(c), id=esc(c.id);
-    const lines=String(c.caption||'').split('\n').map(s=>s.trim()).filter(Boolean).slice(0,2);
+    const ids=clipImages(c), bad=clipBad(c), id=esc(c.id), link=clipIsLink(c);
+    const lines=link ? [String(c.url||'')] : String(c.caption||'').split('\n').map(s=>s.trim()).filter(Boolean).slice(0,2);
     const tag = bad ? `<span class="clip-tag clip-bad">${c.status==='failed'?'失敗':'缺圖'}</span>`
-      : c.status==='pending' ? '<span class="clip-tag">處理中</span>' : '';
+      : c.status==='pending' ? '<span class="clip-tag">處理中</span>' : link ? '<span class="clip-tag">🔗 只存連結</span>' : '';
     const thumb = ids[0] ? `<img class="clip-thumb" src="${clipThumb(ids[0],400)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
-      : '<div class="clip-thumb clip-thumb-empty">📚</div>';
+      : `<div class="clip-thumb clip-thumb-empty">${link?'🔗':'📚'}</div>`;
     const day=clipTpe(c.collected_at).slice(5,10).replace('-','/');
     return `<div class="clip-item${bad?' bad':''}" onclick="openClip('${id}')">${thumb}
       <div class="clip-body">
-        <div class="clip-meta">${tag}<b>${esc(c.author||'（作者不明）')}</b><span>${esc(day)}</span><span>${Number(c.media_saved)||0} 張</span></div>
+        <div class="clip-meta">${tag}<b>${esc(link ? clipDomain(c.url) : (c.author||'（作者不明）'))}</b><span>${esc(day)}</span>${link?'':`<span>${Number(c.media_saved)||0} 張</span>`}</div>
         <div class="clip-lines">${lines.length ? lines.map(esc).join('<br>') : (c.status==='pending' ? '等排程收齊…' : '（沒有內文）')}</div>
         ${bad ? `<div class="clip-err">${esc(c.error||'')}</div><button class="btn-ghost danger" onclick="event.stopPropagation(); retryClip('${id}')">重跑</button>` : ''}
       </div></div>`;
@@ -5168,6 +5191,14 @@ function clipsListHtml(list){
 }
 function clipReaderHtml(c){
   const ids=clipImages(c), id=esc(c.id);
+  if(clipIsLink(c)) return `<div class="clip-reader-head"><button class="btn-ghost" onclick="closeClip()">← 返回</button><b>${esc(clipDomain(c.url))}</b></div>
+    <p class="perf-sub">🔗 只存連結：沒有抓原文，要看內容請回原站。</p>
+    <div class="clip-caption">${esc(c.url||'')}</div>
+    <p class="clip-times">收藏 ${esc(clipTpe(c.collected_at))}</p>
+    <div class="row">
+      <a class="btn" href="${esc(httpsOrHttp(c.url))}" target="_blank" rel="noopener">回原站閱讀</a>
+      <button class="btn-ghost danger" onclick="deleteClip('${id}')">刪除</button>
+    </div>${isV2() ? clipStudyHtml(c) : ''}`;
   const imgs=ids.map((x,i)=>`<img class="clip-img" src="${clipThumb(x,1200)}" alt="第 ${i+1} 張" loading="lazy" onerror="clipImgFallback(this,'${esc(x)}')">`).join('');
   return `<div class="clip-reader-head"><button class="btn-ghost" onclick="closeClip()">← 返回</button><b>${esc(c.author||'（作者不明）')}</b></div>
     ${ids.length ? `<div class="clip-strip">${imgs}</div>` : ''}
@@ -5178,7 +5209,7 @@ function clipReaderHtml(c){
       <a class="btn" href="${esc(c.url)}" target="_blank" rel="noopener">開啟原文</a>
       <button class="btn-ghost" onclick="retryClip('${id}')">重跑</button>
       <button class="btn-ghost danger" onclick="deleteClip('${id}')">刪除</button>
-    </div>`;
+    </div>${isV2() ? clipStudyHtml(c) : ''}`;
 }
 /* Reels 的影片（RD-HF1）：存了就連到這篇的 Drive 資料夾（影片是私人的，PWA 這版不播放） */
 function clipVideoLine(c){
@@ -5195,15 +5226,28 @@ function clipImgFallback(img, id){
   img.parentNode.replaceChild(a, img);
 }
 function renderClips(){
+  const v2=isV2();
+  setHidden('clipAddRow', !v2);
+  setHidden('clipFilterSeg', !v2);
+  if(!v2) clipFilter='all';
+  const seg=document.getElementById('clipFilterSeg');
+  if(seg && v2){
+    const n=(clipsData||[]).filter(clipUnread).length;
+    seg.innerHTML=[['all','全部'],['unread','未讀 '+n]].map(([k,l])=>`<button class="${clipFilter===k?'sel':''}" onclick="pickClipFilter('${k}')">${l}</button>`).join('');
+  }
   const list=document.getElementById('clipList');
-  if(list) list.innerHTML = clipsData===null ? '<div class="empty-hint">讀取中…</div>' : clipsListHtml(clipsData);
+  if(list) list.innerHTML = clipsData===null ? '<div class="empty-hint">讀取中…</div>'
+    : clipsListHtml(clipFilter==='unread' ? clipsData.filter(clipUnread) : clipsData);
   const open = clipOpenId && Array.isArray(clipsData) ? clipsData.find(c=>String(c.id)===String(clipOpenId)) : null;
   const reader=document.getElementById('clipReader');
   if(reader) reader.innerHTML = open ? clipReaderHtml(open) : '';
   setHidden('clipReader', !open);
   setHidden('clipListCard', !!open);
 }
-function openClip(id){ clipOpenId=id; renderClips(); window.scrollTo(0,0); if(isV2()) markClipRead(id); }
+function openClip(id){
+  if(String(clipOpenId)!==String(id)){ clipNoteDraft=null; clipNoteConflict=null; }   // 打的字只跟著那一篇
+  clipOpenId=id; renderClips(); window.scrollTo(0,0); if(isV2()) markClipRead(id);
+}
 /* 開閱讀頁即已讀＋時間（ADR-021 D-13）。只在 2.0：1.0 的行為一個都不能變（D-20）。
    只是閱讀狀態：送不上去不打擾人，下次開再寫一次 */
 function markClipRead(id){
@@ -5232,6 +5276,114 @@ async function clipAction(action, id, okMsg){
   }
   toast(j && j.permanent ? '這篇不是你的收藏，只有收藏的人能改' : '沒有改到，稍後再試');
   return false;
+}
+
+/* ---------- 📚 圖書館（ADR-021 D-10～D-13｜PR-E，只在 2.0） ----------
+   筆記：一篇一份，存檔帶手上的 revision；被拒＝另一台已更新：雲端新版顯示在框上方、**打的字留在框裡**，
+   手上的 revision 換成新版——再按一次儲存才蓋過去（使用者決定，不替人合併）。打的字存在 clipNoteDraft，
+   畫面重畫（重新整理、存檔）也不會被吃掉；換一篇就清掉。
+   AI 整理：按了才跑，結果另存（不動原文與筆記）；重做、捨棄都要確認。直接送雲端、不進待送佇列（比照 clipAction） */
+let clipFilter='all';            // 全部｜未讀（D-13）
+let clipNoteDraft=null;          // { id, text }：打了還沒存的字
+let clipNoteConflict=null;       // { id, note, at }：被拒時雲端的新版
+let clipBusy={note:false, ai:false};
+const CLIP_ERRORS={ forbidden:'這篇不是你的收藏，只有收藏的人能改', not_found:'找不到這篇，按「重新整理」看看',
+  too_long:'筆記太長（上限 2 萬字）', not_ready:'雲端還沒準備好：請管理者在 LINE 傳「初始化」補欄位',
+  empty:'這篇沒有原文也沒有筆記，先寫點筆記再請 AI 整理', no_key:'AI 還沒設定 API key（設定 ▸ AI 供應商）',
+  invalid_url:'網址不對，請貼完整的 https:// 網址', busy:'雲端忙碌中，稍後再試' };
+function clipIsLink(c){ return !!c && c.kind==='link'; }
+function clipUnread(c){ return !!c && ['done','partial','link'].includes(c.status) && c.read_status!=='read'; }
+function clipDomain(url){ const m=String(url||'').match(/^https?:\/\/([^\/?#:]+)/i); return m ? m[1].toLowerCase().replace(/^www\./,'') : String(url||''); }
+/* 只存連結的網址是使用者貼的：只放行 http(s)，Sheet 被改成 javascript: 也不會變成可點的東西 */
+function httpsOrHttp(u){ u=String(u||'').trim(); return /^https?:\/\//i.test(u) ? u : ''; }
+function pickClipFilter(f){ clipFilter = f==='unread' ? 'unread' : 'all'; renderClips(); }
+function openClipRec(){ return clipOpenId && Array.isArray(clipsData) ? clipsData.find(c=>String(c.id)===String(clipOpenId)) : null; }
+function clipNoteText(c){ return clipNoteDraft && String(clipNoteDraft.id)===String(c.id) ? clipNoteDraft.text : String(c.note||''); }
+function clipNoteInput(v){ if(clipOpenId!=null) clipNoteDraft={id:String(clipOpenId), text:String(v)}; }
+function clipStudyHtml(c){
+  const conflict=clipNoteConflict && String(clipNoteConflict.id)===String(c.id) ? clipNoteConflict : null;
+  const saved=c.note_updated_at ? '更新 '+clipTpe(c.note_updated_at).slice(5) : '';
+  const ai=String(c.ai_output||'');
+  return `<div class="clip-block">
+      <div class="clip-block-head"><b>📝 筆記</b><small class="dash-sub">${esc(saved)}</small></div>
+      ${conflict ? `<div class="sys-warn">⚠️ 另一台已更新${conflict.at?'（'+esc(clipTpe(conflict.at).slice(5))+'）':''}。雲端的新版在下面，你打的字還在框裡；確定要用你的版本，再按一次儲存。</div>
+        <div class="clip-caption clip-other">${esc(conflict.note)||'（空白）'}</div>` : ''}
+      <textarea id="clipNoteInput" maxlength="20000" placeholder="寫下你的想法…" oninput="clipNoteInput(this.value)">${esc(clipNoteText(c))}</textarea>
+      <div class="row" style="margin-top:8px"><button class="btn" onclick="saveClipNote()" ${clipBusy.note?'disabled':''}>${clipBusy.note?'儲存中…':'儲存筆記'}</button></div>
+    </div>
+    <div class="clip-block">
+      <div class="clip-block-head"><b>✨ AI 整理</b>${ai?'<button class="btn-ghost" onclick="copyClipAi()">📋 複製</button>':''}</div>
+      ${clipIsLink(c) ? '<p class="slot-hint">這篇只存了連結，AI 只讀你的筆記。</p>' : ''}
+      ${clipBusy.ai ? '<div class="empty-hint">整理中…（約 10～30 秒）</div>'
+        : ai ? `<div class="clip-caption">${esc(ai)}</div><p class="clip-times">（由 ${esc(c.ai_provider||'AI')} 彙整）・${esc(clipTpe(c.ai_at))}</p>
+          <div class="row"><button class="btn-ghost" onclick="runClipAi()">重做</button><button class="btn-ghost danger" onclick="discardClipAi()">捨棄</button></div>`
+        : '<button class="btn" onclick="runClipAi()">✨ AI 整理</button>'}
+    </div>`;
+}
+async function saveClipNote(){
+  const c=openClipRec();
+  if(!c || clipBusy.note) return false;
+  const text=clipNoteText(c), id=String(c.id);
+  clipBusy.note=true; renderClips();
+  let r=null;
+  try{ r=await cloudPost({action:'clipNote', id, note:text, revision:Number(c.note_revision)||0, trigger:'write'}); }catch(e){ r=null; }
+  clipBusy.note=false;
+  if(r && r.success){
+    c.note=text; c.note_revision=r.revision; c.note_updated_at=r.note_updated_at;
+    clipNoteDraft=null; clipNoteConflict=null;
+    renderClips(); toast('筆記已存 ✅'); return true;
+  }
+  if(r && r.error==='conflict'){
+    clipNoteDraft={id, text};                                   // 打的字留著
+    clipNoteConflict={id, note:String(r.note||''), at:r.note_updated_at||''};
+    c.note=String(r.note||''); c.note_revision=r.revision; c.note_updated_at=r.note_updated_at||c.note_updated_at;
+    renderClips(); toast('⚠️ 另一台已更新這篇的筆記，你打的字還在'); return false;
+  }
+  renderClips();
+  toast('⚠️ 筆記沒有存到：'+(r ? (CLIP_ERRORS[r.error]||'稍後再試') : '連不上雲端')+'（打的字還在）');
+  return false;
+}
+async function runClipAi(){
+  const c=openClipRec();
+  if(!c || clipBusy.ai) return false;
+  if(c.ai_output && !confirm('重新整理會取代現在這一份，確定？')) return false;
+  clipBusy.ai=true; renderClips();
+  let r=null;
+  try{ r=await cloudPost({action:'clipAi', id:String(c.id), trigger:'write'}); }catch(e){ r=null; }
+  clipBusy.ai=false;
+  if(r && r.success){ c.ai_output=r.ai_output; c.ai_provider=r.ai_provider; c.ai_at=r.ai_at; renderClips(); return true; }
+  renderClips();
+  toast('⚠️ '+(!r ? '連不上雲端，這次沒有整理' : r.error==='ai_failed' ? (r.label||'AI')+' 整理失敗：'+(r.reason||'原因不明') : (CLIP_ERRORS[r.error]||'沒有整理成功，稍後再試')));
+  return false;
+}
+async function discardClipAi(){
+  const c=openClipRec();
+  if(!c || clipBusy.ai || !confirm('捨棄這份 AI 整理？（原文與筆記不受影響）')) return false;
+  let r=null;
+  try{ r=await cloudPost({action:'clipAi', id:String(c.id), discard:true, trigger:'write'}); }catch(e){ r=null; }
+  if(!r || !r.success){ toast('⚠️ '+((r && CLIP_ERRORS[r.error]) || '沒有捨棄成功，稍後再試')); return false; }
+  c.ai_output=''; c.ai_provider=''; c.ai_at='';
+  renderClips(); toast('已捨棄');
+  return true;
+}
+function copyClipAi(){
+  const c=openClipRec();
+  if(!c || !c.ai_output) return;
+  const text=c.ai_output+'\n\n（由 '+(c.ai_provider||'AI')+' 彙整）';
+  try{ navigator.clipboard.writeText(text).then(()=>toast('已複製 📋'), ()=>toast('複製失敗，請長按文字自己選取')); }
+  catch(e){ toast('複製失敗，請長按文字自己選取'); }
+}
+async function addClipUrl(){
+  const input=document.getElementById('clipAddUrl');
+  const url=String((input||{}).value||'').trim();
+  if(!/^https?:\/\/\S+$/i.test(url)){ toast('⚠️ '+CLIP_ERRORS.invalid_url); return false; }
+  let r=null;
+  try{ r=await cloudPost({action:'clipAdd', url, trigger:'write'}); }catch(e){ r=null; }
+  if(!r || !r.success){ toast('⚠️ '+(r ? (CLIP_ERRORS[r.error]||'沒有加進去，稍後再試') : '連不上雲端，這次沒有加進去')); return false; }
+  if(input) input.value='';
+  toast(r.kind==='link' ? '已收進圖書館（🔗 只存連結）' : '收到 ✅ 幾分鐘後收齊全文');
+  await loadClips('manual');
+  return true;
 }
 
 /* ---------- 週回顧 ---------- */

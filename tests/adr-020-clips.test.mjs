@@ -4,7 +4,7 @@
  * 為什麼有這批測試：分享一個 IG 網址到 LINE，就要在幾分鐘內把全文＋每一張圖收進 Drive。
  * webhook 只登記（不能被 Apify＋下載的 20 幾秒卡住），排程總管每輪最多收 5 篇。
  * 盯的事（對照交棒頁 RD-1 驗收）：
- *   - 抽網址：前後夾文字、多個網址、?igsh=／?img_index=、m.、帳號前綴、reel；非 IG 不登記；Threads 回不支援
+ *   - 抽網址：前後夾文字、多個網址、?igsh=／?img_index=、m.、帳號前綴、reel；非 IG 不排隊抓取（ADR-021 D-12 起只存連結）
  *   - 群組貼 IG 網址不登記、不回覆；沒 feat_clips 不登記；既有指令不受影響
  *   - 合併兩種情況；重試間隔與最終 partial／failed；張數不符算失敗；無 caption 算成功
  *   - 每輪最多 5 篇、預算用完就停；content.md 產生器是純函式；只有圖片檔開分享
@@ -176,13 +176,10 @@ describe('抽網址（純函式）', () => {
     assert.deepEqual(out.map((x) => x.shortcode), ['AAA111', 'BBB222']);
   });
 
-  test('不是 IG 貼文 → 空；Threads／FB／X 另外認得（回「目前只支援 Instagram」用）', () => {
+  test('不是 IG 貼文 → 空（Threads／FB／X 等其他網址改由 ADR-021 D-12 只存連結，見 adr-021-library-e）', () => {
     const e = env();
     assert.deepEqual(e.call('clipExtractUrls_', 'https://www.instagram.com/someone/ 跟 https://example.com/p/abc/'), []);
-    for (const u of ['https://www.threads.net/@a/post/xyz', 'https://www.threads.com/@a/post/xyz', 'https://www.facebook.com/share/p/1', 'https://fb.watch/abc', 'https://x.com/a/status/1', 'https://twitter.com/a/status/1']) {
-      assert.equal(e.call('clipOtherSocial_', '看 ' + u), true, u);
-    }
-    assert.equal(e.call('clipOtherSocial_', '看 https://example.com/'), false);
+    assert.deepEqual(e.call('clipExtractUrls_', '看 https://www.threads.net/@a/post/xyz'), []);
   });
 });
 
@@ -235,11 +232,11 @@ describe('LINE 登記（webhook 只登記、不抓取）', () => {
     assert.match(e.replies.at(-1), /看不懂這個指令/);
   });
 
-  test('Threads 網址：不登記，回「目前只支援 Instagram」', () => {
+  test('Threads 網址：不排隊抓取（ADR-021 D-12 起只存連結，取代「目前只支援 Instagram」）', () => {
     const e = env();
     say(e, '看 https://www.threads.net/@a/post/xyz');
-    assert.equal(rows(e).length, 0);
-    assert.equal(e.replies.at(-1), '目前只支援 Instagram');
+    assert.deepEqual(rows(e).map((r) => [r.kind, r.status]), [['link', 'link']]);
+    assert.equal(e.replies.at(-1), '收到 ✅');
   });
 
   test('既有指令先走：「任務/」內容夾 IG 網址照樣建任務，不收藏', () => {

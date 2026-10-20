@@ -728,7 +728,10 @@ function gmailRuleSet_(caller, input) {
   if (rule.is_active === 'TRUE') {
     if (GMAIL_MAIL_TYPES.indexOf(rule.mail_type) === -1) return { error: 'invalid_mail_type' };
     if (!gmailRuleQuery_(rule, GMAIL_SCAN_DAYS)) return { error: 'empty_query' };
-    if (rule.parser && !GMAIL_PARSERS[rule.parser]) return { error: 'unknown_parser', parser: rule.parser };
+    // 只擋「這次選了」不認得的解析器。規則上留著的舊值控制員本來就當留白（gmailActiveRules_ 警告），
+    // 不能因為它就連「取消存 PDF」都存不進去（Neil 2026-10-20）
+    var parserSent = Object.prototype.hasOwnProperty.call(input, 'parser');
+    if (parserSent && rule.parser && !GMAIL_PARSERS[rule.parser]) return { error: 'unknown_parser', parser: rule.parser };
   }
 
   upsertRow_(sheet, sheetHeaders_(sheet), rule, GMAIL_RULES_SHEET, 'rule_id');
