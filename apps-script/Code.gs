@@ -791,6 +791,10 @@ function routePwaSync_(body, perf) {
   if (body.action === 'taskDone') return jsonOut(taskDone_(caller, body));
   // 收藏的重跑／刪除（ADR-020）：只限擁有者，不走一般 upsert
   if (body.action === 'clipRetry' || body.action === 'clipDelete' || body.action === 'clipRead') return jsonOut(clipPwaAction_(caller, body.action, body.id));
+  // 圖書館（ADR-021 PR-E）：筆記（revision 比對）、AI 整理（另存）、加網址。同樣只限擁有者
+  if (body.action === 'clipNote') return jsonOut(clipNote_(caller, body.id, body.note, body.revision));
+  if (body.action === 'clipAi') return jsonOut(clipAi_(caller, body.id, body.discard === true));
+  if (body.action === 'clipAdd') return jsonOut(clipAdd_(caller, body.url));
 
   if (NO_PWA_WRITE.indexOf(body.sheet) !== -1 || isBackupSheet_(body.sheet)) {
     console.log('🚫 拒絕對分頁「' + body.sheet + '」做 ' + body.action + '：它是產生出來的，不收寫入');

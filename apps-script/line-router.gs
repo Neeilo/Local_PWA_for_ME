@@ -1730,7 +1730,7 @@ var COMMANDS = [
     note: '問題裡加 [類別] 只查那一類雜記，例：查/[文章] 最近存了什麼', scope: 'both', groupCmd: 'cmd_query', feat: '' },
   // ADR-020：不是前綴、是「訊息裡有 IG 網址」；路由在 routeLineMessage_ 查不到前綴時才攔（clipLineReply_）
   { key: CLIP_COMMAND_KEY, group: '收藏', usage: CLIP_COMMAND_KEY, example: 'https://www.instagram.com/p/…',
-    note: '自動收藏全文與每一張圖，幾分鐘後在 App 看', scope: 'private', feat: 'feat_clips' },
+    note: '自動收藏全文與每一張圖，幾分鐘後在 App 看；其他網址只存連結', scope: 'private', feat: 'feat_clips' },
   { key: '買', group: '股票', usage: STOCK_TRADE_USAGE, example: '買/0050/1000/190.5', scope: 'private', feat: 'feat_stock' },
   { key: '賣', group: '股票', usage: '賣/代號/數量/價格[/持有者]', example: '賣/0050/500/195', scope: 'private', feat: 'feat_stock' },
   { key: '股', group: '股票', usage: STOCK_QUOTE_USAGE, example: '股/0050', note: '現價與你的持股', scope: 'private', feat: 'feat_stock' },
