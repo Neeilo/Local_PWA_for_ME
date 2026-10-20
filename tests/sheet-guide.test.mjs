@@ -84,7 +84,8 @@ describe('refreshGuide — 產生而不是累加', () => {
     assert.deepEqual(g.records.map((r) => r['分頁']),
       ['tasks', 'expenses', 'installments', 'reviews', 'moods', 'self_notes', 'clips', 'notes', 'widget_config', 'stock_trades', 'stock_watch', 'stock_rules',
        '_module_registry', 'logs', 'line_users', 'line_groups', 'line_devices', 'performance', '_expense_config',
-       'stock_daily', '_stock_config', '_stock_gf', '_guide', 'gmail_rules', 'gmail_log', 'ETC_Data']);
+       'stock_daily', '_stock_config', '_stock_gf', '_guide', 'gmail_rules', 'gmail_log',
+       'api_registry', 'api_usage', 'api_usage_daily', 'api_cost_monthly', 'ETC_Data']);
   });
 
   test('重複執行三次：還是只有一張 _guide、列數不變', () => {

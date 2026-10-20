@@ -65,6 +65,9 @@ function schedulerJobs_() {
       run: function (now) { return runApifyUsageJob_(now); } },
     { name: 'weather', label: '天氣', when: '每小時', rule: { kind: 'hourly' },
       run: function (now) { return runWeatherJob_(now); } },
+    // ADR-022：AI 用量落地、計次搬進當日小計、跨日寫每日列與月結估算。排在效能落地前（它自己的效能列一起寫）
+    { name: 'apiFlush', label: 'API 用量記帳', when: '每 ' + API_FLUSH_MINUTES + ' 分鐘', rule: { kind: 'every', minutes: API_FLUSH_MINUTES },
+      run: function (now) { return flushApiUsage(now); } },
     { name: 'perfFlush', label: '效能紀錄落地', when: '每 ' + PERF_QUEUE_MINUTES + ' 分鐘', rule: { kind: 'every', minutes: PERF_QUEUE_MINUTES },
       run: function () { return flushPerfQueue(); } }
   ];

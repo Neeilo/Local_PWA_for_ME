@@ -55,6 +55,11 @@ var MODULE_REGISTRY_SHEET = '_module_registry';
 
 /** 總覽 Widget 的個人設定（ADR-021 D-8，widgets.gs）。一人一列；PWA 讀寫都碰不到：只走 boot 帶自己那列、widgetConfigSet 改 */
 var WIDGET_CONFIG_SHEET = 'widget_config';
+// ADR-022 API 成本會計室（api-cost.gs）：價目表、付費型逐筆、計次型每日、月結。只有 GAS 寫，PWA 讀寫都擋
+var API_REGISTRY_SHEET = 'api_registry';
+var API_USAGE_SHEET = 'api_usage';
+var API_DAILY_SHEET = 'api_usage_daily';
+var API_MONTHLY_SHEET = 'api_cost_monthly';
 
 /**
  * PWA 連一筆都不准寫的分頁（任何 action 都一樣，包括 upsert）。
@@ -70,7 +75,8 @@ var WIDGET_CONFIG_SHEET = 'widget_config';
 var GUIDE_SHEET = '_guide';
 var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET,
                     LINE_GROUPS_SHEET, STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET,
-                    SELF_NOTES_SHEET, CLIPS_SHEET, MODULE_REGISTRY_SHEET, WIDGET_CONFIG_SHEET];
+                    SELF_NOTES_SHEET, CLIPS_SHEET, MODULE_REGISTRY_SHEET, WIDGET_CONFIG_SHEET,
+                    API_REGISTRY_SHEET, API_USAGE_SHEET, API_DAILY_SHEET, API_MONTHLY_SHEET];
 
 /**
  * PWA 連讀都不准讀的分頁（ADR-010 D-8）。
@@ -94,7 +100,8 @@ var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_
  */
 var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET, LINE_GROUPS_SHEET,
                    STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET,
-                   SELF_NOTES_SHEET, MODULE_REGISTRY_SHEET, WIDGET_CONFIG_SHEET];
+                   SELF_NOTES_SHEET, MODULE_REGISTRY_SHEET, WIDGET_CONFIG_SHEET,
+                   API_REGISTRY_SHEET, API_USAGE_SHEET, API_DAILY_SHEET, API_MONTHLY_SHEET];
 
 /**
  * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
@@ -4405,7 +4412,7 @@ function lineGetJson_(path) {
   var token = lineToken_();
   if (!token) return null;
   try {
-    var res = UrlFetchApp.fetch(LINE_API_BASE + path, { method: 'get', headers: { Authorization: 'Bearer ' + token }, muteHttpExceptions: true });
+    var res = callApi_('line_api', LINE_API_BASE + path, { method: 'get', headers: { Authorization: 'Bearer ' + token }, muteHttpExceptions: true });
     if (res.getResponseCode() !== 200) return null;
     return JSON.parse(res.getContentText());
   } catch (err) {

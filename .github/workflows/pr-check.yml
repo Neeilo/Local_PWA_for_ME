@@ -38,6 +38,10 @@ jobs:
       - name: Fail if a secret got hardcoded into the sources
         run: npm run scan
 
+      # ADR-022 D-10：外部呼叫只准走 callApi_，漏記帳在 PR 就紅燈
+      - name: Fail if an external call bypasses callApi_
+        run: node scripts/check-api-exit.mjs apps-script
+
       # 與 deploy.yml 的 Pages job 同一支腳本：白名單裡的檔案少了，這裡就紅燈。
       # 只收到暫存目錄看會不會失敗，不上傳。
       - name: Check the site whitelist can be collected

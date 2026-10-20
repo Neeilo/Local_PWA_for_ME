@@ -701,6 +701,7 @@ function initSteps_() {
     { label: '股票', run: installStock_ },
     { label: 'Gmail 控制員', run: installGmail_ },
     { label: '收藏搜集器', run: installClips_ },
+    { label: '用量與成本記帳', run: installApiCost_ },
     // RD-HF1：兩個補救都可重複執行；要在補欄（installClips_ 補 video_saved）之後
     { label: '收藏 content.md 重產', run: function () {
       var r = clipsRebuildContentMd_();
@@ -1124,7 +1125,7 @@ function answerQuery_(question, rawText, userId, perf) {
   }
 
   // ADR-017：出口依設定選 Gemini／OpenAI／Claude，只打選定的那一家，失敗不換家（D-4）
-  var res = perfStage_(perf, 'query.ai', function () { return callAi_(buildQueryPrompt_(context, question)); });
+  var res = perfStage_(perf, 'query.ai', function () { return callAi_(buildQueryPrompt_(context, question), 'query'); });
   var who = 'provider=' + res.provider + '｜model=' + res.model;
   if (!res.ok && res.reason === 'no_key') {
     // 這不是「暫時無法回應」——是根本還沒設定，講清楚才知道要去哪裡修
@@ -1504,13 +1505,13 @@ function truncate_(text, max) {
  * 每一種失敗都留 console.log，不靜默吞掉（ADR-006 §B）——
  * 「額度用完」「模型名稱過期」「key 是別的專案的」從外面看全都是同一種安靜的失敗。
  */
-function callGemini_(key, prompt, model) {
+function callGemini_(key, prompt, model, feature) {
   model = model || geminiModel_();     // ADR-017 起由 callAi_ 傳入（GEMINI_MODEL 覆寫照舊），沒傳就照舊自己讀
   var url = GEMINI_API_BASE + '/' + encodeURIComponent(model) + ':generateContent';
 
   var res;
   try {
-    res = UrlFetchApp.fetch(url, {
+    res = callApi_('gemini', url, {
       method: 'post',
       contentType: 'application/json',
       headers: { 'x-goog-api-key': key },
@@ -1519,7 +1520,7 @@ function callGemini_(key, prompt, model) {
         generationConfig: geminiGenConfig_(model)
       }),
       muteHttpExceptions: true
-    });
+    }, { feature: feature, model: model });
   } catch (err) {
     console.log('Gemini 連線失敗（model=' + model + '）：' + err);
     return { ok: false, reason: '連線失敗', detail: String(err && err.stack || err) };
@@ -1719,7 +1720,7 @@ function lineDisplayName_(userId) {
   var token = lineToken_();
   if (!token || !userId) return '';
   try {
-    var res = UrlFetchApp.fetch('https://api.line.me/v2/bot/profile/' + encodeURIComponent(userId), {
+    var res = callApi_('line_api', 'https://api.line.me/v2/bot/profile/' + encodeURIComponent(userId), {
       method: 'get',
       headers: { Authorization: 'Bearer ' + token },
       muteHttpExceptions: true
@@ -1965,7 +1966,7 @@ function lineReply_(replyToken, text) {
   console.log('權杖長度 ' + token.length + ' 字元');
 
   try {
-    var res = UrlFetchApp.fetch(LINE_REPLY_ENDPOINT, {
+    var res = callApi_('line_reply', LINE_REPLY_ENDPOINT, {
       method: 'post',
       contentType: 'application/json',
       headers: { Authorization: 'Bearer ' + token },
@@ -2023,7 +2024,7 @@ function linePush_(toUserId, text) {
   }
 
   try {
-    var res = UrlFetchApp.fetch(LINE_PUSH_ENDPOINT, {
+    var res = callApi_('line_push', LINE_PUSH_ENDPOINT, {
       method: 'post',
       contentType: 'application/json',
       headers: { Authorization: 'Bearer ' + token },
@@ -2130,7 +2131,7 @@ function diagnoseLineToken() {
     return;
   }
 
-  var res = UrlFetchApp.fetch('https://api.line.me/v2/bot/info', {
+  var res = callApi_('line_api', 'https://api.line.me/v2/bot/info', {
     method: 'get',
     headers: { Authorization: 'Bearer ' + token },
     muteHttpExceptions: true
@@ -2219,11 +2220,11 @@ function diagnoseGemini() {
   console.log('目前設定的模型：' + model +
     (model === GEMINI_MODEL_DEFAULT ? '（程式預設值）' : '（來自指令碼屬性 GEMINI_MODEL）'));
 
-  var res = UrlFetchApp.fetch(GEMINI_API_BASE, {
+  var res = callApi_('gemini', GEMINI_API_BASE, {
     method: 'get',
     headers: { 'x-goog-api-key': key },
     muteHttpExceptions: true
-  });
+  }, { feature: 'diagnose', model: '' });
 
   var code = res.getResponseCode();
   console.log('ListModels 回應 HTTP ' + code);
@@ -2371,7 +2372,7 @@ function lineGroupName_(source) {
   var token = lineToken_();
   if (!token) return '';
   try {
-    var res = UrlFetchApp.fetch('https://api.line.me/v2/bot/group/' + encodeURIComponent(source.groupId) + '/summary', {
+    var res = callApi_('line_api', 'https://api.line.me/v2/bot/group/' + encodeURIComponent(source.groupId) + '/summary', {
       method: 'get', headers: { Authorization: 'Bearer ' + token }, muteHttpExceptions: true
     });
     if (res.getResponseCode() !== 200) return '';

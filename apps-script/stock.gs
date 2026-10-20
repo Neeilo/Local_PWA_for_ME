@@ -69,11 +69,19 @@ function taipeiStamp_(now) {
   return taipeiParts_(now).t.toISOString().slice(0, 19).replace('T', ' ');
 }
 
+/** 這個網址算哪一個 API（ADR-022）：富果行情、櫃買中心，其餘是證交所 */
+function stockApiId_(url) {
+  var u = String(url || '');
+  if (u.indexOf(FUGLE_QUOTE_URL) === 0) return 'fugle';
+  if (u.indexOf(TPEX_DAILY_URL) === 0 || /tpex\.org\.tw/.test(u)) return 'tpex';
+  return 'twse';
+}
+
 /** 一次請求：網路層例外（DNS、被擋、逾時）也收成結果，不讓一個來源中斷其他來源 */
 function probeFetch_(url, headers) {
   var started = Date.now();
   try {
-    var res = UrlFetchApp.fetch(url, { method: 'get', headers: headers || {}, muteHttpExceptions: true });
+    var res = callApi_(stockApiId_(url), url, { method: 'get', headers: headers || {}, muteHttpExceptions: true });
     return { status: res.getResponseCode(), ms: Date.now() - started, text: res.getContentText() };
   } catch (err) {
     return { status: 0, ms: Date.now() - started, text: '', error: String(err && err.message || err) };
@@ -358,7 +366,7 @@ function misQuote_(it) {
 function fetchFugle_(symbols) {
   var key = PropertiesService.getScriptProperties().getProperty('FUGLE_API_KEY');
   if (!key || !symbols.length) return { quotes: {}, limited: false };
-  var responses = UrlFetchApp.fetchAll(symbols.map(function (s) {
+  var responses = callApiAll_('fugle', symbols.map(function (s) {
     return { url: FUGLE_QUOTE_URL + encodeURIComponent(s), method: 'get', headers: { 'X-API-KEY': key }, muteHttpExceptions: true };
   }));
   var quotes = {}, limited = false;
@@ -377,7 +385,7 @@ function fetchMis_(symbols) {
   if (!symbols.length) return {};
   var exCh = [];
   symbols.forEach(function (s) { exCh.push('tse_' + s + '.tw'); exCh.push('otc_' + s + '.tw'); });
-  var res = UrlFetchApp.fetch(TWSE_MIS_URL + '?ex_ch=' + encodeURIComponent(exCh.join('|')) + '&json=1&delay=0',
+  var res = callApi_('twse', TWSE_MIS_URL + '?ex_ch=' + encodeURIComponent(exCh.join('|')) + '&json=1&delay=0',
     { method: 'get', muteHttpExceptions: true });
   if (res.getResponseCode() !== 200) return {};
   var body = probeJson_(res.getContentText());
@@ -1399,7 +1407,7 @@ function parseDayAll_(list, codeField, closeField, changeField) {
 }
 
 function fetchDayAllJson_(url) {
-  var res = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true });
+  var res = callApi_(stockApiId_(url), url, { method: 'get', muteHttpExceptions: true });
   if (res.getResponseCode() !== 200) throw new Error(url + ' HTTP ' + res.getResponseCode());
   var body = probeJson_(res.getContentText());
   if (!Array.isArray(body)) throw new Error(url + ' ' + (probeJsonError_(res.getContentText()) || '回的不是陣列'));

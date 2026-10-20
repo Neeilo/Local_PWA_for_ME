@@ -62,11 +62,11 @@ var AI_TRUNCATED_NOTE = '\n\n⚠️ 回應太長被截斷了，問得更具體�
 function aiProviders_() {
   return {
     gemini: { label: 'Gemini', keyProp: 'GEMINI_API_KEY', modelProp: 'GEMINI_MODEL', defaultModel: GEMINI_MODEL_DEFAULT,
-              call: function (key, model, prompt) { return callGemini_(key, prompt, model); } },
+              call: function (key, model, prompt, feature) { return callGemini_(key, prompt, model, feature); } },
     openai: { label: 'OpenAI', keyProp: 'OPENAI_API_KEY', modelProp: 'OPENAI_MODEL', defaultModel: OPENAI_MODEL_DEFAULT,
-              call: function (key, model, prompt) { return callOpenAi_(key, model, prompt); } },
+              call: function (key, model, prompt, feature) { return callOpenAi_(key, model, prompt, feature); } },
     claude: { label: 'Claude', keyProp: 'ANTHROPIC_API_KEY', modelProp: 'CLAUDE_MODEL', defaultModel: CLAUDE_MODEL_DEFAULT,
-              call: function (key, model, prompt) { return callClaude_(key, model, prompt); } }
+              call: function (key, model, prompt, feature) { return callClaude_(key, model, prompt, feature); } }
   };
 }
 var AI_PROVIDER_IDS = ['gemini', 'openai', 'claude'];
@@ -94,8 +94,9 @@ function aiModelEntry_(id, model) {
 /**
  * 統一出口 → { ok, text, truncated, reason, detail, provider, model, label, missingKey }
  * 只打目前選定的那一家；失敗也不換家（D-4）。
+ * feature：哪個功能在用（query／clip_ai…），記進 api_usage，看得出「哪個功能花多少」（ADR-022）
  */
-function callAi_(prompt) {
+function callAi_(prompt, feature) {
   var id = aiProviderId_();
   var p = aiProviders_()[id];
   var model = aiModelOf_(p);
@@ -105,7 +106,7 @@ function callAi_(prompt) {
 
   var res;
   try {
-    res = p.call(key, model, prompt) || {};
+    res = p.call(key, model, prompt, feature) || {};
   } catch (err) {
     res = { ok: false, reason: '程式錯誤', detail: String(err && err.stack || err) };
   }
@@ -167,10 +168,10 @@ function aiLastError_() {
 /* -------------------------------------------------------------------------- */
 /* OpenAI（Chat Completions）                                                  */
 /* -------------------------------------------------------------------------- */
-function callOpenAi_(key, model, prompt) {
+function callOpenAi_(key, model, prompt, feature) {
   var res;
   try {
-    res = UrlFetchApp.fetch(OPENAI_API_URL, {
+    res = callApi_('openai', OPENAI_API_URL, {
       method: 'post',
       contentType: 'application/json',
       headers: { Authorization: 'Bearer ' + key },
@@ -181,7 +182,7 @@ function callOpenAi_(key, model, prompt) {
         reasoning_effort: 'low'
       }),
       muteHttpExceptions: true
-    });
+    }, { feature: feature, model: model });
   } catch (err) {
     console.log('OpenAI 連線失敗（model=' + model + '）：' + err);
     return { ok: false, reason: '連線失敗', detail: String(err && err.stack || err) };
@@ -212,10 +213,10 @@ function callOpenAi_(key, model, prompt) {
 /* -------------------------------------------------------------------------- */
 /* Claude（Messages API）                                                      */
 /* -------------------------------------------------------------------------- */
-function callClaude_(key, model, prompt) {
+function callClaude_(key, model, prompt, feature) {
   var res;
   try {
-    res = UrlFetchApp.fetch(CLAUDE_API_URL, {
+    res = callApi_('claude', CLAUDE_API_URL, {
       method: 'post',
       contentType: 'application/json',
       headers: { 'x-api-key': key, 'anthropic-version': CLAUDE_API_VERSION },
@@ -226,7 +227,7 @@ function callClaude_(key, model, prompt) {
         messages: [{ role: 'user', content: prompt }]
       }),
       muteHttpExceptions: true
-    });
+    }, { feature: feature, model: model });
   } catch (err) {
     console.log('Claude 連線失敗（model=' + model + '）：' + err);
     return { ok: false, reason: '連線失敗', detail: String(err && err.stack || err) };
@@ -327,7 +328,7 @@ function diagnoseAi() {
     if (!key) { line.reason = '缺 ' + p.keyProp; return line; }
     var t = Date.now();
     var res;
-    try { res = p.call(key, model, '只回覆「OK」兩個字。') || {}; } catch (err) { res = { ok: false, reason: String(err) }; }
+    try { res = p.call(key, model, '只回覆「OK」兩個字。', 'diagnose') || {}; } catch (err) { res = { ok: false, reason: String(err) }; }
     line.ms = Date.now() - t;
     line.ok = !!res.ok;
     line.reason = res.ok ? '' : aiExplain_(p.label, res.reason, res.detail);

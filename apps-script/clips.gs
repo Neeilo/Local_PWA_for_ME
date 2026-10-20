@@ -92,7 +92,7 @@ function clipFetch_(url, opts) {
   var started = Date.now();
   try {
     var o = Object.assign({ muteHttpExceptions: true }, opts || {});
-    var res = UrlFetchApp.fetch(url, o);
+    var res = callApi_(clipApiId_(url), url, o);
     return { status: res.getResponseCode(), ms: Date.now() - started, res: res };
   } catch (err) {
     return { status: 0, ms: Date.now() - started, res: null, error: String(err && err.message || err) };
@@ -587,7 +587,15 @@ function clipContentBlob_(md) {
   return Utilities.newBlob(CLIP_MD_BOM + md, 'text/markdown', 'content.md');
 }
 
-/** 圖片並行下載（UrlFetchApp.fetchAll）；整批丟例外（例如網路層）就全部當失敗，回傳形狀跟 clipFetch_ 一樣 */
+/** 這個網址算哪一個 API（ADR-022）：Apify 平台、Jina Reader，其餘是下載網頁／影片／圖片 */
+function clipApiId_(url) {
+  var u = String(url || '');
+  if (u.indexOf(CLIP_APIFY_BASE) === 0) return 'apify';
+  if (typeof CLIP_JINA_BASE !== 'undefined' && u.indexOf(CLIP_JINA_BASE) === 0) return 'jina';   // 在 lab-clip.gs
+  return 'web';
+}
+
+/** 圖片並行下載（callApiAll_）；整批丟例外（例如網路層）就全部當失敗，回傳形狀跟 clipFetch_ 一樣 */
 function clipFetchAll_(urls) {
   var reqs = [];
   var at = [];
@@ -595,7 +603,7 @@ function clipFetchAll_(urls) {
   var out = urls.map(function () { return null; });
   if (!reqs.length) return out;
   try {
-    UrlFetchApp.fetchAll(reqs).forEach(function (res, k) { out[at[k]] = { status: res.getResponseCode(), res: res }; });
+    callApiAll_('web', reqs).forEach(function (res, k) { out[at[k]] = { status: res.getResponseCode(), res: res }; });
   } catch (err) {
     at.forEach(function (i) { out[i] = { status: 0, res: null, error: String(err && err.message || err) }; });
   }
@@ -798,7 +806,7 @@ function clipAi_(caller, id, discard) {
     return { success: true };
   }
   if (!String(rec.caption || '').trim() && !String(rec.note || '').trim()) return { error: 'empty', permanent: true };
-  var res = callAi_(clipAiPrompt_(rec));
+  var res = callAi_(clipAiPrompt_(rec), 'clip_ai');
   var who = 'provider=' + res.provider + '｜model=' + res.model;
   if (!res.ok) {
     logTransaction_(CLIPS_LOG_SOURCE, '失敗', 'clipAi ' + id, res.reason === 'no_key' ? res.missingKey + ' 未設定' : res.reason,
