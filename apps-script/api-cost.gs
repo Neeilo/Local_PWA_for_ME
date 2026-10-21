@@ -401,6 +401,8 @@ function apiCloseDays_(props, now) {
                  quota: q.quota, quota_period: q.period, used_in_period: used, pct: pct };
       });
     if (rows.length) apiAppendRows_(sheet, rows);
+    try { apiQuotaAlerts_(props, rows); }                       // PR-C：提醒失敗不擋每日列與月結
+    catch (err) { console.log('額度提醒失敗：' + (err && err.stack || err)); }
     apiUpdateMonthly_(date.slice(0, 7));
     props.deleteProperty(API_DAY_PREFIX + date);
   });
@@ -762,4 +764,156 @@ function apiBackfill_(prices) {
     n++;
   });
   return n;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 用量與成本卡＋額度提醒（ADR-022 PR-C，D-2、D-3、D-5、D-7）                       */
+/* -------------------------------------------------------------------------- */
+
+var API_ALERTS_KEY = 'api_alerts';             // 指令碼屬性：用到 100% 的 API（boot 帶給管理者，2.0 紅色警示）
+var API_ALERT_STATE_KEY = 'api_alert_state';   // 指令碼屬性：{ api_id: 已推過 80% 的週期 }
+var API_ALERT_PCT = 80;
+var API_STALE_DAYS = 90;
+
+/** 這一列的額度週期是哪一段：day＝那天、month＝那個月、once＝一次性；速率型（minute）沒有週期，不提醒 */
+function apiPeriodKey_(period, date) {
+  if (period === 'day') return date;
+  if (period === 'month') return date.slice(0, 7);
+  if (period === 'once') return 'once';
+  return '';
+}
+
+/**
+ * 每日收尾寫完那天的列之後：跨過 80% 推 LINE 給管理者（同一週期只推一次，週期換了可再推）；
+ * 100% 的存進屬性，boot 帶給管理者——LINE 本身的額度用完時推播發不出去，所以要 PWA 備援（D-5）。
+ * 每次收尾都重算 100% 清單：下一天沒有用滿就清掉
+ */
+function apiQuotaAlerts_(props, rows) {
+  var state = {};
+  try { state = JSON.parse(props.getProperty(API_ALERT_STATE_KEY) || '{}') || {}; } catch (err) { state = {}; }
+  var catalog = apiCatalog_();
+  var full = [];
+  rows.forEach(function (r) {
+    if (typeof r.pct !== 'number') return;
+    var key = apiPeriodKey_(r.quota_period, r.date);
+    if (!key) return;
+    var label = (catalog[r.api_id] || {}).label || r.api_id;
+    if (r.pct >= 100) full.push({ api_id: r.api_id, label: label, pct: r.pct, date: r.date, period: r.quota_period });
+    if (r.pct < API_ALERT_PCT || state[r.api_id] === key) return;
+    apiPushAdmins_('⚠️ ' + label + ' 免費額度已用 ' + r.pct + '%（' + r.used_in_period + '／' + r.quota + '，' +
+      (r.quota_period === 'day' ? r.date : r.quota_period === 'month' ? r.date.slice(0, 7) + ' 整月' : '一次性額度') + '）' +
+      (r.pct >= 100 ? '\n已經用完，App 管理區有紅色警示' : ''));
+    state[r.api_id] = key;
+  });
+  props.setProperty(API_ALERT_STATE_KEY, JSON.stringify(state));
+  props.setProperty(API_ALERTS_KEY, JSON.stringify(full));
+}
+
+/** 推給每個啟用中的管理者；推不出去寫 logs（不可無聲） */
+function apiPushAdmins_(text) {
+  var roster = readLineUsers_();
+  if (!roster.ok) { logTransaction_(API_LOG_SOURCE, '失敗', 'apiQuotaAlert', '讀不到名單，額度提醒沒推', text, '', ''); return; }
+  Object.keys(roster.users).forEach(function (id) {
+    var u = roster.users[id];
+    if (!truthy_(u.is_active) || !truthy_(u.is_admin)) return;
+    var r = linePush_(id, text) || {};
+    logTransaction_(API_LOG_SOURCE, r.ok ? '成功' : '失敗', 'apiQuotaAlert', r.ok ? '額度提醒已推' : '額度提醒推不出去（' + r.reason + '）', text, '', id);
+  });
+}
+
+/** boot 帶給管理者的 100% 清單（讀一個屬性，不讀 Sheet） */
+function apiAlerts_() {
+  try {
+    var v = JSON.parse(PropertiesService.getScriptProperties().getProperty(API_ALERTS_KEY) || '[]');
+    return Array.isArray(v) ? v : [];
+  } catch (err) { return []; }
+}
+
+function apiSheetRecords_(name) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  var h = sheetHeaders_(sheet);
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, h.length).getValues().map(function (v) {
+    var o = {};
+    h.forEach(function (k, j) { o[k] = v[j] instanceof Date ? (k === 'ts' ? v[j].toISOString() : taipeiDateKey_(v[j])) : v[j]; });
+    return o;
+  });
+}
+
+function apiRound_(x) { return Math.round(x * 1e6) / 1e6; }
+
+/**
+ * 「💸 用量與成本」卡的資料（只有管理者，按需載入，不進冷開機）。金額一律 USD（D-3）：
+ * 本月估算總額＝AI 各家 api_usage.cost_usd＋Apify 自己回報的本月實際值；各 API／各功能占比；
+ * 額度＝每個 API 最新一天的每日列；未定價清單；核價超過 90 天或從沒核過；月結有填實際金額才算差額（D-2）
+ */
+function apiCostSummary_(caller) {
+  if (!truthy_((caller.user || {}).is_admin)) return apiForbidden_(caller, 'apiCostSummary');
+  var now = apiNow_();
+  var today = taipeiDateKey_(now);
+  var month = today.slice(0, 7);
+  var byApi = {}, byFeature = {}, unpriced = {};
+  apiSheetRecords_(API_USAGE_SHEET).forEach(function (r) {
+    if (taipeiDateKey_(new Date(String(r.ts))).slice(0, 7) !== month) return;
+    if (String(r.priced) === 'N') {
+      var k = r.api_id + '|' + r.model;
+      unpriced[k] = unpriced[k] || { api_id: String(r.api_id), model: String(r.model), count: 0 };
+      unpriced[k].count++;
+      return;
+    }
+    var c = Number(r.cost_usd);
+    if (r.cost_usd === '' || !isFinite(c)) return;
+    byApi[r.api_id] = (byApi[r.api_id] || 0) + c;
+    var f = String(r.feature || '（未標）');
+    byFeature[f] = (byFeature[f] || 0) + c;
+  });
+  var apify = typeof clipsUsage_ === 'function' ? clipsUsage_() : null;
+  if (apify && typeof apify.usd === 'number' && apify.at && taipeiDateKey_(new Date(apify.at)).slice(0, 7) === month) byApi.apify = apify.usd;
+  var list = function (map, key) {
+    return Object.keys(map).map(function (k) { var o = {}; o[key] = k; o.usd = apiRound_(map[k]); return o; })
+      .sort(function (a, b) { return b.usd - a.usd || (a[key] < b[key] ? -1 : 1); });
+  };
+  var apis = list(byApi, 'api_id');
+  var total = apiRound_(apis.reduce(function (s, x) { return s + x.usd; }, 0));
+
+  var latest = {};
+  apiSheetRecords_(API_DAILY_SHEET).forEach(function (r) {
+    if (!latest[r.api_id] || String(r.date) >= String(latest[r.api_id].date)) latest[r.api_id] = r;
+  });
+  var quotas = Object.keys(latest).sort().filter(function (id) { return typeof latest[id].pct === 'number' || Number(latest[id].rate_limited) > 0; })
+    .map(function (id) {
+      var r = latest[id];
+      return { api_id: id, date: String(r.date), used: r.used_in_period === '' ? null : Number(r.used_in_period),
+        quota: r.quota === '' ? null : Number(r.quota), period: String(r.quota_period || ''), pct: typeof r.pct === 'number' ? r.pct : null,
+        rate_limited: Number(r.rate_limited) || 0 };
+    });
+
+  var staleBefore = taipeiDateKey_(new Date(now.getTime() - API_STALE_DAYS * 86400000));
+  var newest = {};
+  apiRegistryRows_().forEach(function (r) {
+    if (r.billing_mode !== 'per_token' || !truthy_(r.active) || !r.model) return;
+    var k = r.api_id + '|' + r.model;
+    var at = String(r.checked_at || '');
+    if (!(k in newest) || at > newest[k].checked_at) newest[k] = { api_id: r.api_id, model: r.model, checked_at: at };
+  });
+  var stale = Object.keys(newest).map(function (k) { return newest[k]; })
+    .filter(function (x) { return !x.checked_at || x.checked_at < staleBefore; })
+    .sort(function (a, b) { return a.model < b.model ? -1 : 1; });
+
+  var actuals = apiSheetRecords_(API_MONTHLY_SHEET).filter(function (r) {
+    return String(r.month) === month && r.actual_amount !== '' && isFinite(Number(r.actual_amount));
+  }).map(function (r) {
+    var cur = String(r.actual_currency || 'USD').toUpperCase();
+    var est = Number(r.est_cost_usd) || 0;
+    return { api_id: String(r.api_id), est_usd: est, actual: Number(r.actual_amount), currency: cur,
+      diff_usd: cur === 'USD' ? apiRound_(Number(r.actual_amount) - est) : null };
+  });
+
+  return { success: true, currency: 'USD', month: month, today: today, total_usd: total, by_api: apis, by_feature: list(byFeature, 'feature'),
+    unpriced: Object.keys(unpriced).sort().map(function (k) { return unpriced[k]; }),
+    quotas: quotas, stale: stale, actuals: actuals, alerts: apiAlerts_(), labels: (function () {
+      var c = apiCatalog_(), o = {};
+      Object.keys(c).forEach(function (k) { o[k] = c[k].label; });
+      return o;
+    })() };
 }

@@ -967,6 +967,8 @@ nav button:active{opacity:.6;}
   <!-- 分期（ADR-014 D-7）：進行中的計畫。轉成分期仍從記帳明細點一筆進去；記帳月清單的分期列照舊顯示 -->
   <!-- 2.0（ADR-021）：只有 isV2() 時進得來。總覽 PR-A 先放骨架（Neil 2026-10-19：純空骨架），Widget 在 PR-B -->
   <section class="view" id="view-overview">
+    <!-- 免費額度用到 100%（ADR-022 D-5）：只給 2.0 管理者。LINE 額度用完時推播發不出去，這裡是備援 -->
+    <div class="sys-warn" id="v2QuotaAlert" hidden></div>
     <!-- 給自己的一段話：固定在總覽頂部、不參與排序（ADR-021 D-6）。跟 1.0 首頁同一份 -->
     <div class="card today-card">
       <button class="self-note" id="v2SelfNote" onclick="editSelfNote()" aria-label="給自己的一段話，點一下編輯">
@@ -1368,7 +1370,7 @@ nav button:active{opacity:.6;}
       </div>
     </div>
 
-    <!-- 💸 用量與成本（ADR-021 D-14）：只在 2.0。1.0 的 Apify 用量照舊在系統設定卡頂端。AI（查/）用量還沒有記錄 -->
+    <!-- 💸 用量與成本（ADR-021 D-14、ADR-022 PR-C）：只在 2.0。1.0 的 Apify 用量照舊在系統設定卡頂端。資料按需載入（apiCostSummary），不進冷開機 -->
     <div class="slot-card" id="costCard" hidden>
       <div class="place-head"><h2>💸 用量與成本</h2></div>
       <div id="costBody"></div>
@@ -1377,7 +1379,7 @@ nav button:active{opacity:.6;}
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap">
         <button class="btn" id="priceCheckBtn" onclick="priceCheck()">🔄 重新查價</button>
       </div>
-      <p class="slot-hint">目前只有收藏（Apify）的用量；AI 用量從 ADR-022 起逐筆記帳，卡片顯示在下一版。單價取自 LiteLLM 社群價目，看過再確認。</p>
+      <p class="slot-hint">金額一律 USD，是依記帳單價的估算（Apify 用它自己回報的實際值）。實際帳單可填在 Sheet 的 api_cost_monthly，有填才顯示差額。單價取自 LiteLLM 社群價目，看過再確認。</p>
     </div>
 
     <!-- ⏱️ 效能紀錄（ADR-012 D-7）。摘要由雲端算好，點開才抓。刪舊紀錄是手動的，不開排程 -->
@@ -1632,6 +1634,8 @@ const PERF_PENDING_MAX=20;          // 跟雲端一個請求收的上限一樣
 const PERF_ALERT_ROWS=30000;
 let perfPending=[], perfRows=0, perfSummaryCache=null;
 let lastRequestId={};               // action → 最近一次請求的 request_id：開機／輪詢量完耗時時拿來配對（ADR-019 B-3）
+let apiAlerts=[];                    // [{ api_id, label, pct, date, period }]：免費額度用到 100%（ADR-022 D-5，只有管理員）
+let costSummary=null, costLoading=false;   // 用量與成本卡的資料（apiCostSummary，按需載入）
 let unauthAlert=null;               // { ts, bad_token }：未驗證請求某一小時暴增（ADR-014 D-15）
 let clipsUsage=null;                // { usd, at, error, done, total, rate }：Apify 本月用量＋收藏成功率（RD-HF1，只有管理員會拿到）
 let groupNames={};                  // 群組 ID → 名稱：只含畫面上任務用到的群組，開機時帶回（任務列「👥 群組名」）
@@ -1834,6 +1838,7 @@ function applyBootSession(j){
   perfRows = typeof j.perf_rows==='number' ? j.perf_rows : 0;   // 只有管理員會拿到
   unauthAlert = j.unauth_alert || null;                           // 同上：最近 24 小時有沒有一小時 bad_token 暴增
   clipsUsage = j.clips_usage && typeof j.clips_usage==='object' ? j.clips_usage : null;   // 同上（RD-HF1）
+  apiAlerts = Array.isArray(j.api_alerts) ? j.api_alerts : [];   // 同上（ADR-022 D-5）：免費額度用到 100%
   if(j.group_names && typeof j.group_names==='object') groupNames=j.group_names;
   // 首頁「今天」層（ADR-018）：自己的一段話只在開機帶（輪詢不帶，它只有自己會改）；郵件摘要只給管理者＋feat_gmail
   if(typeof j.self_note==='string' && !selfNoteEditing) selfNote=j.self_note;
@@ -3284,12 +3289,60 @@ function v2PlaceCards(){
     if(card && host && host.appendChild && card.parentNode!==host) host.appendChild(card);
   });
 }
-/* 用量與成本（2.0 管理）：目前只有 Apify，資料是 boot 帶的 clips_usage */
+/* 用量與成本（2.0 管理，ADR-022 PR-C）：第一次打開才向雲端要摘要（不進冷開機）；收藏成功率仍用 boot 帶的 clips_usage */
 function renderCostCard(){
   const on=isV2() && isAdmin();
   setHidden('costCard', !on);
   const el=document.getElementById('costBody');
-  if(on && el) el.innerHTML=clipsUsageHtml(clipsUsage) || '<div class="empty-hint">還沒有用量資料（排程總管跑過一次就會有）</div>';
+  if(!on || !el) return;
+  if(!costSummary && !costLoading) loadCostSummary();
+  el.innerHTML=quotaAlertHtml() + costSummaryHtml(costSummary) + (clipsUsageHtml(clipsUsage)||'');
+}
+async function loadCostSummary(){
+  costLoading=true;
+  let r=null;
+  try{ r=await cloudPost({action:'apiCostSummary', trigger:'manual'}); }catch(e){ r=null; }
+  costLoading=false;
+  costSummary = r || {success:false};
+  renderCostCard();
+}
+function usd(x){ return 'US$'+(x>=1 ? x.toFixed(2) : x>=0.01 ? x.toFixed(3) : x.toFixed(4)); }
+function costBar(part, total){
+  const w = total>0 ? Math.max(2, Math.round(part/total*100)) : 0;
+  return `<div style="height:6px; border-radius:3px; background:var(--accent-soft); margin-top:3px"><div style="height:6px; width:${w}%; border-radius:3px; background:var(--accent)"></div></div>`;
+}
+function costSummaryHtml(d){
+  if(!d) return '<p class="perf-sub">讀取本月用量中…</p>';
+  if(!d.success) return `<div class="sys-warn">⚠️ ${esc(d.error==='forbidden' ? '只有管理者看得到' : '讀不到用量（稍後再開一次）')}</div>`;
+  d=Object.assign({by_api:[], by_feature:[], quotas:[], unpriced:[], stale:[], actuals:[], total_usd:0}, d);
+  const L=d.labels||{}, name=id=>esc(L[id]||id);
+  const apis = d.by_api.length ? d.by_api.map(x=>`<div class="sys-row"><div class="who">${name(x.api_id)}</div><div class="meta">${usd(x.usd)}（${d.total_usd>0?Math.round(x.usd/d.total_usd*100):0}%）${costBar(x.usd,d.total_usd)}</div></div>`).join('')
+    : '<div class="empty-hint">這個月還沒有算得出金額的用量</div>';
+  const featTotal=d.by_feature.reduce((s,x)=>s+x.usd,0);
+  const FEAT={query:'查/', clip_ai:'收藏 AI 整理', diagnose:'診斷', price_check:'查價'};
+  const feats = d.by_feature.length ? `<p class="perf-sub">各功能（AI）</p>`+d.by_feature.map(x=>`<div class="sys-row"><div class="who">${esc(FEAT[x.feature]||x.feature)}</div><div class="meta">${usd(x.usd)}（${featTotal>0?Math.round(x.usd/featTotal*100):0}%）${costBar(x.usd,featTotal)}</div></div>`).join('') : '';
+  const quotas = d.quotas.length ? `<p class="perf-sub">免費額度（最近一天）</p>`+d.quotas.map(q=>{
+    const pct=q.pct, red=pct!=null && pct>=100, warn=pct!=null && pct>=80;
+    const txt = pct!=null ? `${pct}%（${q.used}／${q.quota}，${q.period==='month'?'本月':q.date}）` : `被擋 ${q.rate_limited} 次（${q.date}，速率上限）`;
+    return `<div class="sys-row"><div class="who">${name(q.api_id)}</div><div class="meta"${red?' style="color:var(--danger)"':''}>${warn?'⚠️ ':''}${esc(txt)}${pct!=null?costBar(Math.min(pct,100),100):''}</div></div>`;
+  }).join('') : '';
+  const unpriced = d.unpriced.length ? `<div class="sys-warn">⚠️ 未定價（費用沒算進去）：${d.unpriced.map(u=>esc(u.model)+' '+u.count+' 筆').join('、')}。按「🔄 重新查價」補價後會回填。</div>` : '';
+  const stale = d.stale.length ? `<p class="perf-sub">建議重新核價（超過 90 天或還沒核過）：${d.stale.map(s=>esc(s.model)).join('、')}</p>` : '';
+  const actuals = d.actuals.length ? `<p class="perf-sub">實際帳單對帳</p>`+d.actuals.map(a=>`<div class="sys-row"><div class="who">${name(a.api_id)}</div><div class="meta">估 ${usd(a.est_usd)}／實際 ${esc(a.currency)} ${esc(String(a.actual))}${a.diff_usd!=null?`（差 ${a.diff_usd>=0?'+':''}${a.diff_usd.toFixed(2)}）`:'（幣別不同，不算差額）'}</div></div>`).join('') : '';
+  return `<div class="sys-row"><div class="who">${esc(d.month)} 估算</div><div class="meta"><b>${usd(d.total_usd)}</b></div></div>${apis}${feats}${quotas}${unpriced}${stale}${actuals}
+    <div style="margin-top:6px"><button class="btn" onclick="costSummary=null; renderCostCard()">重新整理</button></div>`;
+}
+/* 免費額度用到 100%（ADR-022 D-5）：2.0 總覽頂端＋管理區，只給管理者 */
+function quotaAlertHtml(){
+  if(!(isV2() && isAdmin() && apiAlerts.length)) return '';
+  return `<div class="sys-warn">🛑 免費額度用完：${apiAlerts.map(a=>esc((a.label||a.api_id)+' '+a.pct+'%（'+(a.period==='month'?String(a.date).slice(0,7):a.date)+'）')).join('、')}</div>`;
+}
+function renderQuotaAlert(){
+  const el=document.getElementById('v2QuotaAlert');
+  if(!el) return;
+  const on = isV2() && isAdmin() && apiAlerts.length>0;
+  el.hidden=!on;
+  el.innerHTML = on ? '🛑 免費額度用完：'+apiAlerts.map(a=>esc((a.label||a.api_id)+' '+a.pct+'%')).join('、')+'（設定 ▸ 管理 ▸ 用量與成本）' : '';
 }
 /* 查價（ADR-022 PR-B）：查只回差異，Neil 看過按確認才寫。畫面以「每 1M tokens」顯示，送回雲端換回每 token */
 let priceCheckData=null;
@@ -4466,6 +4519,7 @@ const WIDGET_RENDER={ tasks:()=>renderTasksWidget(), finance:()=>renderFinanceWi
   stocks:()=>renderStocksWidget(), reading:()=>renderReadingWidget(), weather:()=>renderWeatherWidget() };
 function renderOverview(){
   renderSelfNote();
+  renderQuotaAlert();
   if(widgetDrag) return;                       // 拖曳中不重畫：卡片會從手指底下消失
   const list=document.getElementById('widgetList');
   const ids=widgetEditing ? widgetEditList() : visibleWidgets();

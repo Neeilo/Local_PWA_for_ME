@@ -82,9 +82,13 @@ describe('2.0 設定頁：個人／管理（D-14）', () => {
     assert.equal(el('sysClipsUsage').innerHTML, '');
   });
 
-  test('用量還沒有資料：講沒有資料，不是一片空白', () => {
-    const { e, el } = env();
+  // ADR-022 PR-C：卡片改成按需向雲端要本月摘要；載入中、沒有資料都要講出來
+  test('用量還沒有資料：講沒有資料，不是一片空白', async () => {
+    const { e, el } = env({ handler: { apiCostSummary: { success: true, month: '2026-10', total_usd: 0, by_api: [], by_feature: [],
+      quotas: [], unpriced: [], stale: [], actuals: [] } } });
     e.call('renderSettings');
+    assert.match(el('costBody').innerHTML, /讀取本月用量中/);
+    await settle();
     assert.match(el('costBody').innerHTML, /還沒有/);
   });
 });
