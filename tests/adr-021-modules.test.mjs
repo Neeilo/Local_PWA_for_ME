@@ -25,7 +25,8 @@ const TASK_H = ['id', 'text', 'is_completed', 'created_at', 'priority', 'line_id
 const EXP_H = ['id', 'expense_date', 'type', 'category', 'amount', 'note', 'created_at', 'line_id', 'del', 'archive', 'board', 'plan_id', 'plan_seq'];
 const NOTE_H = ['id', 'text', 'created_at', 'line_id', 'del', 'archive', 'board'];
 const REG_H = ['module_id', 'name', 'category', 'icon', 'enabled', 'permission', 'load_policy', 'sort'];
-const ALL = ['expenses', 'plans', 'stocks', 'tasks', 'reminders', 'board', 'notes', 'mail', 'library'];
+// costs：成本概況模組（Neil 2026-10-21，tests/cost-module.test.mjs）
+const ALL = ['expenses', 'plans', 'stocks', 'tasks', 'reminders', 'board', 'notes', 'mail', 'library', 'costs'];
 
 function task(id, owner, extra = {}) {
   const r = { id, text: '任務' + id, is_completed: '', created_at: '2026-10-01T00:00:00.000Z', priority: 'M', line_id: owner,
@@ -64,7 +65,7 @@ const boot = (e, tok = 'tok-me') => post(e, { action: 'boot', trigger: 'cold' },
 /* ========================================================================== */
 describe('沒有登記表（初始化前）：全開，行為不變', () => {
 
-  test('boot 照常帶三張表；附上 9 個模組、全部 enabled', () => {
+  test('boot 照常帶三張表；附上全部模組、全部 enabled', () => {
     const e = env({ tasks: [task('1', ME), reminder('2', ME)] });
     const b = boot(e);
     assert.deepEqual(b.denied, []);
@@ -288,7 +289,7 @@ describe('moduleSet（總開關）與初始化', () => {
     assert.equal(post(e, { action: 'moduleSet', module_id: 'diary', enabled: false, trigger: 'manual' }).error, 'unknown_module');
   });
 
-  test('初始化：建表＋9 列；再跑一次不重複、管理者關掉的不會被打開', () => {
+  test('初始化：建表＋每個模組一列；再跑一次不重複、管理者關掉的不會被打開', () => {
     const e = env();
     e.call('ensureModuleRegistry_');
     assert.deepEqual(rows(e, '_module_registry').map((r) => r.module_id), ALL);
@@ -296,7 +297,7 @@ describe('moduleSet（總開關）與初始化', () => {
     e.sheets._module_registry.values[1][REG_H.indexOf('enabled')] = 'FALSE';
     const again = e.call('ensureModuleRegistry_');
     assert.deepEqual(again.added, []);
-    assert.equal(rows(e, '_module_registry').length, 9);
+    assert.equal(rows(e, '_module_registry').length, ALL.length);
     assert.equal(rows(e, '_module_registry')[0].enabled, 'FALSE');
   });
 
