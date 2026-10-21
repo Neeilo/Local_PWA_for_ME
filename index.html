@@ -1215,6 +1215,9 @@ nav button:active{opacity:.6;}
 
   <!-- 雜記 -->
   <!-- 📬 郵件（ADR-016 T7）：Gmail 控制員處理過的信，唯讀。打開這頁才抓（切區不打雲端） -->
+  <!-- 💸 成本（Neil 2026-10-21）：只有 2.0 管理者。內容是「用量與成本」卡，由 V2_CARD_HOME 搬進來 -->
+  <section class="view" id="view-costs"></section>
+
   <section class="view" id="view-mail">
     <div class="card">
       <div class="seg" id="mailSeg"></div>
@@ -3265,7 +3268,7 @@ const MODULE_SETTINGS = [
   { card:'expCfgCard',    body:'expCfgBody',    view:'expenses', tab:'config', html:d=>sysConfigHtml(d) }
 ];
 /* 群組推播是一整張卡（不是系統設定的分頁）：2.0 把那張卡本身搬到任務頁，id 與動作都不變 */
-const V2_CARD_HOME = { pushCard:'view-tasks' };
+const V2_CARD_HOME = { pushCard:'view-tasks', costCard:'view-costs' };   // 用量與成本卡：2.0 整張搬到「💸 成本」模組頁
 function sysTabsShown(){ return isV2() ? SYS_TABS.filter(([k])=>SYS_TABS_V2.includes(k)) : SYS_TABS; }
 function moduleSettingOn(view){ return isV2() && isAdmin() && viewAllowed(view); }
 function renderModuleSettings(){
@@ -3291,7 +3294,7 @@ function v2PlaceCards(){
 }
 /* 用量與成本（2.0 管理，ADR-022 PR-C）：第一次打開才向雲端要摘要（不進冷開機）；收藏成功率仍用 boot 帶的 clips_usage */
 function renderCostCard(){
-  const on=isV2() && isAdmin();
+  const on=viewAllowed('costs');
   setHidden('costCard', !on);
   const el=document.getElementById('costBody');
   if(!on || !el) return;
@@ -3342,7 +3345,7 @@ function renderQuotaAlert(){
   if(!el) return;
   const on = isV2() && isAdmin() && apiAlerts.length>0;
   el.hidden=!on;
-  el.innerHTML = on ? '🛑 免費額度用完：'+apiAlerts.map(a=>esc((a.label||a.api_id)+' '+a.pct+'%')).join('、')+'（設定 ▸ 管理 ▸ 用量與成本）' : '';
+  el.innerHTML = on ? '🛑 免費額度用完：'+apiAlerts.map(a=>esc((a.label||a.api_id)+' '+a.pct+'%')).join('、')+'（Apps ▸ 成本）' : '';
 }
 /* 查價（ADR-022 PR-B）：查只回差異，Neil 看過按確認才寫。畫面以「每 1M tokens」顯示，送回雲端換回每 token */
 let priceCheckData=null;
@@ -4174,7 +4177,7 @@ function renderDashStocks(){
 
 /* ---------- 導覽 ---------- */
 const TITLES={home:'首頁',expenses:'記帳',plans:'分期',tasks:'任務',notes:'雜記',stocks:'股票',mail:'郵件',
-              overview:'總覽',apps:'Apps',search:'搜尋'};
+              overview:'總覽',apps:'Apps',search:'搜尋',costs:'成本'};
 const V2_VIEWS=['overview','apps','search'];
 /* 分頁能不能進。股票看 feat_stock（ADR-015）。「提醒」不是一頁，是任務頁的一段（ADR-018 C-6） */
 function viewAllowed(name){
@@ -4183,6 +4186,7 @@ function viewAllowed(name){
   if(name==='plans') return featureAllowed('expenses') && moduleOn('plans');     // 分期就是記帳的一部分（各期是 expenses 的列）
   if(name==='reminders') return featureAllowed('tasks') && moduleOn('reminders');
   if(name==='mail') return featureAllowed('mail') && isAdmin();   // 雲端也一樣：非管理者就算被勾了也讀不到（ADR-016 D-7）
+  if(name==='costs') return isV2() && isAdmin() && moduleOn('costs');   // 成本概況：只有 2.0 管理者（雲端 apiCostSummary 同樣擋）
   return featureAllowed(name);
 }
 function currentView(){
@@ -4203,6 +4207,7 @@ function switchView(name){
   if(name==='stocks') renderStocksView();
   if(name==='mail') openMailView();
   if(name==='search') renderSearch();
+  if(name==='costs'){ costSummary=null; renderCostCard(); }   // 每次點進來都拿最新的
   renderModuleSettings();
   window.scrollTo(0,0);
   renderNav();
@@ -4897,7 +4902,7 @@ async function saveWeatherLocation(){
 /* Apps Grid（D-9 ①②）：依登記表的 sort、分類分組；總開關關掉的、沒權限的不出現。
    白板沒有獨立頁，等 PR-B 的 Tasks Widget 再放（Neil 2026-10-19） */
 const APP_VIEW={ expenses:'expenses', plans:'plans', stocks:'stocks', tasks:'tasks', reminders:'reminders',
-  notes:'notes', mail:'mail', library:'library' };
+  notes:'notes', mail:'mail', library:'library', costs:'costs' };
 function appAllowed(m){
   const v=APP_VIEW[m.module_id];
   if(!v || m.enabled===false) return false;

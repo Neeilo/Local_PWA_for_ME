@@ -192,7 +192,7 @@ describe('搬回模組：同一套畫面與動作，畫在模組頁', () => {
   test('群組推播在 2.0 搬到任務頁（同一張卡，動作不變）', () => {
     const { e, el } = env();
     e.call('v2PlaceCards');
-    assert.deepEqual(e.read('__moved'), ['view-tasks<-pushCard']);
+    assert.deepEqual(e.read('__moved'), ['view-tasks<-pushCard', 'view-costs<-costCard']);   // 用量與成本卡搬到「💸 成本」模組（2026-10-21）
     e.call('renderPushCard');
     assert.equal(el('pushCard').hidden, false);
   });

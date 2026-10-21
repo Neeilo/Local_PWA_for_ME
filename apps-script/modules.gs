@@ -33,7 +33,9 @@ var MODULE_DEFAULTS = [
   { module_id: 'board',     name: '白板',   category: '生產力', icon: '📌', permission: '',             sort: 60 },
   { module_id: 'notes',     name: '雜記',   category: '生產力', icon: '📎', permission: 'feat_notes',   sort: 70 },
   { module_id: 'mail',      name: '郵件',   category: '生產力', icon: '📬', permission: 'feat_gmail',   sort: 80 },
-  { module_id: 'library',   name: '圖書館', category: '知識',   icon: '📚', permission: 'feat_clips',   sort: 90 }
+  { module_id: 'library',   name: '圖書館', category: '知識',   icon: '📚', permission: 'feat_clips',   sort: 90 },
+  // 成本概況（Neil 2026-10-21）：只給管理者。關掉只擋「看」與查價，callApi_ 的記帳照常（不可以斷帳）
+  { module_id: 'costs',     name: '成本',   category: '系統',   icon: '💸', permission: 'is_admin',     sort: 100 }
 ];
 
 /** 功能 → 擁有那張表的模組。canUse_ 靠它讓總開關一處擋住所有讀寫路徑 */

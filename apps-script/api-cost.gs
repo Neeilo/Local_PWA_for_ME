@@ -559,6 +559,13 @@ var API_BIG_CHANGE = 0.5;                                   // 變動超過 50% 
 var API_LITELLM_PREFIX = { gemini: ['gemini/'], openai: ['openai/'], claude: ['anthropic/'] };
 var API_QUOTA_PERIODS = ['', 'day', 'month', 'minute', 'once'];
 
+/** 管理者＋「💸 成本」模組開著才放行；回 null＝放行，否則回拒絕的回應 */
+function apiAdminGate_(caller, action) {
+  if (!truthy_((caller.user || {}).is_admin)) return apiForbidden_(caller, action);
+  if (!moduleOn_('costs')) return moduleOffDenied_('costs', action, '成本', caller.line_id);
+  return null;
+}
+
 function apiForbidden_(caller, action) {
   logTransaction_(API_LOG_SOURCE, '失敗', 'PWA ' + action, '只有管理者可以查價、改價', 'code=forbidden', '', caller.line_id);
   return { error: 'forbidden', permanent: true };
@@ -616,7 +623,8 @@ function apiSamePrice_(a, b) {
  * 另附額度型的目前值，給畫面手動改。**不寫 Sheet**
  */
 function apiPriceCheck_(caller) {
-  if (!truthy_((caller.user || {}).is_admin)) return apiForbidden_(caller, 'apiPriceCheck');
+  var gate = apiAdminGate_(caller, 'apiPriceCheck');
+  if (gate) return gate;
   var res;
   try { res = callApi_('litellm', API_LITELLM_URL, { method: 'get', muteHttpExceptions: true }, { feature: 'price_check' }); }
   catch (err) { return { error: 'fetch_failed', detail: String(err && err.message || err) }; }
@@ -672,7 +680,8 @@ function apiPriceNum_(v, optional) {
  * 寫完清單價快取，再把排隊中的用量先落地，回填這次補到價的 priced=N 列（已有費用的列不動）
  */
 function apiPriceApply_(caller, body) {
-  if (!truthy_((caller.user || {}).is_admin)) return apiForbidden_(caller, 'apiPriceApply');
+  var gate = apiAdminGate_(caller, 'apiPriceApply');
+  if (gate) return gate;
   var catalog = apiCatalog_();
   apiClearPriceCache_();
   var rows = apiRegistryRows_();
@@ -848,7 +857,8 @@ function apiRound_(x) { return Math.round(x * 1e6) / 1e6; }
  * 額度＝每個 API 最新一天的每日列；未定價清單；核價超過 90 天或從沒核過；月結有填實際金額才算差額（D-2）
  */
 function apiCostSummary_(caller) {
-  if (!truthy_((caller.user || {}).is_admin)) return apiForbidden_(caller, 'apiCostSummary');
+  var gate = apiAdminGate_(caller, 'apiCostSummary');
+  if (gate) return gate;
   var now = apiNow_();
   var today = taipeiDateKey_(now);
   var month = today.slice(0, 7);
