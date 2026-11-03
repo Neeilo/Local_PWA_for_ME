@@ -2757,10 +2757,28 @@ function clientPerfRows_(list) {
     if (!/^[A-Za-z]{1,32}$/.test(action)) return;
     if (PERF_TRIGGERS.indexOf(p.trigger) === -1) return;
     if (typeof ms !== 'number' || !isFinite(ms) || ms < 0 || ms > PERF_CLIENT_MS_MAX) return;
-    out.push({ action: action, trigger: p.trigger, client_ms: Math.round(ms),
-               request_id: perfRequestId_(p.request_id), ui: perfUi_(p.ui), at: p.at });
+    var row = { action: action, trigger: p.trigger, client_ms: Math.round(ms),
+                request_id: perfRequestId_(p.request_id), ui: perfUi_(p.ui), at: p.at };
+    // ADR-023 D-12（首頁重畫量測）：一列彙整一分鐘，rows＝次數、stages＝分項計數。只收形狀對的，夾帶不了內容
+    if (typeof p.rows === 'number' && p.rows >= 0 && p.rows <= 100000 && Math.floor(p.rows) === p.rows) row.rows = p.rows;
+    var st = perfClientStages_(p.stages);
+    if (st) row.stages = st;
+    out.push(row);
   });
   return out;
+}
+
+/** 手機送來的 stages：最多 8 個鍵（英文小寫／底線）、值是非負有限數字；其他鍵直接丟。沒有可收的回 '' */
+function perfClientStages_(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return '';
+  var out = {}, n = 0;
+  Object.keys(v).forEach(function (k) {
+    var x = v[k];
+    if (n >= 8 || !/^[a-z_]{1,16}$/.test(k) || typeof x !== 'number' || !isFinite(x) || x < 0) return;
+    out[k] = Math.round(x * 100) / 100;
+    n++;
+  });
+  return n ? JSON.stringify(out) : '';
 }
 
 /** 手機產生的 ID 只收形狀對的：它會被寫進 Sheet，不能讓任何內容夾帶進來 */
