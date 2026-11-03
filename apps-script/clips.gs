@@ -735,6 +735,72 @@ function clipOwnRow_(caller, action, id) {
   return { sheet: sheet, headers: t.headers, rec: rec };
 }
 
+/* -------------------------------------------------------------------------- */
+/* 圖書館分類（ADR-023 D-7、D-8）                                                 */
+/* -------------------------------------------------------------------------- */
+
+var CLIP_CATEGORIES_HEADERS = ['name', 'icon', 'sort', 'is_active'];
+/** 初始清單（D-8）。現有收藏不自動補分類，讀到再歸 */
+var CLIP_CATEGORY_SEED = [['AI 提示詞', '🤖', 10], ['Claude／開發工具', '🛠', 20], ['副業與內容經營', '💼', 30],
+                          ['成長與心態', '🌱', 40], ['投資', '📈', 50], ['吃喝玩樂', '🍜', 60]];
+
+/**
+ * 分類清單 [{ name, icon, sort, active }]，依 sort 排。停用的也回（已歸類的篇要照樣顯示原名），
+ * 前端的按鈕只列 active。名稱空白的列不算；同名只取第一列
+ */
+function clipCategories_(ss) {
+  var read = sheetRecords_(ss || SpreadsheetApp.getActiveSpreadsheet(), CLIP_CATEGORIES_SHEET, {});
+  if (read.error) return [];
+  var seen = {}, out = [];
+  read.rows.forEach(function (r) {
+    var name = String(r.name == null ? '' : r.name).trim();
+    if (!name || seen[name]) return;
+    seen[name] = true;
+    var active = String(r.is_active == null ? '' : r.is_active).trim();
+    out.push({ name: name, icon: String(r.icon == null ? '' : r.icon).trim(), sort: Number(r.sort) || 0,
+               active: active === '' || truthy_(active) });
+  });
+  return out.sort(function (a, b) { return a.sort - b.sort; });
+}
+
+/**
+ * action=clipCategory { id, category }（D-7）：單選，點一下就存；category='' 清掉（回未分類）。
+ * 只限擁有者（clipOwnRow_）；只收啟用中的分類，其他一律永久拒絕（不讓人夾帶任意字串進表）。
+ * 寫入走 clipsPatch_（同一把 script lock）
+ */
+function clipCategorySet_(caller, id, category) {
+  var own = clipOwnRow_(caller, 'clipCategory', id);
+  if (own.error) return own;
+  var missing = clipColsMissing_(own.headers, ['category']);
+  if (missing) return missing;
+  var name = String(category == null ? '' : category).trim();
+  if (name && !clipCategories_().some(function (c) { return c.active && c.name === name; })) {
+    return { error: 'invalid_category', permanent: true };
+  }
+  try {
+    clipsPatch_(own.sheet, id, { category: name });
+  } catch (err) {
+    return { error: 'busy' };
+  }
+  return { success: true, category: name };
+}
+
+/** 「初始化」：沒有就建表寫初始 6 個分類；已有就一格都不動（Neil 改過的、停用的都留著） */
+function installClipCategories_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(CLIP_CATEGORIES_SHEET);
+  if (sheet && sheet.getLastRow() > 0) {
+    var r = ensureColumnsOnSheet_(sheet, CLIP_CATEGORIES_HEADERS);
+    return { level: r.reason ? 'warn' : 'ok', changed: (r.added || []).length > 0,
+             text: CLIP_CATEGORIES_SHEET + ' 已存在（' + Math.max(sheet.getLastRow() - 1, 0) + ' 個分類）' +
+               ((r.added || []).length ? '，補上：' + r.added.join('、') : '') };
+  }
+  if (!sheet) sheet = ss.insertSheet(CLIP_CATEGORIES_SHEET);
+  var rows = [CLIP_CATEGORIES_HEADERS].concat(CLIP_CATEGORY_SEED.map(function (c) { return [c[0], c[1], c[2], 'TRUE']; }));
+  sheet.getRange(1, 1, rows.length, CLIP_CATEGORIES_HEADERS.length).setValues(rows);
+  return { level: 'ok', changed: true, text: '新建 ' + CLIP_CATEGORIES_SHEET + '（初始 ' + CLIP_CATEGORY_SEED.length + ' 個分類，可在 Sheet 上改名、排序、停用）' };
+}
+
 /** 「初始化」還沒補欄時，寫進去的欄位會被 clipsWriteRow_ 默默略過——先擋下講明（可重試：補完欄就好） */
 function clipColsMissing_(headers, cols) {
   return cols.some(function (c) { return headers.indexOf(c) === -1; }) ? { error: 'not_ready' } : null;
