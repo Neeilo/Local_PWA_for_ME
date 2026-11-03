@@ -51,7 +51,7 @@ function search_(caller, q) {
       var title = String(r.caption || '').split('\n')[0].trim() || String(r.author || '') || clipDomain_(r.url);
       var body = [r.caption, r.note].map(function (x) { return String(x || ''); }).join('\n');
       return { id: r.id, title: title, match: body + '\n' + String(r.author || '') + '\n' + String(r.url || ''), snippetOf: body,
-        date: r.collected_at, at: r.collected_at };
+        date: r.collected_at, at: r.collected_at, tag: String(r.category || '').trim() };     // ADR-023：結果顯示分類
     }));
   }
   var expenses = rowsOf('expenses');
@@ -75,8 +75,10 @@ function searchGroup_(key, label, rows, terms, pick) {
   return {
     key: key, label: label, total: hits.length,
     items: hits.slice(0, SEARCH_MAX_PER_GROUP).map(function (h) {
-      return { id: String(h.id), title: h.title.trim(), snippet: searchSnippet_(h.snippetOf != null ? h.snippetOf : h.match, terms),
+      var item = { id: String(h.id), title: h.title.trim(), snippet: searchSnippet_(h.snippetOf != null ? h.snippetOf : h.match, terms),
         date: searchDate_(h.date) };
+      if (h.tag) item.tag = h.tag;
+      return item;
     })
   };
 }
