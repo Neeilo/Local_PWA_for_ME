@@ -301,6 +301,69 @@ function computeHoldings_(trades) {
   };
 }
 
+/**
+ * 首頁股票 widget 的「今日損益」（ADR-023 D-2、D-3）。純函式；全家持股、不含黃金。
+ *  - 昨天以前就有的股數：（現價 − 昨收）× 股數
+ *  - 報價那天買進的股數：（現價 − 買進均價）× 股數（不是昨收：那些股昨天還不是你的）
+ *  - 報價那天賣出的：不算（屬已實現）——只算現在還留著的股數
+ *  - % ＝ 今日損益 ÷ 基準市值（舊股按昨收、今天買的按買進價）
+ * 「那天」＝報價的日期：盤中是今天；盤後／假日是最近一個交易日的收盤（source=close 的 date）。
+ * 前一交易日只跳週末，不知道國定假日（標籤用；金額用的是報價自帶的昨收，不受影響）。
+ * 沒有非黃金持股 → null（兩格都不出現）；有持股沒報價或沒昨收的不算進去、計 missing。
+ * trades 用 stockPayload_ 已經讀好的那份，不另外讀表
+ */
+function stockTodayPnl_(holdings, trades, quotes, now) {
+  var list = (holdings || []).filter(function (h) { return !isGold_(h.symbol) && Number(h.qty) > 0; });
+  if (!list.length) return null;
+  var todayKey = taipeiDateKey_(now);
+  var qDay = function (q) {
+    if (q.source === 'close' && q.date) return keyValue_(q.date).slice(0, 10);
+    var t = q.time ? Date.parse(q.time) : NaN;
+    return isNaN(t) ? todayKey : taipeiDateKey_(new Date(t));
+  };
+  var live = (trades || []).filter(function (t) { return t && !isTombstone_(t); });
+  var amount = 0, base = 0, priced = 0, missing = 0, day = '';
+  list.forEach(function (h) {
+    var q = (quotes || {})[h.symbol];
+    var price = q ? Number(q.price) : NaN, prev = q ? Number(q.prevClose) : NaN;
+    if (!q || q.prevClose === '' || !isFinite(price) || !isFinite(prev) || prev <= 0) { missing++; return; }
+    var d = qDay(q);
+    if (d > day) day = d;
+    var bq = 0, bcost = 0;
+    live.forEach(function (t) {
+      if (String(t.side || '').trim().toLowerCase() !== 'buy') return;
+      if (String(t.owner == null ? '' : t.owner).trim() !== h.owner || normalizeSymbol_(t.symbol) !== h.symbol) return;
+      if (keyValue_(t.trade_date) !== d) return;
+      var n = Number(t.qty), px = Number(t.price);
+      if (!isFinite(n) || n <= 0 || !isFinite(px)) return;
+      bq += n; bcost += n * px;
+    });
+    var fresh = Math.min(bq, Number(h.qty)), old = Number(h.qty) - fresh, avg = bq ? bcost / bq : 0;
+    amount += old * (price - prev) + fresh * (price - avg);
+    base += old * prev + fresh * avg;
+    priced++;
+  });
+  if (!day) day = todayKey;
+  var intraday = day === todayKey && isTwTradingTime_(now);
+  var baseDate = stockPrevWeekday_(day);
+  var md = function (k) { return Number(k.slice(5, 7)) + '/' + Number(k.slice(8, 10)); };
+  var wd = '日一二三四五六'.charAt(new Date(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10)), 12).getDay());
+  return {
+    amount: priced ? Math.round(amount) : null,
+    pct: priced && base > 0 ? Math.round(amount / base * 10000) / 100 : null,
+    day: day, base_date: baseDate, intraday: intraday,
+    label: intraday ? '今日' : md(day) + '（' + wd + '）vs ' + md(baseDate),
+    missing: missing
+  };
+}
+
+/** 'YYYY-MM-DD' 的前一個平日（跳過六日） */
+function stockPrevWeekday_(key) {
+  var d = new Date(Number(key.slice(0, 4)), Number(key.slice(5, 7)) - 1, Number(key.slice(8, 10)), 12);
+  do { d.setDate(d.getDate() - 1); } while (d.getDay() === 0 || d.getDay() === 6);
+  return keyValue_(d);
+}
+
 function holdingOf_(holdings, owner, symbol) {
   var hit = (holdings || []).filter(function (h) { return h.owner === owner && h.symbol === symbol; })[0];
   return hit || null;
@@ -876,7 +939,8 @@ function stockPayload_(caller, trigger, perf) {
     members: stockMembers_(),
     my_member: memberOf_(caller.user),
     rules: rules.map(function (r) { return plainRecord_(r, STOCK_RULES_HEADERS); }),
-    hits: ruleHits_(rules, q.quotes, holdings)
+    hits: ruleHits_(rules, q.quotes, holdings),
+    today_pnl: stockTodayPnl_(holdings, tradeRows, q.quotes, new Date())     // ADR-023：首頁 widget 的「今日」格
   };
   // 再平衡與現金只給管理者（D-10）：非管理者的回應裡連這兩個鍵都沒有
   if (cfg) {

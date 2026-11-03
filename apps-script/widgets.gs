@@ -15,7 +15,10 @@ var WIDGET_DEFAULT_ORDER = ['tasks', 'finance', 'mail', 'stocks', 'reading', 'we
 /** 開機就帶的（快的）；finance 要讀 expenses、stocks 要打報價，開機後另外要（不拖慢冷開機） */
 var WIDGET_FAST = ['tasks', 'reading', 'mail', 'weather'];
 var WIDGET_CONFIG_HEADERS = ['line_id', 'widget_order', 'widget_hidden', 'widget_pinned', 'apps_pinned', 'apps_hidden',
-  'weather_county', 'weather_district', 'updated_at'];
+  'weather_county', 'weather_district', 'updated_at', 'stock_pins'];
+/** 首頁股票 widget 個人 pin 的自選股（ADR-023 D-1）：最多 4 檔、排成 2×2 */
+var WIDGET_STOCK_PINS_MAX = 4;
+var WIDGET_SYMBOL_RE = /^[0-9A-Z]{1,10}$/;
 
 /** 3 天預報的資料集代碼（F-D0047-xxx），依官方清單；1 週預報是下一個號碼，用不到 */
 var WEATHER_DATASETS = {
@@ -43,6 +46,17 @@ function widgetListOf_(v, allowed) {
   return out;
 }
 
+/** pin 的代號：正規化（全形、小寫）、去重、只收像代號的；Sheet 上手動多填的只取前 4 */
+function widgetSymbolsOf_(v) {
+  var list = Array.isArray(v) ? v : String(v == null ? '' : v).split(',');
+  var out = [];
+  list.forEach(function (x) {
+    var s = normalizeSymbol_(x == null ? '' : x);
+    if (WIDGET_SYMBOL_RE.test(s) && out.indexOf(s) === -1) out.push(s);
+  });
+  return out;
+}
+
 function widgetModuleIds_() {
   return MODULE_DEFAULTS.map(function (m) { return m.module_id; });
 }
@@ -62,7 +76,8 @@ function widgetConfigFromRow_(row) {
     apps_pinned: widgetListOf_(r.apps_pinned, widgetModuleIds_()),
     apps_hidden: widgetListOf_(r.apps_hidden, widgetModuleIds_()),
     weather_county: validLoc ? county : WEATHER_DEFAULT.county,
-    weather_district: validLoc ? district : WEATHER_DEFAULT.district
+    weather_district: validLoc ? district : WEATHER_DEFAULT.district,
+    stock_pins: widgetSymbolsOf_(r.stock_pins).slice(0, WIDGET_STOCK_PINS_MAX)
   };
 }
 
@@ -96,6 +111,12 @@ function widgetConfigSet_(caller, cfg) {
     widget_order: join(c.order), widget_hidden: join(c.hidden), widget_pinned: join(c.pinned),
     apps_pinned: join(c.apps_pinned), apps_hidden: join(c.apps_hidden)
   };
+  if (Array.isArray(c.stock_pins)) {
+    var pins = widgetSymbolsOf_(c.stock_pins);
+    // 第 5 檔整筆拒絕、不默默截掉：截掉的那檔是哪一檔，使用者不會知道（前端先擋，這裡是最後一道）
+    if (pins.length > WIDGET_STOCK_PINS_MAX) return { error: 'pins_full', max: WIDGET_STOCK_PINS_MAX };
+    next.stock_pins = pins.join(',');
+  }
   var locChanged = false;
   if (c.weather_county !== undefined || c.weather_district !== undefined) {
     var county = String(c.weather_county == null ? cur.weather_county : c.weather_county).trim();
@@ -129,6 +150,7 @@ function widgetConfigSet_(caller, cfg) {
     rec.apps_hidden = clean.apps_hidden.join(',');
     rec.weather_county = clean.weather_county;
     rec.weather_district = clean.weather_district;
+    rec.stock_pins = clean.stock_pins.join(',');
     rec.updated_at = new Date().toISOString();
     var values = [headers.map(function (h) { return rec[h] == null ? '' : rec[h]; })];
     if (rows.length) sheet.getRange(rows[0], 1, 1, headers.length).setValues(values);

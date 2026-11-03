@@ -228,11 +228,86 @@ var GMAIL_CONTROLLER_HOUR = 9;       // 與到期提醒同時段（D-8）
 var GMAIL_AUTH_HINT = '在 GAS 編輯器執行一次 authorizeGmailController';
 
 /**
- * 解析器對照表（T5）：名稱 → (內文純文字) → { amount, due_date } | null。純函式，比照 ADR-015 evaluateRule_：
- * 新增一家只加一筆，並在 tests/fixtures/gmail/ 放那家的樣本信（PR-B3，等 Neil 的樣本）。
+ * 解析器對照表（T5）：名稱 → (內文純文字) → { amount, due_date, period? } | null。純函式，比照 ADR-015 evaluateRule_：
+ * 新增一家只加一筆，並在 tests/fixtures/gmail/ 放那家的去識別樣本信。
  * 規則填了這裡沒有的名字 → 當留白（只貼標籤）＋ logs ⚠️
+ *
+ * ADR-023 D-9、D-10：只讀信件內文（不讀 PDF）；只回金額、西元截止日、帳單月份——
+ * 帳號類資訊（中信扣款帳號、兆豐約定帳號）連讀都不讀：每個欄位只看「標籤後面第一個值」。
+ * getPlainBody() 的排版各家不同（表格的 |、標籤與值不同行、全形字），一律先 gmailFlat_ 壓平再找
  */
-var GMAIL_PARSERS = {};
+var GMAIL_PARSERS = {
+  bill_cathay: function (text) {
+    var t = gmailFlat_(text);
+    return { amount: gmailAmountAfter_(t, ['本期應繳總金額']), due_date: gmailDateAfter_(t, ['繳款截止日']) };
+  },
+  bill_ctbc_notice: function (text) {
+    var t = gmailFlat_(text);
+    return { amount: gmailAmountAfter_(t, ['帳單金額']), due_date: gmailDateAfter_(t, ['繳款截止日']),
+             period: gmailMonthAfter_(t, ['帳單月份']) };
+  },
+  bill_mega: function (text) {
+    var t = gmailFlat_(text);
+    return { amount: gmailAmountAfter_(t, ['本期應繳金額']), due_date: gmailDateAfter_(t, ['繳款截止日']) };
+  },
+  // ETC 報帳報表：已扣款，沒有截止日；金額取「實際扣(繳)款金額合計」（不自己加總明細）
+  etag_fetc: function (text) {
+    var t = gmailFlat_(text);
+    return { amount: gmailAmountAfter_(t, ['實際扣(繳)款金額合計']), period: gmailMonthAfter_(t, ['您於']) };
+  }
+};
+/** 各解析器「抓到這些才算 ✅ 已解析」；沒列的＝金額＋截止日 */
+var GMAIL_PARSER_NEEDS = { etag_fetc: ['amount'] };
+var GMAIL_FIELD_LABEL = { amount: '金額', due_date: '截止日' };
+
+/** 全形 → 半形、拿掉所有空白與表格的 |：標籤和值不管隔了幾行幾格，都變成緊鄰 */
+function gmailFlat_(text) {
+  return String(text == null ? '' : text)
+    .replace(/[\uFF01-\uFF5E]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+    .replace(/[\s\u3000|｜]+/g, '');
+}
+
+/** 第一個出現的標籤後面那一段（最多看 40 字：值就在標籤後面，不往下游蕩到別的欄位） */
+function gmailAfter_(flat, labels) {
+  for (var i = 0; i < labels.length; i++) {
+    var at = flat.indexOf(labels[i]);
+    if (at !== -1) return flat.slice(at + labels[i].length, at + labels[i].length + 40);
+  }
+  return '';
+}
+
+/** 標籤後第一個金額（可帶 $、NT$、：；千分位、小數）。抓不到回 '' */
+function gmailAmountAfter_(flat, labels) {
+  var m = /^[^\d]{0,4}?(\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?/.exec(gmailAfter_(flat, labels));
+  if (!m) return '';
+  var n = Number(m[0].replace(/^[^\d]+/, '').replace(/,/g, ''));
+  return isFinite(n) && n > 0 ? Math.round(n) : '';
+}
+
+/** 民國（2～3 位數年）或西元年 → 西元年 */
+function gmailYear_(y) {
+  var n = Number(y);
+  return y.length <= 3 ? n + 1911 : n;
+}
+
+/** 標籤後第一個日期 → 'YYYY-MM-DD'（115/11/13、2026/09/15、2026-09-15、115年11月13日）；不存在的日期回 '' */
+function gmailDateAfter_(flat, labels) {
+  var m = /^[^\d]{0,4}?(\d{2,4})[\/\-.年](\d{1,2})[\/\-.月](\d{1,2})/.exec(gmailAfter_(flat, labels));
+  if (!m) return '';
+  var y = gmailYear_(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  var dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return '';
+  return y + '-' + (mo < 10 ? '0' : '') + mo + '-' + (d < 10 ? '0' : '') + d;
+}
+
+/** 標籤後第一個年月 → 'YYYY-MM'（2026/08、2026年9月、115/08） */
+function gmailMonthAfter_(flat, labels) {
+  var m = /^[^\d]{0,4}?(\d{2,4})[\/\-.年](\d{1,2})(?!\d)/.exec(gmailAfter_(flat, labels));
+  if (!m) return '';
+  var mo = Number(m[2]);
+  if (mo < 1 || mo > 12) return '';
+  return gmailYear_(m[1]) + '-' + (mo < 10 ? '0' : '') + mo;
+}
 
 /** LINE 文字訊息上限 5000 字；留一點給「其餘 N 封」 */
 var GMAIL_SUMMARY_MAX = 5000;
@@ -408,7 +483,8 @@ function gmailProcessMessage_(rule, thread, msg, log, labels, now) {
 
 /**
  * 解析（T5）。沒有解析器（或名字不認得）＝僅標籤、不讀內文；有解析器就讀純文字內文交給它。
- * 回來的值不合法、只抓到一半、解析器丟例外 → 待確認，金額與截止日都留白：**絕不猜值**
+ * 不合法的值一律當沒抓到（**絕不猜值**）。ADR-023（Neil 2026-11-03）：抓到的欄照存、抓不到的留白，
+ * 缺了該解析器的必填欄（GMAIL_PARSER_NEEDS）→ 待確認、warn 寫哪一欄解析不到；解析器丟例外 → 待確認、兩欄留白
  */
 function gmailParse_(rule, msg) {
   var name = String(rule.parser == null ? '' : rule.parser).trim();
@@ -422,10 +498,14 @@ function gmailParse_(rule, msg) {
     return { amount: '', due_date: '', status: GMAIL_STATUS_CHECK,
              warn: '解析器 ' + name + ' 失敗（' + String(err && err.message || err) + '）' };
   }
-  var amount = out && typeof out.amount === 'number' && isFinite(out.amount) && out.amount > 0 ? out.amount : null;
-  var due = out && /^\d{4}-\d{2}-\d{2}$/.test(String(out.due_date || '')) ? String(out.due_date) : null;
-  if (amount === null || due === null) return { amount: '', due_date: '', status: GMAIL_STATUS_CHECK };
-  return { amount: amount, due_date: due, status: GMAIL_STATUS_PARSED };
+  var got = {
+    amount: out && typeof out.amount === 'number' && isFinite(out.amount) && out.amount > 0 ? out.amount : '',
+    due_date: out && /^\d{4}-\d{2}-\d{2}$/.test(String(out.due_date || '')) ? String(out.due_date) : ''
+  };
+  var missing = (GMAIL_PARSER_NEEDS[name] || ['amount', 'due_date']).filter(function (k) { return got[k] === ''; });
+  if (!missing.length) return { amount: got.amount, due_date: got.due_date, status: GMAIL_STATUS_PARSED };
+  return { amount: got.amount, due_date: got.due_date, status: GMAIL_STATUS_CHECK,
+           warn: '解析器 ' + name + ' 解析不到：' + missing.map(function (k) { return GMAIL_FIELD_LABEL[k]; }).join('、') };
 }
 
 /* ---------- 群組彙總（T6） ---------- */
@@ -452,15 +532,18 @@ function gmailDigestText_(items, day) {
   var of = function (type) { return items.filter(function (it) { return it.mail_type === type; }); };
 
   section('🧾 帳單', of('bill').map(function (it) {
-    var parts = ['・' + it.source_name, it.status === GMAIL_STATUS_PARSED ? gmailMoney_(it.amount) : '金額待確認'];
+    // 有解析器卻抓不到的欄位寫「解析不到」（ADR-023）；沒有解析器的照舊「金額待確認」
+    var ran = it.status !== GMAIL_STATUS_LABEL_ONLY;
+    var parts = ['・' + it.source_name, typeof it.amount === 'number' ? gmailMoney_(it.amount) : ran ? '金額解析不到' : '金額待確認'];
     if (it.due_date) parts.push(gmailMd_(it.due_date) + ' 截止');
+    else if (ran) parts.push('截止日解析不到');
     if (it.attachment_url) parts.push('📎 ' + String(it.attachment_url).split('\n')[0]);
     return { text: parts.join('｜'), ids: [it.msg_id] };
   }));
 
   var etag = of('etag');
   if (etag.length) {
-    var parsed = etag.filter(function (it) { return it.status === GMAIL_STATUS_PARSED; });
+    var parsed = etag.filter(function (it) { return typeof it.amount === 'number'; });
     var total = parsed.reduce(function (s, it) { return s + it.amount; }, 0);
     var line = '🚗 eTag ' + etag.length + ' 筆' + (parsed.length ? '，合計 ' + gmailMoney_(total) : '') +
       (parsed.length && parsed.length < etag.length ? '（' + (etag.length - parsed.length) + ' 筆金額待確認）' : '');

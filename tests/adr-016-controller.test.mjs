@@ -491,7 +491,8 @@ describe('T5 解析器骨架', () => {
     assert.equal(row.due_date, '2026-10-25');
   });
 
-  test('抓不到、只抓到一半、解析器丟例外：⚠️ 待確認，金額與截止日都留白（絕不猜值）', () => {
+  // ADR-023（Neil 2026-11-03）改規則：只抓到一半時抓到的那欄照存、缺的留白，不再兩欄全清
+  test('抓不到、只抓到一半、解析器丟例外：⚠️ 待確認；抓不到的欄留白、抓到的照存（絕不猜值）', () => {
     const rules = [Object.assign({}, BILL, { parser: 'demo_v1' }), Object.assign({}, ETAG, { parser: 'half_v1' }),
                    Object.assign({}, NEWS, { mail_type: 'bill', parser: 'boom_v1' })];
     const e = envB({ rules, threads: [
@@ -502,7 +503,7 @@ describe('T5 解析器骨架', () => {
     e.run();
     const rows = logRows(e);
     assert.deepEqual(rows.map((r) => r.status), ['⚠️ 待確認', '⚠️ 待確認', '⚠️ 待確認']);
-    assert.ok(rows.every((r) => r.amount === '' && r.due_date === ''));
+    assert.deepEqual(rows.map((r) => [r.amount, r.due_date]), [['', ''], [500, ''], ['', '']], '只有 half_v1 抓到的金額留下來');
     const tx = e.transactions.find((x) => /^Gmail 控制員/.test(x[2]));
     assert.match(tx[4], /m3 解析器 boom_v1 失敗（格式變了）/);
   });
@@ -552,7 +553,15 @@ describe('T6 群組彙總推播', () => {
     const e = envB({ rules: [BILL_P], threads: [thread('t1', [msg('m1', 'service@cathaybk.com.tw', '國泰世華 9 月帳單', daysAgo(1), [], '改版了')])] });
     e.run();
     assert.match(e.pushes[0].text, /⚠️ 待確認\n・國泰世華 9 月帳單\n　https:\/\/mail\.google\.com\/mail\/u\/0\/#all\/t1/);
-    assert.match(e.pushes[0].text, /🧾 帳單\n・國泰世華｜金額待確認/);
+    assert.match(e.pushes[0].text, /🧾 帳單\n・國泰世華｜金額解析不到｜截止日解析不到/);   // ADR-023：有解析器卻抓不到
+  });
+
+  test('沒有解析器的帳單（只貼標籤）：照舊「金額待確認」，不寫「解析不到」（ADR-023）', () => {
+    const e = envB({ rules: [Object.assign({}, BILL, { notify: 'TRUE' })],
+      threads: [thread('t1', [msg('m1', 'service@cathaybk.com.tw', '國泰帳單', daysAgo(1))])] });
+    e.run();
+    assert.match(e.pushes[0].text, /・國泰世華｜金額待確認/);
+    assert.doesNotMatch(e.pushes[0].text, /解析不到/);
   });
 
   test('0 封不推；notify 沒開的不列；全部都沒開也不推', () => {
