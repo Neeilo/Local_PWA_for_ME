@@ -1616,6 +1616,7 @@ const AUTH_ERRORS = ['no_token','unknown_token','revoked','inactive','token_expi
 const SELF_HANDLED_ACTIONS = ['pairClaim','renewStart','session'];
 function cloudPost(body){
   // 暫存的耗時紀錄搭這班車上去（ADR-012 T1）。那三扇門不經過雲端的驗證，帶了也寫不進去
+  if(!SELF_HANDLED_ACTIONS.includes(body.action)) renderProbeFlush(true);   // 首頁重畫量測：累積中的那段也搭這班（ADR-023 D-12）
   const carry = (!SELF_HANDLED_ACTIONS.includes(body.action) && perfPending.length) ? perfPending.splice(0) : null;
   const started = Date.now();
   // 每個請求一個 ID（ADR-019 B-3）：雲端那列記下它，手機量完這次的耗時也帶著它，摘要才對得起來
@@ -4565,10 +4566,46 @@ function widgetShell(id, title, key, body, st, at, retry){
 const WIDGET_EL={ tasks:'wTasks', finance:'wFinance', mail:'wMail', stocks:'wStocks', reading:'wReading', weather:'wWeather' };
 const WIDGET_RENDER={ tasks:()=>renderTasksWidget(), finance:()=>renderFinanceWidget(), mail:()=>renderMailWidget(),
   stocks:()=>renderStocksWidget(), reading:()=>renderReadingWidget(), weather:()=>renderWeatherWidget() };
+/* ---------- 首頁重畫量測（ADR-023 D-12：只量、不改行為，只在 2.0） ----------
+   每分鐘彙整一列進 perfPending（action=render、rows＝重畫次數、client_ms＝重畫總耗時、
+   stages＝{ touch：手指按著或放開／捲動 800ms 內、shown：停在總覽且看得到、trading：盤中 1 }），
+   搭下一個請求上雲，不另外發請求。Neil 看數字再決定要不要改（只重畫有變的 widget、觸控中延後） */
+const RENDER_PROBE_SPAN=60000, RENDER_TOUCH_GRACE=800;
+let renderProbe=null, renderTouching=false, renderTouchAt=0;
+function renderProbeTouch(down){ renderTouching=!!down; renderTouchAt=Date.now(); }
+function renderProbeScroll(){ renderTouchAt=Date.now(); }
+/* force＝要送請求了：沒滿一分鐘也先帶上去，App 關掉前最後那段才不會遺失 */
+function renderProbeFlush(force){
+  const p=renderProbe;
+  if(!p || (!force && Date.now()-p.start<RENDER_PROBE_SPAN)) return;
+  renderProbe=null;
+  if(!p.n) return;
+  perfPending.push({ action:'render', trigger:'poll', client_ms:Math.round(p.ms), rows:p.n,
+    stages:{ touch:p.touch, shown:p.shown, trading:p.trading?1:0 }, at:p.start, ui:uiTag() });
+  if(perfPending.length>PERF_PENDING_MAX) perfPending=perfPending.slice(-PERF_PENDING_MAX);
+}
+function renderProbeNote(ms){
+  if(!isV2()) return;
+  renderProbeFlush(false);
+  const now=Date.now();
+  const p = renderProbe = renderProbe || { start:now, n:0, ms:0, touch:0, shown:0, trading:false };
+  p.n++; p.ms+=ms;
+  if(renderTouching || now-renderTouchAt<RENDER_TOUCH_GRACE) p.touch++;
+  if(currentView()==='overview' && !document.hidden) p.shown++;
+  if(widgetsMeta && widgetsMeta.trading) p.trading=true;
+}
 function renderOverview(){
   renderSelfNote();
   renderQuotaAlert();
   if(widgetDrag) return;                       // 拖曳中不重畫：卡片會從手指底下消失
+  const t0=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+  try{ renderOverviewBody(); }
+  finally{
+    const t1=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+    try{ renderProbeNote(Math.max(t1-t0,0)); }catch(e){}       // 量測壞掉不影響畫面
+  }
+}
+function renderOverviewBody(){
   const list=document.getElementById('widgetList');
   const ids=widgetEditing ? widgetEditList() : visibleWidgets();
   if(list){
@@ -7002,6 +7039,14 @@ function renderAll(){
     onForeground(Date.now());
   });
   startPolling();
+
+  // 首頁重畫量測用（ADR-023 D-12）：只記「現在手指有沒有按著／剛捲動」，全部 passive、不攔任何手勢
+  try{
+    const opt={passive:true, capture:true};
+    ['touchstart','pointerdown'].forEach(t=>document.addEventListener(t, ()=>renderProbeTouch(true), opt));
+    ['touchend','touchcancel','pointerup','pointercancel'].forEach(t=>document.addEventListener(t, ()=>renderProbeTouch(false), opt));
+    document.addEventListener('scroll', renderProbeScroll, opt);
+  }catch(e){}
 
   if('serviceWorker' in navigator){
     navigator.serviceWorker.register('sw.js').then(reg=>{
