@@ -838,6 +838,18 @@ nav .home-btn,nav .home-btn.active{color:var(--on-accent); box-shadow:var(--shad
 .w-warn{font-size:13px; color:var(--danger);}
 .w-umbrella{font-size:14px; font-weight:600; color:var(--accent);}
 .w-rebal{border-top:1px solid var(--line); padding-top:8px;}
+/* 股票 widget（ADR-023 D-1、D-2）：上方兩格損益、pin 2×2，不再橫向捲動 */
+.stk-pnl,.stk-pins{display:grid; grid-template-columns:1fr 1fr; gap:8px;}
+.stk-pnl > div,.stk-pins button{min-width:0; background:var(--field); border:1.5px solid var(--line); border-radius:10px; padding:8px 10px; text-align:left; color:var(--ink); font-variant-numeric:tabular-nums;}
+.stk-pnl .lbl{display:block; font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.stk-pnl b{display:block; font-size:16px;}
+.stk-pnl small,.stk-pins small{font-size:12px;}
+.stk-pins button.hit{border-color:var(--accent); background:var(--accent-soft);}
+.stk-pins b{display:block; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.w-live{align-self:flex-end; margin-top:-4px;}
+.w-foot{font-size:12px; color:var(--muted);}
+.stk-pin{background:none; border:1px solid var(--line); border-radius:8px; padding:2px 6px; font-size:12px; opacity:.45;}
+.stk-pin.on{opacity:1; border-color:var(--accent);}
 .app-cell{display:flex; flex-direction:column; gap:4px;}
 .app-tile.editing{animation:none; outline:1px dashed var(--line);}
 .app-tools{display:flex; gap:4px; justify-content:center;}
@@ -3812,6 +3824,19 @@ function fmtStk(n, dec){
 }
 function signedStk(n, dec){ return (Number(n)>0?'+':'')+fmtStk(n, dec); }
 function stkTone(n){ return Number(n)>0 ? 'stk-up' : Number(n)<0 ? 'stk-down' : ''; }
+/* 未實現損益（股票頁「持股」與首頁 widget 共用，ADR-023 D-2）：只算股票、有報價的；黃金不抓價、不算 */
+function stockUnrealized(holdings, quotes){
+  let value=0, cost=0, priced=0, missing=0;
+  (holdings||[]).filter(h=>!isGoldSym(h.symbol)).forEach(h=>{
+    const q=(quotes||{})[h.symbol];
+    if(!q){ missing++; return; }
+    value+=q.price*h.qty; cost+=h.cost; priced++;
+  });
+  const pnl=value-cost;
+  return { value, cost, pnl, pct: cost ? pnl/cost*100 : 0, priced, missing };
+}
+/* widget 的價格（D-5）：整數價不帶小數，其餘 2 位 */
+function fmtWPrice(n){ const x=Number(n); return Number.isInteger(x) ? fmtStk(x,0) : fmtStk(x,2); }
 function stkUnit(sym){ return isGoldSym(sym) ? '公克' : '股'; }
 function stockName(sym){
   const q=((stockData||{}).quotes||{})[sym];
@@ -3867,7 +3892,7 @@ function stockWatchHtml(){
     const q=(stockData.quotes||{})[w.symbol];
     const hits=stockHits(w.symbol);
     return `<div class="stk-row${hits.length?' hit':''}">
-      <div class="who">${esc(w.symbol)} ${esc(stockName(w.symbol)||w.name||'')}<small>${esc(quoteStampText(q))}</small></div>
+      <div class="who">${isV2()?stockPinBtn(w.symbol):''}${esc(w.symbol)} ${esc(stockName(w.symbol)||w.name||'')}<small>${esc(quoteStampText(q))}</small></div>
       <div class="num">${q?fmtStk(q.price,4):'—'}<small class="${q?stkTone(q.change):''}">${q&&q.changePct!==''?signedStk(q.changePct,2)+'%':''}</small></div>
       ${hits.length?`<div class="stk-why"><span>🔔 ${hits.map(h=>esc(h.reason)).join('；')}</span><button class="btn-ghost" onclick="pushStockToMe('${esc(w.symbol)}')">推給我</button></div>`:''}
     </div>`;
@@ -3881,11 +3906,10 @@ function stockHoldHtml(){
     .concat(owners).map(o=>`<button class="cat-btn${stockOwnerFilter===o?' sel':''}" onclick="pickStockOwner('${esc(o)}')">${o?esc(o):'全家'}</button>`).join('');
   const shown=all.filter(h=>!stockOwnerFilter || h.owner===stockOwnerFilter);
   const stocks=shown.filter(h=>!isGoldSym(h.symbol)), gold=shown.filter(h=>isGoldSym(h.symbol));
-  let value=0, cost=0, priced=true;
+  const u=stockUnrealized(stocks, stockData.quotes);
   const rows=stocks.map(h=>{
     const q=(stockData.quotes||{})[h.symbol];
     const mv=q ? q.price*h.qty : null;
-    if(mv===null) priced=false; else { value+=mv; cost+=h.cost; }
     const pnl=mv===null ? null : mv-h.cost;
     return `<div class="stk-row">
       <div class="who">${esc(h.symbol)} ${esc(stockName(h.symbol))}<small>${esc(h.owner)}・${fmtStk(h.qty,0)} 股・均價 ${fmtStk(h.avg_cost,2)}</small></div>
@@ -3896,13 +3920,30 @@ function stockHoldHtml(){
       <div class="who">🥇 黃金<small>${esc(h.owner)}・均價 ${fmtStk(h.avg_cost,2)}／公克</small></div>
       <div class="num">${fmtStk(h.qty,2)} 公克<small>投入成本 ${fmtStk(h.cost,0)}</small></div>
     </div>`).join('');
-  const sum = stocks.length ? `<div class="stk-sum">市值 ${fmtStk(value,0)}・未實現損益 <span class="${stkTone(value-cost)}">${signedStk(value-cost,0)}</span>${priced?'':'（有幾檔沒有報價，沒算進去）'}</div>` : '';
+  const sum = stocks.length ? `<div class="stk-sum">市值 ${fmtStk(u.value,0)}・未實現損益 <span class="${stkTone(u.pnl)}">${signedStk(u.pnl,0)}</span>${u.missing?'（有幾檔沒有報價，沒算進去）':''}</div>` : '';
   const rb=rebalHtml();
   return (rb?`<div class="sys-row" style="margin-bottom:8px">${rb}</div>`:'')+`<div class="cat-row" style="margin-bottom:8px">${chips}</div>${sum}`
     + (rows || goldRows ? rows + (goldRows ? `<h2 style="margin-top:12px">黃金（只記錄、不抓價）</h2>${goldRows}` : '')
       : '<div class="empty-hint">沒有持股</div>');
 }
 function pickStockOwner(o){ stockOwnerFilter=o; renderStocksView(); }
+
+/* 首頁 pin（ADR-023 D-1，只在 2.0）：一人一份存 widget_config.stock_pins，最多 4 檔 */
+const STOCK_PINS_MAX=4;
+function stockPins(){ return (widgetCfg().stock_pins)||[]; }
+function stockPinBtn(sym){
+  const on=stockPins().includes(sym);
+  return `<button class="stk-pin${on?' on':''}" aria-label="${on?'取消首頁釘選':'釘選到首頁'}" onclick="toggleStockPin('${esc(sym)}')">📌</button> `;
+}
+async function toggleStockPin(sym){
+  const cur=stockPins();
+  if(!cur.includes(sym) && cur.length>=STOCK_PINS_MAX){ toast(`📌 最多 ${STOCK_PINS_MAX} 檔，先取消一檔`); return; }
+  const next = cur.includes(sym) ? cur.filter(x=>x!==sym) : cur.concat([sym]);
+  const p=saveWidgetConfig({ stock_pins: next });
+  renderStocksView();
+  await p;
+  renderStocksView();
+}
 
 function stockTradesHtml(){
   const list=(stockData.trades||[]).slice().sort((a,b)=>String(b.trade_date).localeCompare(String(a.trade_date)) || String(b.created_at).localeCompare(String(a.created_at)));
@@ -4657,16 +4698,30 @@ function renderMailWidget(){
 function renderStocksWidget(){
   if(!viewAllowed('stocks')){ setHidden('wStocks', true); return; }
   const st = stockFailed ? 'failed' : stockData ? 'ok' : 'loading';
-  widgetShell('wStocks', '📈 股票', 'stocks', ()=>{
-    const watch=(stockData||{}).watch||[];
-    const mini = watch.length ? `<div class="stk-mini">${watch.map(w=>{
-      const q=(stockData.quotes||{})[w.symbol];
-      return `<button class="${stockHits(w.symbol).length?'hit':''}" onclick="goView('stocks')">
-        <b>${esc(w.symbol)}</b>${q?fmtStk(q.price,4):'—'}<br><small class="${q?stkTone(q.change):''}">${q&&q.changePct!==''?signedStk(q.changePct,2)+'%':''}</small></button>`;
-    }).join('')}</div>` : '<div class="empty-hint">還沒有自選股</div>';
-    const rb=rebalHtml();
-    return (widgetsMeta.trading ? '<div class="w-at">盤中</div>' : '') + mini + (rb ? `<div class="w-rebal">${rb}</div>` : '');
-  }, st, stockData ? stockAt : 0, "refreshStock('manual')");
+  // ADR-023 D-1～D-5：兩格損益（全家、不含黃金）→ 個人 pin 2×2 → 再平衡（只管理員）→ 底部說明＋更新時間
+  widgetShell('wStocks', '📈 股票', 'stocks', ()=>stocksWidgetBody(), st, 0, "refreshStock('manual')");
+}
+function stocksWidgetBody(){
+  const sd=stockData||{}, quotes=sd.quotes||{};
+  const hold=(sd.holdings||[]).filter(h=>!isGoldSym(h.symbol));
+  const u=hold.length ? stockUnrealized(hold, quotes) : null;
+  const t=hold.length ? sd.today_pnl : null;
+  const cell=(lbl, amt, pct)=>`<div><span class="lbl">${esc(lbl)}</span>`
+    + (amt==null ? '<b>—</b>' : `<b class="${stkTone(amt)}">${signedStk(amt,0)}</b><small class="${stkTone(amt)}">${pct==null?'':signedStk(pct,2)+'%'}</small>`)
+    + '</div>';
+  const pnl = u ? `<div class="stk-pnl">${cell('未實現損益', u.priced?u.pnl:null, u.priced?u.pct:null)}${cell(t&&t.label||'今日', t?t.amount:null, t?t.pct:null)}</div>` : '';
+  const watchSyms=(sd.watch||[]).map(w=>w.symbol);
+  const pins=stockPins().filter(sym=>watchSyms.includes(sym));
+  const grid = pins.length ? `<div class="stk-pins">${pins.map(sym=>{
+      const q=quotes[sym];
+      return `<button class="${stockHits(sym).length?'hit':''}" onclick="goView('stocks')">
+        <b>${esc(sym)} ${esc(stockName(sym))}</b>${q?fmtWPrice(q.price):'—'}<br><small class="${q?stkTone(q.change):''}">${q&&q.changePct!==''?signedStk(q.changePct,2)+'%':''}</small></button>`;
+    }).join('')}</div>` : '<div class="empty-hint">到股票頁 📌 選最多 4 檔</div>';
+  const rb=rebalHtml();
+  const missing=Math.max(u?u.missing:0, t?t.missing||0:0);
+  const foot=[hold.length?'全家持股・不含黃金':'', missing?`有 ${missing} 檔沒有報價，沒算進去`:'', stockAt?'更新 '+hhmm(stockAt):''].filter(Boolean).join('・');
+  return ((widgetsMeta.trading||sd.trading) ? '<div class="w-at w-live">盤中</div>' : '') + pnl + grid
+    + (rb ? `<div class="w-rebal">${rb}</div>` : '') + (foot ? `<div class="w-foot">${foot}</div>` : '');
 }
 /* 天氣（D-15）：雲端每小時抓、存好的那一份。≥50% 提示帶傘；地點在設定裡改 */
 function renderWeatherWidget(){
@@ -4729,7 +4784,8 @@ async function saveWidgetConfig(patch){
   try{ r=await cloudPost({action:'widgetConfigSet', config:patch, trigger:'write'}); }catch(e){ r=null; }
   if(r && r.success && r.config){ widgetConfig=r.config; renderOverview(); renderApps(); return true; }
   widgetConfig=before; renderOverview(); renderApps();
-  toast(r && r.error==='invalid_location' ? '⚠️ 地點看不懂，請選縣市、填鄉鎮市區（例如 中正區）' : '⚠️ 沒有存到雲端，請稍後再試');
+  toast(r && r.error==='invalid_location' ? '⚠️ 地點看不懂，請選縣市、填鄉鎮市區（例如 中正區）'
+    : r && r.error==='pins_full' ? `📌 最多 ${r.max||4} 檔，先取消一檔` : '⚠️ 沒有存到雲端，請稍後再試');
   return false;
 }
 
