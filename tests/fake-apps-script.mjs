@@ -92,13 +92,17 @@ class FakeRange {
 }
 
 export class FakeSheet {
-  constructor(name, values = [], { autoNumber = false } = {}) {
+  constructor(name, values = [], { autoNumber = false, autoDate = false } = {}) {
     this.name = name;
     this.values = values.map((r) => r.slice());
     this.deletedRows = [];
     // autoNumber：模擬真的 Sheet 把「全是數字的字串」自動轉成數字（'0050' 會變成 50）。
     // 預設關著，既有測試的行為不變；要驗「開頭的 0 會不會被吃掉」的測試才打開
     this.autoNumber = autoNumber;
+    // autoDate：模擬真的 Sheet 把 'YYYY-MM'／'YYYY-MM-DD' 字串自動轉成日期（ADR-023 D-11：
+    // api_cost_monthly 的 '2026-10' 被轉成 2026-10-01，字串比對永遠對不上 → 每次都新增一列）。
+    // 'YYYY-MM' 轉成該月 1 號。預設關著，既有測試的行為不變
+    this.autoDate = autoDate;
     this.textCols = new Set();
   }
 
@@ -107,12 +111,15 @@ export class FakeSheet {
    *  - 純文字欄（setNumberFormat('@')）＋ setValues：原樣存文字；開頭的 ' 會**照字面留下來**
    *  - 一般欄：開頭的 ' 代表強制文字（不會留在值裡）；全是數字的字串變成數字
    *  - appendRow **不管欄位格式**：純文字欄照樣被轉成數字（viaAppend）
+   *  - autoDate：一般欄的 'YYYY-MM'／'YYYY-MM-DD' 變成當地午夜的 Date（'YYYY-MM' 取 1 號）
    */
   coerce(v, col, viaAppend = false) {
-    if (!this.autoNumber || typeof v !== 'string') return v;
+    if ((!this.autoNumber && !this.autoDate) || typeof v !== 'string') return v;
     if (this.textCols.has(col) && !viaAppend) return v;
     if (v.startsWith("'")) return v.slice(1);
-    return /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v;
+    const d = this.autoDate && /^(\d{4})-(\d{2})(?:-(\d{2}))?$/.exec(v.trim());
+    if (d) return new Date(Number(d[1]), Number(d[2]) - 1, d[3] ? Number(d[3]) : 1);
+    return this.autoNumber && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v;
   }
 
   getMaxRows() {
@@ -242,9 +249,10 @@ export class FakeCache {
 }
 
 class FakeSpreadsheet {
-  constructor(sheets, autoNumber = false) {
+  constructor(sheets, autoNumber = false, autoDate = false) {
     this.sheets = sheets;
     this.autoNumber = autoNumber;
+    this.autoDate = autoDate;
   }
 
   getSheetByName(name) {
@@ -257,7 +265,7 @@ class FakeSpreadsheet {
   }
 
   insertSheet(name) {
-    this.sheets[name] = new FakeSheet(name, [], { autoNumber: this.autoNumber });
+    this.sheets[name] = new FakeSheet(name, [], { autoNumber: this.autoNumber, autoDate: this.autoDate });
     return this.sheets[name];
   }
 }
@@ -279,7 +287,7 @@ function fakeFolder() {
   return folder;
 }
 
-export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [], cache = false, overrides = {}, mailImpl = null, tokens = {}, realLogs = false, autoNumber = false, propsWritable = false } = {}) {
+export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extraFiles = [], cache = false, overrides = {}, mailImpl = null, tokens = {}, realLogs = false, autoNumber = false, autoDate = false, propsWritable = false } = {}) {
   const logs = [];              // console.log 的內容
   const transactions = [];      // logTransaction_ 收到的參數
   const pushes = [];            // linePush_ 收到的 (userId, text)
@@ -300,7 +308,8 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
   }
   // autoNumber：所有分頁都照真的 Sheet 把數字字串轉成數字（含之後 insertSheet 建的）
   if (autoNumber) Object.values(sheets).forEach((sh) => { sh.autoNumber = true; });
-  const ss = new FakeSpreadsheet(sheets, autoNumber);
+  if (autoDate) Object.values(sheets).forEach((sh) => { sh.autoDate = true; });
+  const ss = new FakeSpreadsheet(sheets, autoNumber, autoDate);
 
   // 快取預設關著（getScriptCache 丟例外），既有測試的行為一個字都不變。
   // 要測配對的才打開：配對碼只存在快取裡，沒有快取就沒有配對。
