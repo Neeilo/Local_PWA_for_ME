@@ -2924,9 +2924,12 @@ function dueCardStep_(data, params, inGroup, userId, input) {
     }
     var cur = keyValue_(rec.due_date);
     if (truthy_(rec.is_completed) || cur !== data.d) {
+      // ADR-023 D-6：舊卡片（卡片日期＝「那一次」，通常是循環提醒已被 9 點翻頁）與重複按都不是錯誤：
+      // 資料一格都不動、log 記「略過」
       var now = truthy_(rec.is_completed) ? (isReminder_(rec) ? '已處理' : '已完成') : cur ? shortDateLabel_(cur) + ' 到期' : '沒有到期日';
-      logTransaction_('任務', '失敗', input, '舊卡片或重複按，不動作（目前：' + now + '）', 'id=' + data.t + '｜card=' + data.d, rows[0], userId);
-      return '這筆已經更新過（目前：' + now + '）';
+      logTransaction_('任務', '略過', input, '舊卡片或重複按，不動作（目前：' + now + '）', 'id=' + data.t + '｜card=' + data.d, rows[0], userId);
+      if (truthy_(rec.is_completed) || !cur) return '這筆已經更新過（目前：' + now + '）';
+      return cur === lineTodayKey_() ? '已經自動翻到今天了，不用處理 👌' : '已經翻到 ' + shortDateLabel_(cur) + '了，不用處理 👌';
     }
 
     var text = String(rec.text || '(沒有內容)');
