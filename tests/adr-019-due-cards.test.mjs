@@ -256,12 +256,12 @@ describe('只有建立者、冪等、群組回覆、鎖、logs', () => {
     assert.match(tap(e2, MOM, cardFor(e2, '繳管理費', GROUP).pick, { group: true, date: '2026-10-20' }), /^📅 裕仁 改到 10\/20.*：繳管理費$/);
   });
 
-  test('週期提醒的 ✅ 按兩次：只跳一期，第二次回「已經更新過」', () => {
+  test('週期提醒的 ✅ 按兩次：只跳一期，第二次回「已經翻到」（ADR-023 D-6 改文字）', () => {
     const e = env({ tasks: [reminder({ recur_interval: 1, recur_unit: '週' })] });
     const card = cardFor(e, '看牙醫');
     tap(e, ME, card.done);
     const after = snap(e);
-    assert.match(tap(e, ME, card.done), /這筆已經更新過（目前：10\/15.*到期）/);
+    assert.equal(tap(e, ME, card.done), '已經翻到 10/15（四）了，不用處理 👌');
     assert.equal(snap(e), after);
     assert.equal(taskOf(e, '2').due_date, '2026-10-15');
   });
@@ -271,7 +271,7 @@ describe('只有建立者、冪等、群組回覆、鎖、logs', () => {
     const card = cardFor(e, '繳管理費');
     e.sheets.tasks.values[1][TASK_H.indexOf('due_date')] = '2026-10-30';
     const before = snap(e);
-    assert.match(tap(e, ME, card.tmr), /已經更新過（目前：10\/30/);
+    assert.equal(tap(e, ME, card.tmr), '已經翻到 10/30（五）了，不用處理 👌');
     assert.equal(snap(e), before);
   });
 
@@ -325,5 +325,69 @@ describe('前端：已處理的單次提醒收起', () => {
     assert.ok(!html.includes('已處理'));
     assert.ok(html.includes('繳房租'));
     assert.deepEqual(e.read('homeTaskLists().reminders.map(t=>t.id)'), [2]);
+  });
+});
+
+/* ========================================================================== */
+/*
+ * ADR-023 D-6：按到舊卡片（卡片日期 ≠ 目前到期日）不是錯誤。
+ * 為什麼：循環提醒每天 9 點自動翻頁，昨天那張卡片還留在聊天室；10/25～11/1 同一筆被判「舊卡片」6 次，
+ * 每次都記成「失敗」、回一句讓人以為沒成功的「已經更新過」。卡片日期的意思就是「那一次」——
+ * 那一次已經過了，所以資料一格都不動、告訴使用者不用處理，log 記「略過」。
+ */
+describe('ADR-023 D-6：舊卡片改「略過」', () => {
+  const yesterdayCard = (a) => ({ data: a.data.replace('d=2026-10-08', 'd=2026-10-06') });
+  const setDue = (e, key) => { e.sheets.tasks.values[1][TASK_H.indexOf('due_date')] = key; };
+  const skipLogs = (e) => e.transactions.filter((t) => t[0] === '任務' && t[1] === '略過');
+
+  test('循環提醒已翻到今天，按昨天卡片 ✅／⏰：資料不變、回「已經自動翻到今天了」、log 記略過', () => {
+    const e = env({ tasks: [reminder({ recur_interval: 1, recur_unit: '天' })] });
+    const card = cardFor(e, '看牙醫');
+    setDue(e, TODAY);
+    const before = snap(e);
+    for (const a of [card.done, card.tmr]) {
+      assert.equal(tap(e, ME, yesterdayCard(a)), '已經自動翻到今天了，不用處理 👌');
+    }
+    assert.equal(tap(e, ME, yesterdayCard(card.pick), { date: '2026-12-01' }), '已經自動翻到今天了，不用處理 👌');
+    assert.equal(snap(e), before);
+    assert.equal(skipLogs(e).length, 3);
+    assert.ok(!e.transactions.some((t) => t[0] === '任務' && t[1] === '失敗'), '舊卡片不是錯誤');
+  });
+
+  test('目前到期日不是今天：回「已經翻到 MM/DD（週）了」', () => {
+    const e = env({ tasks: [todo()] });
+    const card = cardFor(e, '繳管理費');
+    setDue(e, '2026-10-30');
+    const before = snap(e);
+    assert.equal(tap(e, ME, card.tmr), '已經翻到 10/30（五）了，不用處理 👌');
+    assert.equal(snap(e), before);
+    assert.equal(skipLogs(e).length, 1);
+  });
+
+  test('重複按已完成的卡片：回覆照舊，log 改記略過', () => {
+    const e = env({ tasks: [todo()] });
+    const card = cardFor(e, '繳管理費');
+    tap(e, ME, card.done);
+    const before = snap(e);
+    assert.match(tap(e, ME, card.done), /已經更新過（目前：已完成）/);
+    assert.equal(snap(e), before);
+    assert.equal(skipLogs(e).length, 1);
+    assert.ok(!e.transactions.some((t) => t[0] === '任務' && t[1] === '失敗'));
+  });
+
+  test('當天卡片行為不變：⏰ 照樣改到明天、記成功', () => {
+    const e = env({ tasks: [todo()] });
+    assert.equal(tap(e, ME, cardFor(e, '繳管理費').tmr), '⏰ 明天再提醒');
+    assert.equal(taskOf(e, '1').due_date, '2026-10-08');
+    assert.ok(e.transactions.some((t) => t[0] === '任務' && t[1] === '成功'));
+    assert.equal(skipLogs(e).length, 0);
+  });
+
+  test('非建立者按舊卡片：仍回「由 xx 維護」、記失敗（其他分支不變）', () => {
+    const e = env({ tasks: [todo({ line_id: MOM, origin_chat: GROUP })] });
+    const card = cardFor(e, '繳管理費', GROUP);
+    setDue(e, '2026-10-30');
+    assert.equal(tap(e, ME, card.tmr, { group: true }), '這筆由 裕仁 維護，請他處理 🙏');
+    assert.equal(skipLogs(e).length, 0);
   });
 });
