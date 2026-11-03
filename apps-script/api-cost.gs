@@ -455,11 +455,68 @@ function apiUpdateMonthly_(month) {
   var fresh = [];
   ids.sort().forEach(function (id) {
     var at = -1;
-    existing.forEach(function (v, i) { if (String(v[iM]) === month && String(v[iA]) === id) at = i; });
+    existing.forEach(function (v, i) { if (apiMonthKey_(v[iM]) === month && String(v[iA]) === id) at = i; });
     if (at === -1) fresh.push({ month: month, api_id: id, est_cost_usd: est[id], actual_amount: '', actual_currency: '', note: '' });
     else sheet.getRange(at + 2, iE + 1, 1, 1).setValues([[est[id]]]);
   });
-  if (fresh.length) apiAppendRows_(sheet, fresh);
+  if (fresh.length) { apiMonthTextFormat_(sheet, iM); apiAppendRows_(sheet, fresh); }
+}
+
+/**
+ * 月份欄的比對鍵（ADR-023 D-11）。真的 Sheet 會把寫進去的 '2026-10' 轉成日期 2026-10-01，
+ * 讀回來是 Date（或經 apiSheetRecords_ 變成 '2026-10-01'）；直接 String() 比對永遠對不上，
+ * 於是每次收尾都多一列、對帳也讀不到實際金額。Date 與字串一律先收斂成 YYYY-MM
+ */
+function apiMonthKey_(v) {
+  var s = keyValue_(v);
+  return /^\d{4}-\d{2}(-\d{2})?$/.test(s) ? s.slice(0, 7) : s;
+}
+
+/** 月份欄整欄設純文字：之後寫進去的 '2026-10' 原樣存，不再被轉成日期（格式先、值後，比照 stock 的 symbol 欄） */
+function apiMonthTextFormat_(sheet, iM) {
+  if (iM < 0) return;
+  sheet.getRange(2, iM + 1, Math.max(sheet.getMaxRows() - 1, 1), 1).setNumberFormat('@');
+}
+
+/**
+ * 初始化的一步：清掉 D-11 bug 累積的重複列。同 month＋api_id 只留一列：
+ *  - est_cost_usd 用最後一列（最後 append 的就是最新估算）
+ *  - actual_amount／actual_currency／note 是 Neil 對帳填的：取「最後一個有填」的值，一個都不丟
+ *  - 所有列的月份改存純文字 YYYY-MM；month 或 api_id 空白的列原樣留著
+ * 跟每日收尾（flushApiUsage → apiUpdateMonthly_）搶同一張表，所以拿同一把 script lock。回 { removed } 或 { busy }
+ */
+function apiDedupeMonthly_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(API_MONTHLY_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return { removed: 0 };
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(API_LOCK_MS)) return { busy: true };
+  try {
+    var headers = sheetHeaders_(sheet);
+    var iM = headers.indexOf('month'), iA = headers.indexOf('api_id'), iE = headers.indexOf('est_cost_usd');
+    var keep = ['actual_amount', 'actual_currency', 'note'].map(function (h) { return headers.indexOf(h); })
+      .filter(function (i) { return i !== -1; });
+    var n = sheet.getLastRow() - 1;
+    var values = sheet.getRange(2, 1, n, headers.length).getValues();
+    var out = [], at = {}, typed = false;
+    values.forEach(function (v) {
+      var m = apiMonthKey_(v[iM]), id = String(v[iA] == null ? '' : v[iA]).trim();
+      if (v[iM] instanceof Date) typed = true;
+      if (!m || !id) { out.push(v.slice()); return; }
+      var k = m + '|' + id;
+      if (!(k in at)) { at[k] = out.length; var first = v.slice(); first[iM] = m; out.push(first); return; }
+      var row = out[at[k]];
+      if (iE !== -1) row[iE] = v[iE];
+      keep.forEach(function (j) { if (v[j] !== '' && v[j] != null) row[j] = v[j]; });
+    });
+    var removed = n - out.length;
+    if (!removed && !typed) return { removed: 0 };
+    apiMonthTextFormat_(sheet, iM);
+    sheet.getRange(2, 1, out.length, headers.length).setValues(out);
+    if (removed) sheet.deleteRows(out.length + 2, removed);
+    return { removed: removed };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /** 依表頭順序一次寫進去；列數不夠先補（比照 writePerfRows_） */
@@ -543,6 +600,10 @@ function installApiCost_() {
     changed = true;
     lines.push('價目表登記 ' + add.length + ' 列（AI 單價等「重新查價」帶入，之前費用記為未定價）');
   }
+  var dd = apiDedupeMonthly_();                                   // ADR-023 D-11
+  if (dd.busy) return { level: 'warn', changed: changed,
+    text: (lines.length ? lines.join('\n　') + '\n　' : '') + API_MONTHLY_SHEET + ' 清重複：收尾正在跑，請稍後再傳一次「初始化」' };
+  if (dd.removed) { changed = true; lines.push(API_MONTHLY_SHEET + ' 清掉 ' + dd.removed + ' 列重複（實際金額／備註已保留）'); }
   return { level: 'ok', changed: changed, text: lines.length ? lines.join('\n　') : '四張表與價目表已齊備' };
 }
 
@@ -911,7 +972,7 @@ function apiCostSummary_(caller) {
     .sort(function (a, b) { return a.model < b.model ? -1 : 1; });
 
   var actuals = apiSheetRecords_(API_MONTHLY_SHEET).filter(function (r) {
-    return String(r.month) === month && r.actual_amount !== '' && isFinite(Number(r.actual_amount));
+    return apiMonthKey_(r.month) === month && r.actual_amount !== '' && isFinite(Number(r.actual_amount));
   }).map(function (r) {
     var cur = String(r.actual_currency || 'USD').toUpperCase();
     var est = Number(r.est_cost_usd) || 0;
