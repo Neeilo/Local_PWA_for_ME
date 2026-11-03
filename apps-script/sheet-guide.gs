@@ -46,7 +46,7 @@ function guideRegistry_() {
     { sheet: 'notes', category: '資料', purpose: '雜記（[類別] 內容）',
       writers: 'PWA', readers: 'PWA',
       key: 'id', adr: '' },
-    { sheet: WIDGET_CONFIG_SHEET, category: '資料', purpose: '2.0 總覽的個人設定，一人一列：Widget 順序／隱藏／釘選、Apps 常用／隱藏、天氣地點（縣市＋鄉鎮）',
+    { sheet: WIDGET_CONFIG_SHEET, category: '資料', purpose: '2.0 總覽的個人設定，一人一列：Widget 順序／隱藏／釘選、Apps 常用／隱藏、天氣地點（縣市＋鄉鎮）、首頁股票 pin（stock_pins，最多 4 檔，ADR-023）',
       writers: 'PWA 2.0（只走 widgetConfigSet，只能改自己那列）；「初始化」建表', readers: 'PWA 開機（boot 只帶自己那列）、天氣排程（彙整要抓哪些地點）',
       key: 'line_id', adr: '021' },
     { sheet: MODULE_REGISTRY_SHEET, category: '系統', purpose: '模組登記表＋總開關（enabled：關掉＝所有人、1.0／2.0 都停用，連資料都碰不到）；permission 只是登記給人看，誰能用看 line_users 的 feat_*',
