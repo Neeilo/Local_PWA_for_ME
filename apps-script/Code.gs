@@ -38,6 +38,8 @@ var STOCK_WATCH_SHEET = 'stock_watch';
 var STOCK_RULES_SHEET = 'stock_rules';
 /** IG 收藏（ADR-020，clips.gs）。一般讀寫碰不到：讀只回自己的列、寫只走 clipRetry／clipDelete */
 var CLIPS_SHEET = 'clips';
+/** 圖書館分類清單（ADR-023 D-7）：Neil 在 Sheet 上維護（比照 _expense_config），PWA 只拿 readMany 附帶的整理好的清單 */
+var CLIP_CATEGORIES_SHEET = '_clip_categories';
 var STOCK_DAILY_SHEET = 'stock_daily';
 var STOCK_CONFIG_SHEET = '_stock_config';
 /** GOOGLEFINANCE 備援的公式暫存頁（第三順位報價，見 stock.gs） */
@@ -76,7 +78,7 @@ var GUIDE_SHEET = '_guide';
 var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET,
                     LINE_GROUPS_SHEET, STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET,
                     SELF_NOTES_SHEET, CLIPS_SHEET, MODULE_REGISTRY_SHEET, WIDGET_CONFIG_SHEET,
-                    API_REGISTRY_SHEET, API_USAGE_SHEET, API_DAILY_SHEET, API_MONTHLY_SHEET];
+                    API_REGISTRY_SHEET, API_USAGE_SHEET, API_DAILY_SHEET, API_MONTHLY_SHEET, CLIP_CATEGORIES_SHEET];
 
 /**
  * PWA 連讀都不准讀的分頁（ADR-010 D-8）。
@@ -101,7 +103,7 @@ var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_
 var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET, LINE_GROUPS_SHEET,
                    STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET,
                    SELF_NOTES_SHEET, MODULE_REGISTRY_SHEET, WIDGET_CONFIG_SHEET,
-                   API_REGISTRY_SHEET, API_USAGE_SHEET, API_DAILY_SHEET, API_MONTHLY_SHEET];
+                   API_REGISTRY_SHEET, API_USAGE_SHEET, API_DAILY_SHEET, API_MONTHLY_SHEET, CLIP_CATEGORIES_SHEET];
 
 /**
  * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
@@ -769,6 +771,10 @@ function routePwaSync_(body, perf) {
     var many = perfStage_(perf, 'sheets', function () { return readManyFrom_(ssMany, caller.user, body.sheets, perf); });
     // 2.0 開機不帶群組名（ADR-021 D-1）：進任務頁讀 tasks 時順便要（groups:true）。1.0 不帶這個參數，回應不變
     if (body.groups === true && many.data.tasks) many.group_names = perfStage_(perf, 'groups', function () { return taskGroupNames_(many.data.tasks); });
+    // 圖書館分類（ADR-023 D-7）：讀了 clips 的才帶清單（點開圖書館那一次，不進冷開機）
+    if (many.data && Array.isArray(many.data.clips) && canUse_(caller.user, CLIPS_FEATURE)) {
+      many.clip_categories = perfStage_(perf, 'clip_categories', function () { return clipCategories_(ssMany); });
+    }
     return perfJsonOut_(perf, withExpenseConfig_(many, caller.user, ssMany, Array.isArray(body.sheets) ? body.sheets : [], perf));
   }
   if (body.action === 'read') return jsonOut(readSheetResponse_(body.sheet, perf, caller.user));
@@ -808,6 +814,7 @@ function routePwaSync_(body, perf) {
   if (body.action === 'clipNote') return jsonOut(clipNote_(caller, body.id, body.note, body.revision));
   if (body.action === 'clipAi') return jsonOut(clipAi_(caller, body.id, body.discard === true));
   if (body.action === 'clipAdd') return jsonOut(clipAdd_(caller, body.url));
+  if (body.action === 'clipCategory') return jsonOut(clipCategorySet_(caller, body.id, body.category));
   // 搜尋（ADR-021 PR-F，search.gs）：只搜自己的（白板例外），按了才跑
   if (body.action === 'search') return perfJsonOut_(perf, search_(caller, body.q));
 
