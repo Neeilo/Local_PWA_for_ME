@@ -84,6 +84,12 @@ describe('📝 文字辨識：clipOcr', () => {
     assert.ok(e.transactions.some((t) => t[1] === '成功' && /文字辨識/.test(t[3])));
   });
 
+  test('Google 文件匯出時圖片位置留下的分隔線（________________）濾掉（PR-0 實測每張開頭都有）', () => {
+    const e = env({ texts: { f1: '________________\n\n1. 看懂市場\n提示詞：', f2: '________________\n\n' }, clipsRows: [clip()] });
+    const out = post(e, { action: 'clipOcr', id: 'c1' }).ocr_output;
+    assert.equal(out, '## 01.jpg\n1. 看懂市場\n提示詞：\n\n## 02.jpg\n（無文字）');
+  });
+
   test('讀不到字的那張寫「（無文字）」', () => {
     const e = env({ texts: { f1: '', f2: '內文' }, clipsRows: [clip()] });
     assert.match(post(e, { action: 'clipOcr', id: 'c1' }).ocr_output, /## 01\.jpg\n（無文字）/);
