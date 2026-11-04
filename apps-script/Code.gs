@@ -817,6 +817,7 @@ function routePwaSync_(body, perf) {
   if (body.action === 'clipCategory') return jsonOut(clipCategorySet_(caller, body.id, body.category));
   // 圖片辨識（ADR-024）：按了才跑、一次一篇，只限擁有者
   if (body.action === 'clipOcr') return jsonOut(clipOcr_(caller, body.id, body.discard === true));
+  if (body.action === 'clipVision') return jsonOut(clipVision_(caller, body.id, body.discard === true));
   // 搜尋（ADR-021 PR-F，search.gs）：只搜自己的（白板例外），按了才跑
   if (body.action === 'search') return perfJsonOut_(perf, search_(caller, body.q));
 
