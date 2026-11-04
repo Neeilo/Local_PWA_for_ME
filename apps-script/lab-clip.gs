@@ -293,3 +293,65 @@ function clipVerdicts_(posts, report) {
   };
   return v;
 }
+
+/* ========================================================================== */
+/* ADR-024 PR-0：Drive 文字辨識探針                                              */
+/* ========================================================================== */
+
+/*
+ * probeClipOcr()：編輯器手動執行。回答「Drive 把圖片轉成 Google 文件順手做的 OCR，繁中讀得好不好、一張多久、
+ * 暫存文件有沒有刪乾淨」——PR-A 的 📝 文字辨識用的是同一支 clipOcrImage_（clips.gs）。
+ * 只對指令碼屬性 CLIP_OCR_PROBE_ID 指定的那一篇跑：收藏 id（clips 的 id 欄）或 Drive 資料夾 id 都可以。
+ * 刻意不做：不寫 Sheet、不碰 LINE、不改任何現有函式。結果只印執行記錄（回貼到交棒頁執行日誌）。
+ */
+var CLIP_OCR_PROBE_PROP = 'CLIP_OCR_PROBE_ID';
+var CLIP_OCR_PROBE_PREVIEW = 300;
+
+function probeClipOcr() {
+  return probeClipOcr_();
+}
+
+function probeClipOcr_() {
+  var target = String(PropertiesService.getScriptProperties().getProperty(CLIP_OCR_PROBE_PROP) || '').trim();
+  var report = { ok: false, target: target, images: [], totalMs: 0, leftovers: [] };
+  if (!target) {
+    console.log('❌ 沒設 ' + CLIP_OCR_PROBE_PROP + '：專案設定 → 指令碼屬性，填一篇收藏的 id（clips 的 id 欄）或它的 Drive 資料夾 id，再執行一次');
+    return report;
+  }
+  var rec = clipOcrProbeRec_(target);
+  var images = clipImageList_(rec);
+  console.log('🔎 文字辨識探針｜' + target + (rec.id ? '（收藏 ' + rec.id + '）' : '（當成 Drive 資料夾）') + '｜' + images.length + ' 張圖');
+  if (!images.length) {
+    console.log('❌ 找不到圖片：確認 id 對不對、那篇是不是只存了連結、資料夾裡有沒有 01.jpg 這類檔案');
+    return report;
+  }
+  var token = clipOcrToken_();
+  images.forEach(function (img) {
+    var r = clipOcrImage_(img.id, token);
+    var chars = r.ok && r.text !== CLIP_OCR_NO_TEXT ? r.text.length : 0;
+    report.images.push({ name: img.name, ok: r.ok, chars: chars, ms: r.ms, cleaned: r.cleaned, error: r.error });
+    report.totalMs += r.ms;
+    if (!r.cleaned) report.leftovers.push(r.leftover);
+    console.log((r.ok ? '✅ ' : '❌ ') + img.name + '｜' + (r.ok ? (chars ? chars + ' 字' : CLIP_OCR_NO_TEXT) : r.error) + '｜' + r.ms + ' ms' +
+      (r.cleaned ? '' : '｜⚠️ 暫存文件殘留 ' + r.leftover));
+    if (r.ok && chars) console.log('   ' + r.text.slice(0, CLIP_OCR_PROBE_PREVIEW).replace(/\n/g, '\n   ') + (r.text.length > CLIP_OCR_PROBE_PREVIEW ? '…' : ''));
+  });
+  report.ok = report.images.some(function (x) { return x.ok; });
+  var n = report.images.length;
+  console.log('—— 總結（回貼到交棒頁執行日誌）——');
+  console.log((report.ok ? '✅ ' : '❌ ') + '辨識成功 ' + report.images.filter(function (x) { return x.ok; }).length + '／' + n + ' 張｜讀得出字 ' +
+    report.images.filter(function (x) { return x.chars > 0; }).length + ' 張｜共 ' + report.totalMs + ' ms，平均 ' + Math.round(report.totalMs / n) + ' ms／張');
+  console.log(report.leftovers.length ? '⚠️ 暫存文件殘留 ' + report.leftovers.length + ' 份（到 Drive 搜 tmp_ocr_ 手動刪）：' + report.leftovers.join('、') : '✅ 暫存文件無殘留');
+  console.log('繁中品質要 Neil 對照原圖看一次（探針只能數字數）');
+  return report;
+}
+
+/** CLIP_OCR_PROBE_ID → 收藏那一列；找不到就當成 Drive 資料夾 id */
+function clipOcrProbeRec_(target) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CLIPS_SHEET);
+  if (sheet && sheet.getLastRow() >= 2) {
+    var hit = clipsTable_(sheet).rows.filter(function (x) { return String(x.rec.id) === target; })[0];
+    if (hit) return hit.rec;
+  }
+  return { id: '', drive_folder_id: target, image_ids: '' };
+}
