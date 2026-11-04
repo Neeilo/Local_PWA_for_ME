@@ -1081,19 +1081,30 @@ function clipNote_(caller, id, note, revision) {
 }
 
 /**
- * 給 AI 的提示詞（D-11）：只送文字。原文的圖片沒有送，要它標「圖片內容未辨識」、不編造。
+ * 給 AI 的提示詞（D-11）：只送文字。原文後面依序接兩個圖片辨識結果（ADR-024 D-3，有就放、沒有就省略）。
+ * 規則跟著變：兩個都沒有 → 要它標「圖片內容未辨識」、不編造；有任一個 → 圖片只能依辨識結果。
+ * 總長仍受 CLIP_AI_INPUT_MAX 限制，截斷順序：原文優先、其次 AI 辨識、最後文字辨識（筆記另計）。
  * 只存連結的那篇沒有原文，講明只能讀筆記。純函式
  */
 function clipAiPrompt_(rec) {
-  var body = String(rec.caption || '').slice(0, CLIP_AI_INPUT_MAX);
+  var left = CLIP_AI_INPUT_MAX;
+  var take = function (v) { var t = String(v || '').trim().slice(0, Math.max(0, left)); left -= t.length; return t; };
+  var body = String(rec.caption || '').slice(0, left);
+  left -= body.length;
+  var vision = take(rec.vision_output);
+  var ocr = take(rec.ocr_output);
   var note = String(rec.note || '').slice(0, CLIP_NOTE_MAX);
   var lines = [
     '你是我的閱讀整理助手。用繁體中文整理下面這篇收藏：',
     '1. 先列 3～5 點重點；2. 再列出我的筆記裡的想法或待辦（沒有就略過）。',
-    '規則：只根據下面提供的文字，不要編造；原文附的圖片沒有提供給你，內容提到圖片時標註「（圖片內容未辨識）」；不要開場白。'
+    ocr || vision
+      ? '規則：只根據下面提供的文字，不要編造；原文附的圖片你沒有直接看到，圖片只依下面的辨識結果、不要編造辨識結果以外的內容；不要開場白。'
+      : '規則：只根據下面提供的文字，不要編造；原文附的圖片沒有提供給你，內容提到圖片時標註「（圖片內容未辨識）」；不要開場白。'
   ];
   if (rec.kind === CLIP_LINK) lines.push('這篇只存了連結（' + String(rec.url || '') + '），沒有抓原文，只能根據我的筆記整理。');
   else lines.push('', '【原文】', body || '（沒有內文）');
+  if (ocr) lines.push('', '【圖片文字（文字辨識）】', ocr);
+  if (vision) lines.push('', '【圖片內容（AI 辨識）】', vision);
   lines.push('', '【我的筆記】', note || '（沒有筆記）');
   return lines.join('\n');
 }
@@ -1113,7 +1124,8 @@ function clipAi_(caller, id, discard) {
     logTransaction_(CLIPS_LOG_SOURCE, '成功', 'clipAi ' + id, '捨棄 AI 整理', String(rec.url || ''), '', caller.line_id);
     return { success: true };
   }
-  if (!String(rec.caption || '').trim() && !String(rec.note || '').trim()) return { error: 'empty', permanent: true };
+  // ADR-024 D-3：只有圖的篇，跑過辨識就有東西可整理
+  if (!['caption', 'note', 'ocr_output', 'vision_output'].some(function (k) { return String(rec[k] || '').trim(); })) return { error: 'empty', permanent: true };
   var res = callAi_(clipAiPrompt_(rec), 'clip_ai');
   var who = 'provider=' + res.provider + '｜model=' + res.model;
   if (!res.ok) {
