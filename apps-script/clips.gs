@@ -24,7 +24,9 @@ var CLIPS_HEADERS = ['id', 'line_id', 'source_text', 'url', 'shortcode', 'kind',
   // ADR-021 D-10／D-11：筆記（一篇一份，存檔比對 note_revision）、AI 整理（另存，不覆蓋原文與筆記）。同樣加在最右邊
   'note', 'note_revision', 'note_updated_at', 'ai_output', 'ai_provider', 'ai_at',
   // ADR-024 D-4：📝 文字辨識結果（一篇留最新一份、可捨棄）。同樣加在最右邊
-  'ocr_output', 'ocr_at'];
+  'ocr_output', 'ocr_at',
+  // ADR-024 D-4：🤖 AI 辨識結果（哪一家、什麼時候；一篇留最新一份、可捨棄）
+  'vision_output', 'vision_provider', 'vision_at'];
 var CLIPS_FEATURE = 'feat_clips';
 var CLIPS_LOG_SOURCE = '收藏';
 var CLIPS_PER_ROUND = 5;
@@ -892,6 +894,76 @@ function clipOcr_(caller, id, discard) {
   logTransaction_(CLIPS_LOG_SOURCE, '成功', 'clipOcr ' + id, '文字辨識' + (ok < results.length ? '（' + (results.length - ok) + ' 張失敗）' : '') +
     (skipped ? '（' + skipped + ' 張沒跑完）' : ''), detail, '', caller.line_id);
   return { success: true, ocr_output: text, ocr_at: at, failed: results.length - ok, skipped: skipped };
+}
+
+/** 🤖 AI 辨識（D-6）：單篇最多送幾張；三家都收的圖片格式（HEIC 只有 Gemini 收，一律略過講明）；單張上限（Claude 5MB，留餘裕） */
+var CLIP_VISION_MAX = 10;
+var CLIP_VISION_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
+var CLIP_VISION_MAX_BYTES = 4500000;
+
+/** 給 AI 看圖的提示詞：逐張、照順序、只講看得到的。純函式 */
+function clipVisionPrompt_(names) {
+  return [
+    '你是我的圖片閱讀助手。依序附上一篇收藏的 ' + names.length + ' 張圖片：' + names.join('、') + '。',
+    '用繁體中文逐張整理，每張用「## 檔名」開頭：',
+    '1. 寫出圖上的文字（照原樣、依閱讀順序）；2. 再用一兩句說這張的重點。',
+    '表格逐列轉成文字；圖表講出重點與數字；沒有文字的圖簡短描述內容。',
+    '規則：只描述看得到的，不要推測、不要編造；看不清楚就寫「（看不清楚）」；不要開場白、不要結語。'
+  ].join('\n');
+}
+
+/**
+ * action=clipVision（ADR-024 D-1、D-6）：🤖 AI 辨識，按了才跑、一次一篇、會花錢。用目前選定的那一家（callAiVision_），
+ * 失敗不換家。最多送 CLIP_VISION_MAX 張（超過取前面的、結果末尾註明）；格式不支援或太大的略過並註明。
+ * 結果另存 vision_output／vision_provider／vision_at；失敗不寫半份、舊的留著。discard＝捨棄（清三欄，不呼叫 AI）
+ */
+function clipVision_(caller, id, discard) {
+  var own = clipOwnRow_(caller, discard ? 'clipVisionDiscard' : 'clipVision', id);
+  if (own.error) return own;
+  var missing = clipColsMissing_(own.headers, ['vision_output', 'vision_provider', 'vision_at']);
+  if (missing) return missing;
+  var rec = own.rec;
+  if (discard) {
+    try { clipsPatch_(own.sheet, id, { vision_output: '', vision_provider: '', vision_at: '' }); } catch (err) { return { error: 'busy' }; }
+    logTransaction_(CLIPS_LOG_SOURCE, '成功', 'clipVision ' + id, '捨棄 AI 辨識', String(rec.url || ''), '', caller.line_id);
+    return { success: true };
+  }
+  var all = rec.kind === CLIP_LINK ? [] : clipImageList_(rec);
+  var notes = [];
+  var usable = [];
+  all.forEach(function (img) {
+    if (CLIP_VISION_MIMES.indexOf(String(img.mime).toLowerCase()) === -1) { notes.push(img.name + ' 格式不支援（' + (img.mime || '未知') + '），沒有送'); return; }
+    usable.push(img);
+  });
+  var picked = usable.slice(0, CLIP_VISION_MAX);
+  var images = [];
+  picked.forEach(function (img) {
+    try {
+      var bytes = DriveApp.getFileById(img.id).getBlob().getBytes();
+      if (bytes.length > CLIP_VISION_MAX_BYTES) { notes.push(img.name + ' 太大，沒有送'); return; }
+      images.push({ mime: String(img.mime).toLowerCase(), base64: Utilities.base64Encode(bytes), name: img.name });
+    } catch (err) { notes.push(img.name + ' 讀不到（' + String(err && err.message || err) + '）'); }
+  });
+  if (!images.length) return { error: 'no_images', permanent: true };
+  if (usable.length > CLIP_VISION_MAX) notes.unshift('只看了前 ' + CLIP_VISION_MAX + ' 張（共 ' + usable.length + ' 張）');
+
+  var res = callAiVision_(clipVisionPrompt_(images.map(function (x) { return x.name; })), images, 'clip_vision');
+  var who = 'provider=' + res.provider + '｜model=' + res.model + '｜' + images.length + ' 張';
+  if (!res.ok) {
+    logTransaction_(CLIPS_LOG_SOURCE, '失敗', 'clipVision ' + id, 'AI 辨識失敗：' + (res.reason === 'no_key' ? res.missingKey + ' 未設定' : res.reason),
+      who + '｜' + (res.detail || ''), '', caller.line_id);
+    return { error: res.reason === 'no_key' ? 'no_key' : 'ai_failed', reason: res.reason, label: res.label, missingKey: res.missingKey };
+  }
+  var text = String(res.text || '') + (notes.length ? '\n\n（' + notes.join('；') + '）' : '');
+  var at = new Date().toISOString();
+  try {
+    clipsPatch_(own.sheet, id, { vision_output: text, vision_provider: res.label, vision_at: at });
+  } catch (err) {
+    return { error: 'busy' };
+  }
+  logTransaction_(CLIPS_LOG_SOURCE, '成功', 'clipVision ' + id, 'AI 辨識' + (res.truncated ? '（被截斷）' : ''),
+    who + '｜' + String(rec.url || ''), '', caller.line_id);
+  return { success: true, vision_output: text, vision_provider: res.label, vision_at: at, truncated: !!res.truncated };
 }
 
 /** 錯誤回應的一小段（給 log 與結果看；不含 token——token 只在 header） */

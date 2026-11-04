@@ -3337,7 +3337,7 @@ function costSummaryHtml(d){
   const apis = d.by_api.length ? d.by_api.map(x=>`<div class="sys-row"><div class="who">${name(x.api_id)}</div><div class="meta">${usd(x.usd)}（${d.total_usd>0?Math.round(x.usd/d.total_usd*100):0}%）${costBar(x.usd,d.total_usd)}</div></div>`).join('')
     : '<div class="empty-hint">這個月還沒有算得出金額的用量</div>';
   const featTotal=d.by_feature.reduce((s,x)=>s+x.usd,0);
-  const FEAT={query:'查/', clip_ai:'收藏 AI 整理', diagnose:'診斷', price_check:'查價'};
+  const FEAT={query:'查/', clip_ai:'收藏 AI 整理', clip_vision:'收藏 AI 辨識', diagnose:'診斷', price_check:'查價'};
   const feats = d.by_feature.length ? `<p class="perf-sub">各功能（AI）</p>`+d.by_feature.map(x=>`<div class="sys-row"><div class="who">${esc(FEAT[x.feature]||x.feature)}</div><div class="meta">${usd(x.usd)}（${featTotal>0?Math.round(x.usd/featTotal*100):0}%）${costBar(x.usd,featTotal)}</div></div>`).join('') : '';
   const quotas = d.quotas.length ? `<p class="perf-sub">免費額度（最近一天）</p>`+d.quotas.map(q=>{
     const pct=q.pct, red=pct!=null && pct>=100, warn=pct!=null && pct>=80;
@@ -5539,7 +5539,7 @@ async function clipAction(action, id, okMsg){
 let clipFilter='all';            // 全部｜未讀（D-13）
 let clipNoteDraft=null;          // { id, text }：打了還沒存的字
 let clipNoteConflict=null;       // { id, note, at }：被拒時雲端的新版
-let clipBusy={note:false, ai:false, ocr:false};
+let clipBusy={note:false, ai:false, ocr:false, vision:false};
 const CLIP_ERRORS={ forbidden:'這篇不是你的收藏，只有收藏的人能改', not_found:'找不到這篇，按「重新整理」看看',
   too_long:'筆記太長（上限 2 萬字）', not_ready:'雲端還沒準備好：請管理者在 LINE 傳「初始化」補欄位',
   empty:'這篇沒有原文也沒有筆記，先寫點筆記再請 AI 整理', no_key:'AI 還沒設定 API key（設定 ▸ AI 供應商）',
@@ -5622,19 +5622,55 @@ function clipStudyHtml(c){
     </div>`;
 }
 /* ---------- 圖片辨識（ADR-024，只在 2.0） ----------
-   📝 文字辨識（免費，Drive OCR）：按了才跑、一次一篇；結果是獨立的「圖片文字」區塊，不混進 AI 整理。
+   📝 文字辨識（免費，Drive OCR）與 🤖 AI 辨識（會花錢，目前選定的那一家）：兩顆並排、各自狀態（跑中只禁用自己那顆），
+   按了才跑、一次一篇；結果各是一個獨立區塊（「圖片文字」「AI 看圖」），不混進 AI 整理。
    只在有圖片的篇出現（只存連結、沒存到圖的不顯示）。重跑會取代、捨棄都要確認；直接送雲端、不進待送佇列（比照 AI 整理） */
 function clipRecogHtml(c){
   if(clipIsLink(c) || !clipImages(c).length) return '';
-  const ocr=String(c.ocr_output||'');
+  const ocr=String(c.ocr_output||''), vis=String(c.vision_output||'');
   return `<div class="clip-block">
       <div class="clip-block-head"><b>🔍 圖片辨識</b><small class="dash-sub">按了才跑，一次一篇</small></div>
-      <div class="row"><button class="btn-ghost" onclick="runClipOcr()" ${clipBusy.ocr?'disabled':''}>${clipBusy.ocr?'辨識中…':'📝 文字辨識（免費）'}</button></div>
+      <div class="row"><button class="btn-ghost" onclick="runClipOcr()" ${clipBusy.ocr?'disabled':''}>${clipBusy.ocr?'辨識中…':'📝 文字辨識（免費）'}</button><button class="btn-ghost" onclick="runClipVision()" ${clipBusy.vision?'disabled':''}>${clipBusy.vision?'AI 辨識中…':'🤖 AI 辨識'}</button></div>
+      <small class="dash-sub">🤖 AI 辨識會產生 AI 費用（用設定裡選的那一家，最多看 10 張）</small>
       ${clipBusy.ocr ? '<div class="empty-hint">辨識中…（一張約幾秒）</div>' : ''}
+      ${clipBusy.vision ? '<div class="empty-hint">AI 看圖中…（約 10～60 秒）</div>' : ''}
       ${ocr ? `<div class="clip-block-head" style="margin-top:10px"><b>📝 圖片文字</b><button class="btn-ghost" onclick="copyClipOcr()">📋 複製</button></div>
         <div class="clip-caption">${esc(ocr)}</div><p class="clip-times">文字辨識・${esc(clipTpe(c.ocr_at))}</p>
         <div class="row"><button class="btn-ghost danger" onclick="discardClipOcr()">捨棄</button></div>` : ''}
+      ${vis ? `<div class="clip-block-head" style="margin-top:10px"><b>🤖 AI 看圖</b><button class="btn-ghost" onclick="copyClipVision()">📋 複製</button></div>
+        <div class="clip-caption">${esc(vis)}</div><p class="clip-times">（由 ${esc(c.vision_provider||'AI')} 辨識）・${esc(clipTpe(c.vision_at))}</p>
+        <div class="row"><button class="btn-ghost danger" onclick="discardClipVision()">捨棄</button></div>` : ''}
     </div>`;
+}
+async function runClipVision(){
+  const c=openClipRec();
+  if(!c || clipBusy.vision) return false;
+  if(c.vision_output && !confirm('重新 AI 辨識會取代現在這一份（會再產生一次費用），確定？')) return false;
+  clipBusy.vision=true; renderClips();
+  let r=null;
+  try{ r=await cloudPost({action:'clipVision', id:String(c.id), trigger:'write'}); }catch(e){ r=null; }
+  clipBusy.vision=false;
+  if(r && r.success){ c.vision_output=r.vision_output; c.vision_provider=r.vision_provider; c.vision_at=r.vision_at; renderClips(); return true; }
+  renderClips();
+  toast('⚠️ '+(!r ? '連不上雲端，這次沒有辨識' : r.error==='ai_failed' ? (r.label||'AI')+' 辨識失敗：'+(r.reason||'原因不明') : (CLIP_ERRORS[r.error]||'沒有辨識成功，稍後再試')));
+  return false;
+}
+async function discardClipVision(){
+  const c=openClipRec();
+  if(!c || clipBusy.vision || !confirm('捨棄這份 AI 看圖？（原文、筆記、圖片文字不受影響）')) return false;
+  let r=null;
+  try{ r=await cloudPost({action:'clipVision', id:String(c.id), discard:true, trigger:'write'}); }catch(e){ r=null; }
+  if(!r || !r.success){ toast('⚠️ '+((r && CLIP_ERRORS[r.error]) || '沒有捨棄成功，稍後再試')); return false; }
+  c.vision_output=''; c.vision_provider=''; c.vision_at='';
+  renderClips(); toast('已捨棄');
+  return true;
+}
+function copyClipVision(){
+  const c=openClipRec();
+  if(!c || !c.vision_output) return;
+  const text=c.vision_output+'\n\n（由 '+(c.vision_provider||'AI')+' 辨識）';
+  try{ navigator.clipboard.writeText(text).then(()=>toast('已複製 📋'), ()=>toast('複製失敗，請長按文字自己選取')); }
+  catch(e){ toast('複製失敗，請長按文字自己選取'); }
 }
 async function runClipOcr(){
   const c=openClipRec();

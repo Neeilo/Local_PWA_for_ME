@@ -433,6 +433,8 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
         (b) => (b > 127 ? b - 256 : b)),
       DigestAlgorithm: { SHA_256: 'SHA_256' },
       newBlob: (data, contentType, name) => ({ data: String(data), contentType, name }),
+      // 圖片轉 base64（ADR-024 🤖 AI 辨識）：真的 getBytes 回 Java 有號位元組，照樣收
+      base64Encode: (bytes) => Buffer.from(Array.from(bytes, (b) => b & 255)).toString('base64'),
       Charset: { UTF_8: 'UTF_8' }
     },
     Date,

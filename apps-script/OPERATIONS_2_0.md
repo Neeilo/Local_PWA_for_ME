@@ -26,7 +26,7 @@
 | `line-router.gs` | LINE 指令與管理者初始化 |
 | `modules.gs` | `_module_registry` 與全域模組總開關 |
 | `widgets.gs` | `widget_config`、天氣快取／排程 |
-| `clips.gs` | Instagram 擷取、圖書館 URL、筆記 revision、AI 整理、📝 文字辨識（ADR-024） |
+| `clips.gs` | Instagram 擷取、圖書館 URL、筆記 revision、AI 整理、📝 文字辨識／🤖 AI 辨識（ADR-024） |
 | `search.gs` | 按需跨模組關鍵字搜尋 |
 | `scheduler.gs` | 唯一 5 分鐘排程總管 |
 | `stock.gs` | 股票報價、自選、交易與規則 |

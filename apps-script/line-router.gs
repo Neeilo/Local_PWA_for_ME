@@ -1506,9 +1506,15 @@ function truncate_(text, max) {
  * 每一種失敗都留 console.log，不靜默吞掉（ADR-006 §B）——
  * 「額度用完」「模型名稱過期」「key 是別的專案的」從外面看全都是同一種安靜的失敗。
  */
-function callGemini_(key, prompt, model, feature) {
+function callGemini_(key, prompt, model, feature, opts) {
   model = model || geminiModel_();     // ADR-017 起由 callAi_ 傳入（GEMINI_MODEL 覆寫照舊），沒傳就照舊自己讀
   var url = GEMINI_API_BASE + '/' + encodeURIComponent(model) + ':generateContent';
+  // ADR-024 🤖 AI 辨識：opts.images 接在文字後面（inline_data）、opts.maxTokens 放寬輸出上限；沒帶 opts 跟以前一模一樣
+  var parts = [{ text: prompt }].concat(((opts && opts.images) || []).map(function (im) {
+    return { inline_data: { mime_type: im.mime, data: im.base64 } };
+  }));
+  var gen = geminiGenConfig_(model);
+  if (opts && opts.maxTokens) gen.maxOutputTokens = opts.maxTokens;
 
   var res;
   try {
@@ -1517,8 +1523,8 @@ function callGemini_(key, prompt, model, feature) {
       contentType: 'application/json',
       headers: { 'x-goog-api-key': key },
       payload: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: geminiGenConfig_(model)
+        contents: [{ parts: parts }],
+        generationConfig: gen
       }),
       muteHttpExceptions: true
     }, { feature: feature, model: model });
@@ -1563,7 +1569,7 @@ function callGemini_(key, prompt, model, feature) {
   if (hitCap) {
     // 有話但沒說完。半截答案仍比沒答案有用，但使用者必須知道它不完整 ——
     // 悄悄把截斷的內容當成完整答案送出去，是這裡最不該犯的錯。
-    console.log('Gemini 回應被 token 上限截斷（maxOutputTokens=' + GEMINI_MAX_OUTPUT_TOKENS +
+    console.log('Gemini 回應被 token 上限截斷（maxOutputTokens=' + gen.maxOutputTokens +
       '，thinking tokens 也計入）：' + truncate_(body, 500));
     return {
       ok: true,

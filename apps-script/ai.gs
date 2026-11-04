@@ -62,11 +62,11 @@ var AI_TRUNCATED_NOTE = '\n\n⚠️ 回應太長被截斷了，問得更具體�
 function aiProviders_() {
   return {
     gemini: { label: 'Gemini', keyProp: 'GEMINI_API_KEY', modelProp: 'GEMINI_MODEL', defaultModel: GEMINI_MODEL_DEFAULT,
-              call: function (key, model, prompt, feature) { return callGemini_(key, prompt, model, feature); } },
+              call: function (key, model, prompt, feature, opts) { return callGemini_(key, prompt, model, feature, opts); } },
     openai: { label: 'OpenAI', keyProp: 'OPENAI_API_KEY', modelProp: 'OPENAI_MODEL', defaultModel: OPENAI_MODEL_DEFAULT,
-              call: function (key, model, prompt, feature) { return callOpenAi_(key, model, prompt, feature); } },
+              call: function (key, model, prompt, feature, opts) { return callOpenAi_(key, model, prompt, feature, opts); } },
     claude: { label: 'Claude', keyProp: 'ANTHROPIC_API_KEY', modelProp: 'CLAUDE_MODEL', defaultModel: CLAUDE_MODEL_DEFAULT,
-              call: function (key, model, prompt, feature) { return callClaude_(key, model, prompt, feature); } }
+              call: function (key, model, prompt, feature, opts) { return callClaude_(key, model, prompt, feature, opts); } }
   };
 }
 var AI_PROVIDER_IDS = ['gemini', 'openai', 'claude'];
@@ -97,6 +97,21 @@ function aiModelEntry_(id, model) {
  * feature：哪個功能在用（query／clip_ai…），記進 api_usage，看得出「哪個功能花多少」（ADR-022）
  */
 function callAi_(prompt, feature) {
+  return aiCall_(prompt, feature, null);
+}
+
+/**
+ * 🤖 AI 辨識（ADR-024 D-6）：同一套選家／缺 key／失敗不換家／錯誤翻譯，多送圖片。
+ * images：[{ mime, base64, name }]，依序送；輸出上限放寬到 AI_VISION_MAX_OUTPUT_TOKENS（十張逐張整理比「查/」長）。
+ * 回傳形狀跟 callAi_ 一樣。圖片 token 各家都算在回應的 input 裡，照 ADR-022 記帳
+ */
+var AI_VISION_MAX_OUTPUT_TOKENS = 8192;
+function callAiVision_(prompt, images, feature) {
+  return aiCall_(prompt, feature, { images: images || [], maxTokens: AI_VISION_MAX_OUTPUT_TOKENS });
+}
+
+/** callAi_／callAiVision_ 共用本體。opts 是 null＝純文字，送出的請求跟改版前一個字都不差 */
+function aiCall_(prompt, feature, opts) {
   var id = aiProviderId_();
   var p = aiProviders_()[id];
   var model = aiModelOf_(p);
@@ -106,7 +121,7 @@ function callAi_(prompt, feature) {
 
   var res;
   try {
-    res = p.call(key, model, prompt, feature) || {};
+    res = (opts ? p.call(key, model, prompt, feature, opts) : p.call(key, model, prompt, feature)) || {};
   } catch (err) {
     res = { ok: false, reason: '程式錯誤', detail: String(err && err.stack || err) };
   }
@@ -168,7 +183,12 @@ function aiLastError_() {
 /* -------------------------------------------------------------------------- */
 /* OpenAI（Chat Completions）                                                  */
 /* -------------------------------------------------------------------------- */
-function callOpenAi_(key, model, prompt, feature) {
+function callOpenAi_(key, model, prompt, feature, opts) {
+  var images = (opts && opts.images) || [];
+  // 有圖（ADR-024）：content 改成陣列，文字在前、圖片用 data URL；沒圖照舊送字串
+  var content = images.length ? [{ type: 'text', text: prompt }].concat(images.map(function (im) {
+    return { type: 'image_url', image_url: { url: 'data:' + im.mime + ';base64,' + im.base64 } };
+  })) : prompt;
   var res;
   try {
     res = callApi_('openai', OPENAI_API_URL, {
@@ -177,8 +197,8 @@ function callOpenAi_(key, model, prompt, feature) {
       headers: { Authorization: 'Bearer ' + key },
       payload: JSON.stringify({
         model: model,
-        messages: [{ role: 'user', content: prompt }],
-        max_completion_tokens: GEMINI_MAX_OUTPUT_TOKENS,
+        messages: [{ role: 'user', content: content }],
+        max_completion_tokens: (opts && opts.maxTokens) || GEMINI_MAX_OUTPUT_TOKENS,
         reasoning_effort: 'low'
       }),
       muteHttpExceptions: true
@@ -213,7 +233,12 @@ function callOpenAi_(key, model, prompt, feature) {
 /* -------------------------------------------------------------------------- */
 /* Claude（Messages API）                                                      */
 /* -------------------------------------------------------------------------- */
-function callClaude_(key, model, prompt, feature) {
+function callClaude_(key, model, prompt, feature, opts) {
+  var images = (opts && opts.images) || [];
+  // 有圖（ADR-024）：image 區塊依序在前、文字在後（官方建議圖片先放）；沒圖照舊送字串
+  var content = images.length ? images.map(function (im) {
+    return { type: 'image', source: { type: 'base64', media_type: im.mime, data: im.base64 } };
+  }).concat([{ type: 'text', text: prompt }]) : prompt;
   var res;
   try {
     res = callApi_('claude', CLAUDE_API_URL, {
@@ -222,9 +247,9 @@ function callClaude_(key, model, prompt, feature) {
       headers: { 'x-api-key': key, 'anthropic-version': CLAUDE_API_VERSION },
       payload: JSON.stringify({
         model: model,
-        max_tokens: GEMINI_MAX_OUTPUT_TOKENS,
+        max_tokens: (opts && opts.maxTokens) || GEMINI_MAX_OUTPUT_TOKENS,
         output_config: { effort: 'low' },
-        messages: [{ role: 'user', content: prompt }]
+        messages: [{ role: 'user', content: content }]
       }),
       muteHttpExceptions: true
     }, { feature: feature, model: model });

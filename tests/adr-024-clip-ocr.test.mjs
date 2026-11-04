@@ -55,11 +55,12 @@ describe('欄位與登記（D-4）', () => {
   test('clips 最右邊加 ocr_output、ocr_at；舊表「初始化」補在最右邊；_guide 說明同步', () => {
     const e = env();
     const H = e.read('CLIPS_HEADERS');
-    assert.deepEqual(H.slice(-2), ['ocr_output', 'ocr_at']);
+    assert.deepEqual(H.slice(H.indexOf('ocr_output'), H.indexOf('ocr_output') + 2), ['ocr_output', 'ocr_at']);
+    assert.ok(H.indexOf('ocr_output') > H.indexOf('ai_at'), '接在 AI 整理欄後面（最右邊）');
     const old = ['id', 'line_id', 'url', 'kind', 'status', 'caption', 'del'];
     const e2 = env({ headers: old });
     e2.call('ensureClipsSheet_');
-    assert.deepEqual(e2.sheets.clips.values[0].slice(-2), ['ocr_output', 'ocr_at']);
+    assert.ok(e2.sheets.clips.values[0].includes('ocr_output') && e2.sheets.clips.values[0].includes('ocr_at'));
     assert.deepEqual(e2.sheets.clips.values[0].slice(0, old.length), old, '既有欄位不動（1.0 照常讀）');
     const guide = JSON.stringify(e.call('guideRegistry_'));
     assert.match(guide, /ocr_output/);
