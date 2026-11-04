@@ -274,7 +274,9 @@ describe('clipRead：開閱讀頁即已讀', () => {
     const at = h.indexOf('video_saved');
     assert.deepEqual(h.slice(at + 1, at + 3), ['read_status', 'last_read_at']);
     // PR-E 的筆記與 AI 欄接在它們後面，一樣只加在最右邊
-    assert.deepEqual(h.slice(at + 3), ['note', 'note_revision', 'note_updated_at', 'ai_output', 'ai_provider', 'ai_at']);
+    assert.deepEqual(h.slice(at + 3, at + 9), ['note', 'note_revision', 'note_updated_at', 'ai_output', 'ai_provider', 'ai_at']);
+    // ADR-024 的圖片辨識欄再接在後面（同樣只加在最右邊）
+    assert.deepEqual(h.slice(at + 9, at + 11), ['ocr_output', 'ocr_at']);
   });
 });
 

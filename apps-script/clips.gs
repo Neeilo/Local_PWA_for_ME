@@ -22,7 +22,9 @@ var CLIPS_HEADERS = ['id', 'line_id', 'source_text', 'url', 'shortcode', 'kind',
   // ADR-021 D-13：閱讀狀態（未讀／已讀兩態；開閱讀頁即已讀＋時間）。加在最右邊，1.0 讀到陌生欄位照常
   'read_status', 'last_read_at',
   // ADR-021 D-10／D-11：筆記（一篇一份，存檔比對 note_revision）、AI 整理（另存，不覆蓋原文與筆記）。同樣加在最右邊
-  'note', 'note_revision', 'note_updated_at', 'ai_output', 'ai_provider', 'ai_at'];
+  'note', 'note_revision', 'note_updated_at', 'ai_output', 'ai_provider', 'ai_at',
+  // ADR-024 D-4：📝 文字辨識結果（一篇留最新一份、可捨棄）。同樣加在最右邊
+  'ocr_output', 'ocr_at'];
 var CLIPS_FEATURE = 'feat_clips';
 var CLIPS_LOG_SOURCE = '收藏';
 var CLIPS_PER_ROUND = 5;
@@ -821,6 +823,75 @@ function clipOcrImage_(fileId, token) {
     }
     out.ms = Date.now() - t0;
   }
+}
+
+/**
+ * GAS 一次最多跑 6 分鐘：一張約幾秒（PR-0 探針實測回填），留 2 分鐘給讀表、寫回。
+ * 時間到就停在那張，已辨識的照存，結果末尾講明幾張沒跑（再按一次從頭重跑）
+ */
+var CLIP_OCR_BUDGET_MS = 240000;
+/** 一格 Sheet 最多 5 萬字；留餘裕給其他欄 */
+var CLIP_OCR_OUTPUT_MAX = 40000;
+
+/** 每張一段：「## 01.jpg」換行接文字；失敗那張寫原因；沒跑完的講明。純函式 */
+function clipOcrFormat_(results, skipped) {
+  var parts = results.map(function (r) {
+    return '## ' + r.name + '\n' + (r.ok ? String(r.text || CLIP_OCR_NO_TEXT) : '（辨識失敗：' + String(r.error || '原因不明') + '）');
+  });
+  if (skipped > 0) parts.push('（時間不夠，後面 ' + skipped + ' 張沒有辨識，再按一次會從頭重跑）');
+  var out = parts.join('\n\n');
+  return out.length > CLIP_OCR_OUTPUT_MAX ? out.slice(0, CLIP_OCR_OUTPUT_MAX) + '\n\n（太長，後面截掉了）' : out;
+}
+
+/**
+ * action=clipOcr（ADR-024 D-1、D-5）：📝 文字辨識，按了才跑、一次一篇。比照 clipAi_：只限擁有者、缺欄 not_ready、
+ * 結果另存 ocr_output／ocr_at（不動原文、筆記、AI 整理）、一篇留最新一份。
+ * 單張失敗不讓整篇失敗；**全部失敗才算失敗**，那時不寫、舊結果留著。discard＝捨棄（清兩欄，不打 API）
+ */
+function clipOcr_(caller, id, discard) {
+  var own = clipOwnRow_(caller, discard ? 'clipOcrDiscard' : 'clipOcr', id);
+  if (own.error) return own;
+  var missing = clipColsMissing_(own.headers, ['ocr_output', 'ocr_at']);
+  if (missing) return missing;
+  var rec = own.rec;
+  if (discard) {
+    try { clipsPatch_(own.sheet, id, { ocr_output: '', ocr_at: '' }); } catch (err) { return { error: 'busy' }; }
+    logTransaction_(CLIPS_LOG_SOURCE, '成功', 'clipOcr ' + id, '捨棄文字辨識', String(rec.url || ''), '', caller.line_id);
+    return { success: true };
+  }
+  var images = rec.kind === CLIP_LINK ? [] : clipImageList_(rec);
+  if (!images.length) return { error: 'no_images', permanent: true };
+
+  var token = clipOcrToken_();
+  var t0 = Date.now();
+  var results = [];
+  var leftovers = [];
+  for (var i = 0; i < images.length; i++) {
+    if (i > 0 && Date.now() - t0 > CLIP_OCR_BUDGET_MS) break;
+    var r = clipOcrImage_(images[i].id, token);
+    if (!r.cleaned) leftovers.push(r.leftover);
+    results.push({ name: images[i].name, ok: r.ok, text: r.text, error: r.error });
+  }
+  var ms = Date.now() - t0;
+  var ok = results.filter(function (x) { return x.ok; }).length;
+  var skipped = images.length - results.length;
+  var detail = results.length + '／' + images.length + ' 張｜成功 ' + ok + '｜' + ms + ' ms' +
+    (leftovers.length ? '｜⚠️ 暫存文件殘留（到 Drive 搜 tmp_ocr_ 手動刪）：' + leftovers.join('、') : '') + '｜' + String(rec.url || '');
+  if (!ok) {
+    var reason = results.length ? String(results[0].error || '原因不明') : '原因不明';
+    logTransaction_(CLIPS_LOG_SOURCE, '失敗', 'clipOcr ' + id, '文字辨識失敗：' + reason, detail, '', caller.line_id);
+    return { error: 'ocr_failed', reason: reason };
+  }
+  var text = clipOcrFormat_(results, skipped);
+  var at = new Date().toISOString();
+  try {
+    clipsPatch_(own.sheet, id, { ocr_output: text, ocr_at: at });
+  } catch (err) {
+    return { error: 'busy' };
+  }
+  logTransaction_(CLIPS_LOG_SOURCE, '成功', 'clipOcr ' + id, '文字辨識' + (ok < results.length ? '（' + (results.length - ok) + ' 張失敗）' : '') +
+    (skipped ? '（' + skipped + ' 張沒跑完）' : ''), detail, '', caller.line_id);
+  return { success: true, ocr_output: text, ocr_at: at, failed: results.length - ok, skipped: skipped };
 }
 
 /** 錯誤回應的一小段（給 log 與結果看；不含 token——token 只在 header） */

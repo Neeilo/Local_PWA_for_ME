@@ -5539,11 +5539,11 @@ async function clipAction(action, id, okMsg){
 let clipFilter='all';            // 全部｜未讀（D-13）
 let clipNoteDraft=null;          // { id, text }：打了還沒存的字
 let clipNoteConflict=null;       // { id, note, at }：被拒時雲端的新版
-let clipBusy={note:false, ai:false};
+let clipBusy={note:false, ai:false, ocr:false};
 const CLIP_ERRORS={ forbidden:'這篇不是你的收藏，只有收藏的人能改', not_found:'找不到這篇，按「重新整理」看看',
   too_long:'筆記太長（上限 2 萬字）', not_ready:'雲端還沒準備好：請管理者在 LINE 傳「初始化」補欄位',
   empty:'這篇沒有原文也沒有筆記，先寫點筆記再請 AI 整理', no_key:'AI 還沒設定 API key（設定 ▸ AI 供應商）',
-  invalid_url:'網址不對，請貼完整的 https:// 網址', busy:'雲端忙碌中，稍後再試' };
+  invalid_url:'網址不對，請貼完整的 https:// 網址', busy:'雲端忙碌中，稍後再試', no_images:'這篇沒有存到圖片，沒有東西可以辨識' };
 function clipIsLink(c){ return !!c && c.kind==='link'; }
 function clipUnread(c){ return !!c && ['done','partial','link'].includes(c.status) && c.read_status!=='read'; }
 function clipDomain(url){ const m=String(url||'').match(/^https?:\/\/([^\/?#:]+)/i); return m ? m[1].toLowerCase().replace(/^www\./,'') : String(url||''); }
@@ -5611,6 +5611,7 @@ function clipStudyHtml(c){
       <textarea id="clipNoteInput" maxlength="20000" placeholder="寫下你的想法…" oninput="clipNoteInput(this.value)">${esc(clipNoteText(c))}</textarea>
       <div class="row" style="margin-top:8px"><button class="btn" onclick="saveClipNote()" ${clipBusy.note?'disabled':''}>${clipBusy.note?'儲存中…':'儲存筆記'}</button></div>
     </div>
+    ${clipRecogHtml(c)}
     <div class="clip-block">
       <div class="clip-block-head"><b>✨ AI 整理</b>${ai?'<button class="btn-ghost" onclick="copyClipAi()">📋 複製</button>':''}</div>
       ${clipIsLink(c) ? '<p class="slot-hint">這篇只存了連結，AI 只讀你的筆記。</p>' : ''}
@@ -5619,6 +5620,54 @@ function clipStudyHtml(c){
           <div class="row"><button class="btn-ghost" onclick="runClipAi()">重做</button><button class="btn-ghost danger" onclick="discardClipAi()">捨棄</button></div>`
         : '<button class="btn" onclick="runClipAi()">✨ AI 整理</button>'}
     </div>`;
+}
+/* ---------- 圖片辨識（ADR-024，只在 2.0） ----------
+   📝 文字辨識（免費，Drive OCR）：按了才跑、一次一篇；結果是獨立的「圖片文字」區塊，不混進 AI 整理。
+   只在有圖片的篇出現（只存連結、沒存到圖的不顯示）。重跑會取代、捨棄都要確認；直接送雲端、不進待送佇列（比照 AI 整理） */
+function clipRecogHtml(c){
+  if(clipIsLink(c) || !clipImages(c).length) return '';
+  const ocr=String(c.ocr_output||'');
+  return `<div class="clip-block">
+      <div class="clip-block-head"><b>🔍 圖片辨識</b><small class="dash-sub">按了才跑，一次一篇</small></div>
+      <div class="row"><button class="btn-ghost" onclick="runClipOcr()" ${clipBusy.ocr?'disabled':''}>${clipBusy.ocr?'辨識中…':'📝 文字辨識（免費）'}</button></div>
+      ${clipBusy.ocr ? '<div class="empty-hint">辨識中…（一張約幾秒）</div>' : ''}
+      ${ocr ? `<div class="clip-block-head" style="margin-top:10px"><b>📝 圖片文字</b><button class="btn-ghost" onclick="copyClipOcr()">📋 複製</button></div>
+        <div class="clip-caption">${esc(ocr)}</div><p class="clip-times">文字辨識・${esc(clipTpe(c.ocr_at))}</p>
+        <div class="row"><button class="btn-ghost danger" onclick="discardClipOcr()">捨棄</button></div>` : ''}
+    </div>`;
+}
+async function runClipOcr(){
+  const c=openClipRec();
+  if(!c || clipBusy.ocr) return false;
+  if(c.ocr_output && !confirm('重新辨識會取代現在這一份圖片文字，確定？')) return false;
+  clipBusy.ocr=true; renderClips();
+  let r=null;
+  try{ r=await cloudPost({action:'clipOcr', id:String(c.id), trigger:'write'}); }catch(e){ r=null; }
+  clipBusy.ocr=false;
+  if(r && r.success){
+    c.ocr_output=r.ocr_output; c.ocr_at=r.ocr_at; renderClips();
+    if(r.failed || r.skipped) toast('⚠️ 有 '+((r.failed||0)+(r.skipped||0))+' 張沒辨識到，詳見結果');
+    return true;
+  }
+  renderClips();
+  toast('⚠️ '+(!r ? '連不上雲端，這次沒有辨識' : r.error==='ocr_failed' ? '文字辨識失敗：'+(r.reason||'原因不明') : (CLIP_ERRORS[r.error]||'沒有辨識成功，稍後再試')));
+  return false;
+}
+async function discardClipOcr(){
+  const c=openClipRec();
+  if(!c || clipBusy.ocr || !confirm('捨棄這份圖片文字？（原文、筆記、AI 整理不受影響）')) return false;
+  let r=null;
+  try{ r=await cloudPost({action:'clipOcr', id:String(c.id), discard:true, trigger:'write'}); }catch(e){ r=null; }
+  if(!r || !r.success){ toast('⚠️ '+((r && CLIP_ERRORS[r.error]) || '沒有捨棄成功，稍後再試')); return false; }
+  c.ocr_output=''; c.ocr_at='';
+  renderClips(); toast('已捨棄');
+  return true;
+}
+function copyClipOcr(){
+  const c=openClipRec();
+  if(!c || !c.ocr_output) return;
+  try{ navigator.clipboard.writeText(String(c.ocr_output)).then(()=>toast('已複製 📋'), ()=>toast('複製失敗，請長按文字自己選取')); }
+  catch(e){ toast('複製失敗，請長按文字自己選取'); }
 }
 async function saveClipNote(){
   const c=openClipRec();
