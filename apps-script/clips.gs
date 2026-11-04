@@ -808,7 +808,9 @@ function clipOcrImage_(fileId, token) {
     var x = callApi_('drive_ocr', CLIP_DRIVE_FILES_API + encodeURIComponent(docId) + '/export?mimeType=' + encodeURIComponent('text/plain'),
       { method: 'get', headers: auth, muteHttpExceptions: true });
     if (x.getResponseCode() !== 200) { out.error = 'HTTP ' + x.getResponseCode() + '（讀文字）' + clipApiBrief_(x); return out; }
-    var text = String(x.getContentText() || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trim();
+    // 匯出的純文字裡，圖片的位置會變成一行 ________________（PR-0 實測每張開頭都有），不是圖上的字
+    var text = String(x.getContentText() || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
+      .replace(/^[ \t]*_{8,}[ \t]*$/gm, '').trim();
     out.ok = true;
     out.text = text || CLIP_OCR_NO_TEXT;
     return out;
