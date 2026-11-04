@@ -1,6 +1,6 @@
 # NeilOS — Personal Command Center
 
-> **2.0 試營運（Pilot）** · 更新：2026-10-20 · [開啟 PWA](https://neeilo.github.io/Local_PWA_for_ME/)
+> **2.0 試營運（Pilot）** · 更新：2026-11-04（`main@3538aa6`，PR #104） · [開啟 PWA](https://neeilo.github.io/Local_PWA_for_ME/)
 
 NeilOS 是個人資訊中樞：早上用 **Dashboard Widgets** 掌握重要資訊，白天用 **LINE** 登錄與查詢，透過 **Library** 閱讀收藏、做筆記，必要時才讓 AI 協助整理。2.0 已上線試營運，**1.0 仍保留切回入口**。詳見 [2.0 Pilot](docs/NEILOS_2_0_PILOT.md)。
 
@@ -9,11 +9,11 @@ NeilOS 是個人資訊中樞：早上用 **Dashboard Widgets** 掌握重要資�
 | 區域 | 功能 | 目前界線 |
 |---|---|---|
 | Shell / Apps | 2.0 切換、五格 Tab、App Grid、模組開關 | UI 模組化，並非獨立安裝的外掛系統 |
-| 總覽 Widgets | 任務、財務、郵件、股票、閱讀、天氣；排序／隱藏／釘選 | 核心摘要先載；財務與股票延後；盤中排序 |
+| 總覽 Widgets | 任務、財務、郵件、股票（pin 最多 4 檔、今日／未實現損益）、閱讀、天氣；排序／隱藏／釘選 | 核心摘要先載；財務與股票延後；盤中排序 |
 | Tasks | Dashboard 勾選完成、雲端確認 | 寫入仍需後端驗證 |
-| Library | Instagram 擷取、其他網址只存連結；閱讀、個人筆記、已讀、按需 AI 整理 | 尚無通用網頁擷取或圖片 OCR；AI 不可假裝看過未解析圖片 |
+| Library | Instagram 擷取、其他網址只存連結；閱讀、個人筆記、已讀、分類；按需 📝 文字辨識（Drive OCR，免費）、🤖 AI 辨識（選定的 AI 看圖，最多 10 張）、AI 整理（會讀辨識結果） | 辨識一律手動、一次一篇，不批次跑舊資料、新收藏不自動跑；尚無通用網頁擷取；辨識文字未納入搜尋；AI 不可假裝看過未辨識的圖片 |
 | Search | 任務、提醒、雜記、圖書館文字與筆記、記帳備註 | 關鍵字搜尋；郵件／股票／筆電檔案不納入 |
-| Settings | Widget 個人化、模組總開關與既有設定拆分 | 模組總開關同時影響 1.0／2.0 |
+| Settings | Widget 個人化、模組總開關與既有設定拆分；💸 用量與成本卡（管理者） | 模組總開關同時影響 1.0／2.0 |
 
 > **尚未實作**：個人筆電遠端 Agent、跨所有來源自動全文擷取、語意／向量搜尋、可安裝 Plugin Marketplace。這些是構想，不是現行承諾。
 
@@ -25,8 +25,10 @@ LINE ─┐
 PWA ──┘                     │
   ├── 2.0 Shell / Apps       ├── modules.gs：模組總開關
   ├── Dashboard Widgets     ├── widgets.gs：摘要設定／天氣
-  ├── Library               ├── clips.gs：收藏／筆記／AI
-  └── Search                └── search.gs：按需關鍵字搜尋
+  ├── Library               ├── clips.gs：收藏／筆記／分類／圖片辨識／AI
+  └── Search                ├── search.gs：按需關鍵字搜尋
+                            ├── ai.gs：AI 供應商（callAi_／callAiVision_）
+                            └── api-cost.gs：外部呼叫唯一出口 callApi_＋用量記帳
 ```
 
 - **Cloud-authoritative**：Sheets／Drive 是權威資料來源；本地只放必要設定、佇列或非權威快取，不得在衝突時靜默覆寫雲端。
@@ -34,6 +36,7 @@ PWA ──┘                     │
 - **模組管理**：`_module_registry` 的 enabled 是全域開關；個人 `feat_*` 是另一層權限。關閉模組不得造成歷史資料被清空。
 - **效能**：2.0 開機只讀核心與必要 Widget 摘要；打開模組才載整筆資料；Widget 失敗應局部降級；不在開機跑搜尋或 AI。
 - **背景作業**：`runScheduler` 每 5 分鐘排程派工；Instagram 收藏異步執行，LINE 收件不等待 Apify。
+- **外部呼叫**：一律走 `callApi_`／`callApiAll_`（ADR-022），PR 檢查 `check-api-exit` 擋直接呼叫 `UrlFetchApp`；AI 照 token 記費用，其餘只記次數。
 
 ## 專案結構
 
@@ -67,7 +70,7 @@ npm run preflight
 
 - 實測 1.0／2.0 冷開機 P50／P95、首頁輪詢及搜尋耗時；勿以單次時間宣稱改善。
 - LINE 建立任務 → Dashboard 顯示 → 點完成 → 雲端再讀確認。
-- Library 保存 → 閱讀 → 筆記 revision 衝突 → 按需 AI → 搜尋找回。
+- Library 保存 → 閱讀 → 筆記 revision 衝突 → 📝 文字辨識／🤖 AI 辨識 → AI 整理不再標「圖片內容未辨識」 → 搜尋找回。
 - 權限與全域模組開關：關閉時不得由 PWA、LINE 或搜尋繞過。
 
 相關文件：[2.0 Pilot](docs/NEILOS_2_0_PILOT.md) · [Apps Script 維運速查](apps-script/OPERATIONS_2_0.md) · [Apps Script 詳細紀錄](apps-script/README.md)。
