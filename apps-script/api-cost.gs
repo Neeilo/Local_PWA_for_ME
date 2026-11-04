@@ -61,6 +61,7 @@ function apiCatalog_() {
     cwa: { label: '氣象署', billing: 'free_quota' },
     jina: { label: 'Jina Reader', billing: 'free_quota' },
     web: { label: '網頁／圖片下載', billing: 'count' },
+    drive_ocr: { label: 'Drive 文字辨識', billing: 'count' },   // ADR-024：一張圖 3 個請求（轉文件、讀文字、刪暫存）
     litellm: { label: 'LiteLLM 價目（查價）', billing: 'count' },
     gas_urlfetch: { label: 'GAS UrlFetch（全部呼叫）', billing: 'free_quota' }
   };

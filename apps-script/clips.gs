@@ -736,6 +736,105 @@ function clipOwnRow_(caller, action, id) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* 圖片辨識的共用零件（ADR-024；探針 lab-clip.gs 的 probeClipOcr 與 📝 文字辨識同一份）     */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * 📝 文字辨識（D-5）：Drive API 把圖片複製成 Google 文件，Google 會順手做 OCR；export 成純文字讀出來，
+ * 暫存文件**永久刪除**（丟垃圾桶會一直佔空間）。三步都走 callApi_('drive_ocr')：Drive API 不收費，只記次數。
+ * 不用 DocumentApp 讀文件：那會多要一個「Google 文件」授權範圍（要重新授權）；export 只用現有 DriveApp 那一把
+ */
+var CLIP_DRIVE_FILES_API = 'https://www.googleapis.com/drive/v3/files/';
+var CLIP_OCR_LANG = 'zh-TW';
+var CLIP_OCR_NO_TEXT = '（無文字）';
+/** 收藏資料夾裡的圖片檔名（01.jpg…）；raw.json、content.md、video.mp4 都不是 */
+var CLIP_IMAGE_NAME_RE = /^\d{2,}\.(jpe?g|png|webp|heic|gif)$/i;
+
+/** 現在這支指令碼的 OAuth token（DriveApp 已授權的範圍）。獨立成函式，測試才換得掉 */
+function clipOcrToken_() {
+  return ScriptApp.getOAuthToken();
+}
+
+/**
+ * 這篇要辨識的圖 → [{ id, name, mime }]，依檔名排序。image_ids 有就用（排程存的順序）；
+ * 沒有就從 drive_folder_id 列 NN.ext。被刪掉、讀不到的那張略過（不讓整篇失敗）。Reels 只存了封面，自然只有一張（D-7）
+ */
+function clipImageList_(rec) {
+  var ids = [];
+  try { ids = JSON.parse(String(rec.image_ids || '[]')); } catch (err) { ids = []; }
+  var out = [];
+  if (Array.isArray(ids) && ids.length) {
+    ids.forEach(function (id) {
+      try {
+        var f = DriveApp.getFileById(String(id));
+        out.push({ id: String(id), name: String(f.getName()), mime: String(f.getMimeType() || '') });
+      } catch (err) { console.log('收藏圖片讀不到（略過）：' + id + '｜' + (err && err.message || err)); }
+    });
+  } else if (rec.drive_folder_id) {
+    try {
+      var it = DriveApp.getFolderById(String(rec.drive_folder_id)).getFiles();
+      while (it.hasNext()) {
+        var g = it.next();
+        var name = String(g.getName());
+        if (CLIP_IMAGE_NAME_RE.test(name)) out.push({ id: String(g.getId()), name: name, mime: String(g.getMimeType() || '') });
+      }
+    } catch (err) { console.log('收藏資料夾讀不到：' + rec.drive_folder_id + '｜' + (err && err.message || err)); }
+  }
+  out = out.filter(function (x) { return !x.mime || /^image\//.test(x.mime); });
+  return out.sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+}
+
+/**
+ * 一張圖 → { ok, text, ms, error, cleaned, leftover }。讀不到字＝ok＋「（無文字）」。
+ * 暫存文件不論成功失敗都刪（finally）；刪不掉 cleaned=false＋leftover（暫存文件 id），呼叫端要講出來
+ */
+function clipOcrImage_(fileId, token) {
+  var t0 = Date.now();
+  var auth = { Authorization: 'Bearer ' + token };
+  var out = { ok: false, text: '', ms: 0, error: '', cleaned: true, leftover: '' };
+  var docId = '';
+  try {
+    var c = callApi_('drive_ocr', CLIP_DRIVE_FILES_API + encodeURIComponent(fileId) + '/copy?ocrLanguage=' + CLIP_OCR_LANG + '&fields=id', {
+      method: 'post', contentType: 'application/json', headers: auth, muteHttpExceptions: true,
+      payload: JSON.stringify({ mimeType: 'application/vnd.google-apps.document', name: 'tmp_ocr_' + fileId + '_' + t0 })
+    });
+    if (c.getResponseCode() !== 200) { out.error = 'HTTP ' + c.getResponseCode() + '（轉文件）' + clipApiBrief_(c); return out; }
+    docId = String((JSON.parse(c.getContentText()) || {}).id || '');
+    if (!docId) { out.error = '轉文件沒有回 id'; return out; }
+    var x = callApi_('drive_ocr', CLIP_DRIVE_FILES_API + encodeURIComponent(docId) + '/export?mimeType=' + encodeURIComponent('text/plain'),
+      { method: 'get', headers: auth, muteHttpExceptions: true });
+    if (x.getResponseCode() !== 200) { out.error = 'HTTP ' + x.getResponseCode() + '（讀文字）' + clipApiBrief_(x); return out; }
+    var text = String(x.getContentText() || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trim();
+    out.ok = true;
+    out.text = text || CLIP_OCR_NO_TEXT;
+    return out;
+  } catch (err) {
+    out.error = String(err && err.message || err);
+    return out;
+  } finally {
+    if (docId) {
+      try {
+        var d = callApi_('drive_ocr', CLIP_DRIVE_FILES_API + encodeURIComponent(docId), { method: 'delete', headers: auth, muteHttpExceptions: true });
+        var dc = d.getResponseCode();
+        if (dc !== 204 && dc !== 200 && dc !== 404) { out.cleaned = false; out.leftover = docId; }
+      } catch (err) { out.cleaned = false; out.leftover = docId; }
+    }
+    out.ms = Date.now() - t0;
+  }
+}
+
+/** 錯誤回應的一小段（給 log 與結果看；不含 token——token 只在 header） */
+function clipApiBrief_(res) {
+  try {
+    var body = String(res.getContentText() || '');
+    var j = null;
+    try { j = JSON.parse(body); } catch (e) { j = null; }
+    var msg = j && j.error ? String(j.error.message || j.error.status || '') : body;
+    return msg ? '：' + msg.slice(0, 120) : '';
+  } catch (err) { return ''; }
+}
+
+/* -------------------------------------------------------------------------- */
 /* 圖書館分類（ADR-023 D-7、D-8）                                                 */
 /* -------------------------------------------------------------------------- */
 
