@@ -239,6 +239,11 @@
   .clip-lines{font-size:14px; color:var(--ink); margin-top:4px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;}
   .clip-tag{font-size:11px; padding:1px 8px; border-radius:999px; background:var(--line); color:var(--muted);}
   .clip-tag.clip-bad{background:var(--danger-soft); color:var(--danger);}
+  /* 閱讀狀態（ADR-025 D-4，只在 2.0）：未讀小藍點、📖 閱讀中標籤、已讀整張淡化 */
+  .clip-dot{width:8px; height:8px; border-radius:50%; flex:none; background:var(--compass);}
+  .clip-tag.clip-reading{background:var(--compass-soft); color:var(--compass);}
+  .clip-item.clip-done{opacity:.55;}
+  .clip-state-row{display:flex; gap:6px; margin:0 0 10px;}
   .clip-err{font-size:12px; color:var(--danger); margin:4px 0;}
   .clip-reader-head{display:flex; align-items:center; gap:10px; margin-bottom:8px;}
   .clip-strip{display:flex; gap:8px; overflow-x:auto; scroll-snap-type:x mandatory; -webkit-overflow-scrolling:touch; margin:0 -4px 10px; padding:0 4px;}
@@ -5419,18 +5424,20 @@ function clipTpe(v){
   return new Date(t+8*3600000).toISOString().slice(0,16).replace('T',' ');
 }
 function clipsListHtml(list){
-  if(!list || !list.length) return clipFilter==='unread' && isV2() ? '<div class="empty-hint">沒有未讀的收藏 🎉</div>'
+  if(!list || !list.length) return isV2() && CLIP_FILTER_EMPTY[clipFilter] ? `<div class="empty-hint">${CLIP_FILTER_EMPTY[clipFilter]}</div>`
     : '<div class="empty-hint">在 LINE 私訊 bot 貼 IG 網址（分享到 LINE 也可以），幾分鐘後就收進這裡</div>';
   return clipsSorted(list).map(c=>{
     const ids=clipImages(c), bad=clipBad(c), id=esc(c.id), link=clipIsLink(c);
     const lines=link ? [String(c.url||'')] : String(c.caption||'').split('\n').map(s=>s.trim()).filter(Boolean).slice(0,2);
-    const tag = (bad ? `<span class="clip-tag clip-bad">${c.status==='failed'?'失敗':'缺圖'}</span>`
+    const rs = isV2() ? clipReadState(c) : null;           // 只有收齊或只存連結的篇才有閱讀狀態（處理中／失敗不標）
+    const tag = (rs==='unread' ? '<span class="clip-dot" title="未讀" aria-label="未讀"></span>' : rs==='reading' ? '<span class="clip-tag clip-reading">📖 閱讀中</span>' : '')
+      + (bad ? `<span class="clip-tag clip-bad">${c.status==='failed'?'失敗':'缺圖'}</span>`
       : c.status==='pending' ? '<span class="clip-tag">處理中</span>' : link ? '<span class="clip-tag">🔗 只存連結</span>' : '')
       + (isV2() && c.category ? `<span class="clip-tag">${esc(clipCatLabel(c.category))}</span>` : '');
     const thumb = ids[0] ? `<img class="clip-thumb" src="${clipThumb(ids[0],400)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
       : `<div class="clip-thumb clip-thumb-empty">${link?'🔗':'📚'}</div>`;
     const day=clipTpe(c.collected_at).slice(5,10).replace('-','/');
-    return `<div class="clip-item${bad?' bad':''}" onclick="openClip('${id}')">${thumb}
+    return `<div class="clip-item${bad?' bad':''}${rs==='read'?' clip-done':''}" onclick="openClip('${id}')">${thumb}
       <div class="clip-body">
         <div class="clip-meta">${tag}<b>${esc(link ? clipDomain(c.url) : (c.author||'（作者不明）'))}</b><span>${esc(day)}</span>${link?'':`<span>${Number(c.media_saved)||0} 張</span>`}</div>
         <div class="clip-lines">${lines.length ? lines.map(esc).join('<br>') : (c.status==='pending' ? '等排程收齊…' : '（沒有內文）')}</div>
@@ -5440,7 +5447,7 @@ function clipsListHtml(list){
 }
 function clipReaderHtml(c){
   const ids=clipImages(c), id=esc(c.id);
-  if(clipIsLink(c)) return `<div class="clip-reader-head"><button class="btn-ghost" onclick="closeClip()">← 返回</button><b>${esc(clipDomain(c.url))}</b></div>
+  if(clipIsLink(c)) return `<div class="clip-reader-head"><button class="btn-ghost" onclick="closeClip()">← 返回</button><b>${esc(clipDomain(c.url))}</b></div>${isV2() ? clipStatePickHtml(c) : ''}
     <p class="perf-sub">🔗 只存連結：沒有抓原文，要看內容請回原站。</p>
     <div class="clip-caption">${esc(c.url||'')}</div>
     <p class="clip-times">收藏 ${esc(clipTpe(c.collected_at))}</p>
@@ -5449,7 +5456,7 @@ function clipReaderHtml(c){
       <button class="btn-ghost danger" onclick="deleteClip('${id}')">刪除</button>
     </div>${isV2() ? clipCatPickHtml(c) + clipStudyHtml(c) : ''}`;
   const imgs=ids.map((x,i)=>`<img class="clip-img" src="${clipThumb(x,1200)}" alt="第 ${i+1} 張" loading="lazy" onerror="clipImgFallback(this,'${esc(x)}')">`).join('');
-  return `<div class="clip-reader-head"><button class="btn-ghost" onclick="closeClip()">← 返回</button><b>${esc(c.author||'（作者不明）')}</b></div>
+  return `<div class="clip-reader-head"><button class="btn-ghost" onclick="closeClip()">← 返回</button><b>${esc(c.author||'（作者不明）')}</b></div>${isV2() ? clipStatePickHtml(c) : ''}
     ${ids.length ? `<div class="clip-strip">${imgs}</div>` : ''}
     ${clipVideoLine(c)}
     <div class="clip-caption">${esc(c.caption||'')}</div>
@@ -5481,8 +5488,8 @@ function renderClips(){
   if(!v2) clipFilter='all';
   const seg=document.getElementById('clipFilterSeg');
   if(seg && v2){
-    const n=(clipsData||[]).filter(clipUnread).length;
-    seg.innerHTML=[['all','全部'],['unread','未讀 '+n]].map(([k,l])=>`<button class="${clipFilter===k?'sel':''}" onclick="pickClipFilter('${k}')">${l}</button>`).join('');
+    const all=clipsData||[], n=(f)=>all.filter(f).length;
+    seg.innerHTML=[['all','全部'],['unread','未讀 '+n(clipUnread)],['reading','📖 閱讀中 '+n(clipReading)],['read','✅ 已讀 '+n(clipDone)]].map(([k,l])=>`<button class="${clipFilter===k?'sel':''}" onclick="pickClipFilter('${k}')">${l}</button>`).join('');
   }
   setHidden('clipCatSeg', !v2 || !clipCats.length);
   if(!v2) clipCatFilter='';
@@ -5490,7 +5497,7 @@ function renderClips(){
   if(catSeg && v2) catSeg.innerHTML=clipCatFilterHtml();
   const list=document.getElementById('clipList');
   if(list) list.innerHTML = clipsData===null ? '<div class="empty-hint">讀取中…</div>'
-    : clipsListHtml(clipsData.filter(c=>(clipFilter!=='unread' || clipUnread(c)) && clipInCat(c, clipCatFilter)));
+    : clipsListHtml(clipsData.filter(c=>clipInFilter(c) && clipInCat(c, clipCatFilter)));
   const open = clipOpenId && Array.isArray(clipsData) ? clipsData.find(c=>String(c.id)===String(clipOpenId)) : null;
   const reader=document.getElementById('clipReader');
   if(reader) reader.innerHTML = open ? clipReaderHtml(open) : '';
@@ -5499,13 +5506,16 @@ function renderClips(){
 }
 function openClip(id){
   if(String(clipOpenId)!==String(id)){ clipNoteDraft=null; clipNoteConflict=null; }   // 打的字只跟著那一篇
-  clipOpenId=id; renderClips(); window.scrollTo(0,0); if(isV2()) markClipRead(id);
+  clipOpenId=id;
+  const p = isV2() ? markClipRead(id) : null;      // 先改本機狀態再畫，閱讀頁一打開就亮「📖 閱讀中」
+  renderClips(); window.scrollTo(0,0);
+  return p;
 }
-/* 開閱讀頁即已讀＋時間（ADR-021 D-13）。只在 2.0：1.0 的行為一個都不能變（D-20）。
-   只是閱讀狀態：送不上去不打擾人，下次開再寫一次 */
+/* 開閱讀頁（ADR-025 D-2）：未讀 → 📖 閱讀中，閱讀中／已讀不動；last_read_at 照舊更新（ADR-021 D-13）。
+   只在 2.0：1.0 的行為一個都不能變（D-20）。只是閱讀狀態：送不上去不打擾人，下次開再寫一次 */
 function markClipRead(id){
   const c=(clipsData||[]).find(x=>String(x.id)===String(id));
-  if(c){ c.read_status='read'; c.last_read_at=new Date().toISOString(); }
+  if(c){ if(!String(c.read_status||'').trim()) c.read_status='reading'; c.last_read_at=new Date().toISOString(); }
   return cloudPost({action:'clipRead', id:String(id), trigger:'write'}).then(r=>{
     if(!r || !r.success) console.warn('已讀沒有寫進雲端：'+((r&&r.error)||'連線失敗'));
     return !!(r && r.success);
@@ -5536,20 +5546,53 @@ async function clipAction(action, id, okMsg){
    手上的 revision 換成新版——再按一次儲存才蓋過去（使用者決定，不替人合併）。打的字存在 clipNoteDraft，
    畫面重畫（重新整理、存檔）也不會被吃掉；換一篇就清掉。
    AI 整理：按了才跑，結果另存（不動原文與筆記）；重做、捨棄都要確認。直接送雲端、不進待送佇列（比照 clipAction） */
-let clipFilter='all';            // 全部｜未讀（D-13）
+let clipFilter='all';            // all｜unread｜reading｜read（ADR-025 D-5）
+const CLIP_FILTERS=['all','unread','reading','read'];
+const CLIP_FILTER_EMPTY={ unread:'沒有未讀的收藏 🎉', reading:'沒有閱讀中的收藏', read:'還沒有讀完的收藏' };
 let clipNoteDraft=null;          // { id, text }：打了還沒存的字
 let clipNoteConflict=null;       // { id, note, at }：被拒時雲端的新版
 let clipBusy={note:false, ai:false, ocr:false, vision:false};
 const CLIP_ERRORS={ forbidden:'這篇不是你的收藏，只有收藏的人能改', not_found:'找不到這篇，按「重新整理」看看',
   too_long:'筆記太長（上限 2 萬字）', not_ready:'雲端還沒準備好：請管理者在 LINE 傳「初始化」補欄位',
   empty:'這篇沒有原文也沒有筆記，先寫點筆記再請 AI 整理', no_key:'AI 還沒設定 API key（設定 ▸ AI 供應商）',
-  invalid_url:'網址不對，請貼完整的 https:// 網址', busy:'雲端忙碌中，稍後再試', no_images:'這篇沒有存到圖片，沒有東西可以辨識' };
+  invalid_url:'網址不對，請貼完整的 https:// 網址', invalid_state:'不認得這個閱讀狀態，按「重新整理」再試', busy:'雲端忙碌中，稍後再試', no_images:'這篇沒有存到圖片，沒有東西可以辨識' };
 function clipIsLink(c){ return !!c && c.kind==='link'; }
-function clipUnread(c){ return !!c && ['done','partial','link'].includes(c.status) && c.read_status!=='read'; }
+/* 閱讀狀態（ADR-025 D-1）：read_status 空白＝未讀、reading、read。只有收齊（done／partial）或只存連結的篇才算；
+   其他（處理中、失敗）回 null。不認得的值當未讀（跟後端 Widget「只有空白＝未讀」不同的只有髒資料，畫面寧可提醒） */
+function clipReadState(c){
+  if(!c || !['done','partial','link'].includes(c.status)) return null;
+  const v=String(c.read_status||'').trim();
+  return v==='read' ? 'read' : v==='reading' ? 'reading' : 'unread';
+}
+function clipUnread(c){ return clipReadState(c)==='unread'; }
+function clipReading(c){ return clipReadState(c)==='reading'; }
+function clipDone(c){ return clipReadState(c)==='read'; }
+function clipInFilter(c){ return clipFilter==='all' || clipReadState(c)===clipFilter; }
+/* 閱讀頁頂部三顆（D-6）：點一下即存。先改畫面，存不上去就還原並講出來（比照分類） */
+const CLIP_STATE_OPTS=[['','未讀'],['reading','📖 閱讀中'],['read','✅ 已讀']];
+function clipStatePickHtml(c){
+  const st=clipReadState(c);
+  if(!st) return '';
+  const cur = st==='unread' ? '' : st;
+  return `<div class="seg clip-state-row">${CLIP_STATE_OPTS.map(([k,l])=>`<button class="${k===cur?'sel':''}" onclick="setClipReadState(${esc(JSON.stringify(String(c.id)))}, '${k}')">${l}</button>`).join('')}</div>`;
+}
+async function setClipReadState(id, state){
+  const c=(clipsData||[]).find(x=>String(x.id)===String(id));
+  if(!c) return false;
+  const before=c.read_status==null ? '' : c.read_status;
+  if(String(before).trim()===state) return true;
+  c.read_status=state; renderClips();
+  let j=null;
+  try{ j=await cloudPost({action:'clipReadState', id:String(id), state, trigger:'write'}); }catch(e){ j=null; }
+  if(j && j.success) return true;
+  c.read_status=before; renderClips();
+  toast(!j ? '連不上雲端，這次沒有改到' : (CLIP_ERRORS[j.error] || '沒有改到，稍後再試'));
+  return false;
+}
 function clipDomain(url){ const m=String(url||'').match(/^https?:\/\/([^\/?#:]+)/i); return m ? m[1].toLowerCase().replace(/^www\./,'') : String(url||''); }
 /* 只存連結的網址是使用者貼的：只放行 http(s)，Sheet 被改成 javascript: 也不會變成可點的東西 */
 function httpsOrHttp(u){ u=String(u||'').trim(); return /^https?:\/\//i.test(u) ? u : ''; }
-function pickClipFilter(f){ clipFilter = f==='unread' ? 'unread' : 'all'; renderClips(); }
+function pickClipFilter(f){ clipFilter = CLIP_FILTERS.includes(f) ? f : 'all'; renderClips(); }
 
 /* ---------- 圖書館分類（ADR-023 D-7、D-8，只在 2.0） ----------
    清單在雲端 _clip_categories（Neil 在 Sheet 上維護），跟著 readMany(['clips']) 一起來。

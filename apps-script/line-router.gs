@@ -716,6 +716,13 @@ function initSteps_() {
       var r = clipsRequeueReels_();
       return { level: 'ok', changed: r.requeued > 0, text: r.requeued ? '排回重抓 ' + r.requeued + ' 篇（排程總管會整篇重抓、存 video.mp4）' : '沒有要補的' };
     } },
+    // ADR-025 D-7：一次性把收藏的閱讀狀態重設成未讀（記旗標，之後不再重設）
+    { label: '收藏閱讀狀態重設', run: function () {
+      var r = clipsResetReadState_();
+      if (r.already) return { level: 'ok', text: '閱讀狀態已重設過，略過' };
+      if (r.flag_failed) return { level: 'warn', text: '記不了「已重設」，這次沒有重設（下次初始化再試）：' + r.flag_failed };
+      return { level: 'ok', changed: r.reset > 0, text: '閱讀狀態重設 ' + r.reset + ' 篇（全部回未讀，「上次在讀」保留）' };
+    } },
     { label: '排程總管', run: function () {
       var r = installScheduler_();      // 刪掉所有舊的時間觸發器，只裝每 5 分鐘的 runScheduler
       refreshGuide();                   // 以前裝 _guide 觸發器時順便更新一次，這裡照舊

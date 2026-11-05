@@ -281,7 +281,8 @@ describe('首頁勾完成：雲端確認後才算', () => {
 /* ========================================================================== */
 describe('開閱讀頁即已讀（D-13）', () => {
 
-  test('2.0 開一篇：送 clipRead（trigger=write），本機那篇標已讀', async () => {
+  // ADR-025 D-2 取代「開即已讀」：開閱讀頁只把未讀改成 📖 閱讀中（按 ✅ 才算已讀；完整三態測試在 adr-025-read-state-frontend）
+  test('2.0 開一篇：送 clipRead（trigger=write），本機那篇由未讀變閱讀中', async () => {
     const { e } = env({ handler: { clipRead: { success: true } } });
     e.raw('roster = ' + JSON.stringify([USER]) + '; myLineId = "' + ME + '"; clipsData = [{id:"c1", line_id:"' + ME + '", status:"done"}]');
     e.call('openClip', 'c1');
@@ -289,7 +290,7 @@ describe('開閱讀頁即已讀（D-13）', () => {
     const r = sent(e, 'clipRead');
     assert.equal(r.length, 1);
     assert.deepEqual([r[0].body.id, r[0].body.trigger], ['c1', 'write']);
-    assert.equal(e.read('clipsData[0].read_status'), 'read');
+    assert.equal(e.read('clipsData[0].read_status'), 'reading');
   });
 
   test('1.0 開一篇：不寫已讀（1.0 行為不變）', async () => {

@@ -814,6 +814,7 @@ function routePwaSync_(body, perf) {
   if (body.action === 'clipNote') return jsonOut(clipNote_(caller, body.id, body.note, body.revision));
   if (body.action === 'clipAi') return jsonOut(clipAi_(caller, body.id, body.discard === true));
   if (body.action === 'clipAdd') return jsonOut(clipAdd_(caller, body.url));
+  if (body.action === 'clipReadState') return jsonOut(clipReadStateSet_(caller, body.id, body.state));
   if (body.action === 'clipCategory') return jsonOut(clipCategorySet_(caller, body.id, body.category));
   // 圖片辨識（ADR-024）：按了才跑、一次一篇，只限擁有者
   if (body.action === 'clipOcr') return jsonOut(clipOcr_(caller, body.id, body.discard === true));
