@@ -253,11 +253,12 @@ describe('taskDone：首頁勾完成，雲端確認', () => {
 /* ========================================================================== */
 describe('clipRead：開閱讀頁即已讀', () => {
 
-  test('擁有者：read_status=read、last_read_at 寫上時間', () => {
+  // ADR-025 D-2 取代「開即已讀」：未讀 → reading（三態完整測試在 adr-025-read-state）
+  test('擁有者：未讀 → read_status=reading、last_read_at 寫上時間', () => {
     const e = env({ clips: clipsSheet([['c1', ME, 'u1', 'done', 'a', 'x', '', '', '', '']]) });
     assert.equal(post(e, { action: 'clipRead', id: 'c1', trigger: 'write' }).success, true);
     const r = rows(e, 'clips')[0];
-    assert.equal(r.read_status, 'read');
+    assert.equal(r.read_status, 'reading');
     assert.match(String(r.last_read_at), /^\d{4}-\d{2}-\d{2}T/);
   });
 

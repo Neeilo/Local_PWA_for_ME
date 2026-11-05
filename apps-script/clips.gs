@@ -46,6 +46,10 @@ var CLIPS_APIFY_MAX_POLLS = 2;
 var CLIP_MD_BOM = '\uFEFF';
 /** 補救舊 content.md 做完的記號（指令碼屬性）；有失敗就不記，下次初始化再試 */
 var CLIPS_MD_FIX_KEY = 'clips_md_bom';
+/** 閱讀狀態（ADR-025 D-1）：空白＝未讀、reading＝📖 閱讀中、read＝✅ 已讀。沿用 read_status，不新增欄位 */
+var CLIP_READ_STATES = ['', 'reading', 'read'];
+/** 「初始化」一次性把閱讀狀態重設成未讀（D-7）：做過就記時間，之後不再重設 */
+var CLIPS_READ_RESET_KEY = 'clips_read_reset';
 /**
  * 影片太大：UrlFetchApp 回應上限約 50MB、Drive createFile 也有上限，超過會丟例外。
  * ⚠️ 例外訊息的確切文字未實測，先認這幾個字；認不得就當一般下載失敗（走重試，最後 partial）
@@ -367,7 +371,9 @@ function clipsPatch_(sheet, id, patch) {
   try {
     var t = clipsTable_(sheet);
     var hit = t.rows.filter(function (x) { return String(x.rec.id) === String(id); })[0];
-    return hit ? clipsWriteRow_(sheet, t.headers, hit, patch) : null;
+    if (!hit) return null;
+    // patch 可以是函式：鎖內拿到剛重讀的那列再決定要改什麼（讀後改，不信任鎖外讀到的舊值）
+    return clipsWriteRow_(sheet, t.headers, hit, typeof patch === 'function' ? patch(hit.rec) : patch);
   } finally {
     lock.releaseLock();
   }
@@ -703,7 +709,8 @@ function clipsRecordResult_(sheet, rec, result, nowMs) {
 /* -------------------------------------------------------------------------- */
 
 /**
- * action=clipRetry｜clipDelete｜clipRead（ADR-021：開閱讀頁即已讀）。只限擁有者；不是擁有者回 { error: 'forbidden', permanent: true }——
+ * action=clipRetry｜clipDelete｜clipRead。clipRead＝開閱讀頁（ADR-025 D-2）：未讀 → reading，閱讀中／已讀不動；
+ * last_read_at 照舊每次更新。狀態在鎖內依剛重讀的列決定，不用前端傳來的舊值。只限擁有者；不是擁有者回 { error: 'forbidden', permanent: true }——
  * 這是永久性拒絕，前端收到不重送（ADR-018 實作差異 A-2 的教訓，ADR-019 B-5 同一套）。
  * 重跑：→ pending、attempts=0、清 next_try_at；刪除：del（Drive 不動）
  */
@@ -712,7 +719,11 @@ function clipPwaAction_(caller, action, id) {
   if (own.error) return own;
   var sheet = own.sheet, rec = own.rec;
   var patch = action === 'clipDelete' ? { del: 'TRUE' }
-    : action === 'clipRead' ? { read_status: 'read', last_read_at: new Date().toISOString() }
+    : action === 'clipRead' ? function (cur) {
+      var p = { last_read_at: new Date().toISOString() };
+      if (!String(cur.read_status == null ? '' : cur.read_status).trim()) p.read_status = 'reading';
+      return p;
+    }
     : { status: 'pending', attempts: 0, next_try_at: '', error: '' };
   try {
     clipsPatch_(sheet, id, patch);
@@ -722,6 +733,25 @@ function clipPwaAction_(caller, action, id) {
   // 已讀只是閱讀狀態，每開一篇都寫一列 logs 只會把 logs 灌大
   if (action !== 'clipRead') logTransaction_(CLIPS_LOG_SOURCE, '成功', action + ' ' + id, action === 'clipDelete' ? '刪除（Drive 保留）' : '重跑', rec.url, '', caller.line_id);
   return { success: true };
+}
+
+/**
+ * action=clipReadState { id, state }（ADR-025 D-6）：手動設閱讀狀態，點一下就存。只限擁有者（clipOwnRow_）；
+ * state 不在 CLIP_READ_STATES → 永久拒絕；拿不到鎖 → busy（可重試）。跟 clipRead 一樣不寫 logs（避免灌大）
+ */
+function clipReadStateSet_(caller, id, state) {
+  var own = clipOwnRow_(caller, 'clipReadState', id);
+  if (own.error) return own;
+  var missing = clipColsMissing_(own.headers, ['read_status']);
+  if (missing) return missing;
+  var st = typeof state === 'string' ? state.trim() : null;
+  if (st === null || CLIP_READ_STATES.indexOf(st) === -1) return { error: 'invalid_state', permanent: true };
+  try {
+    clipsPatch_(own.sheet, id, { read_status: st });
+  } catch (err) {
+    return { error: 'busy' };
+  }
+  return { success: true, state: st };
 }
 
 /** 擁有者才能動的那一列 → { sheet, headers, rec }；不是就回永久拒絕（clipPwaAction_、筆記、AI 共用） */
@@ -1164,7 +1194,8 @@ function clipAdd_(caller, url) {
 }
 
 /**
- * Reading Widget 摘要（ADR-021 D-13）：「上次在讀」＝最後閱讀時間最新的一篇；「未讀」＝收齊（done／partial）或只存連結、且沒讀過的。
+ * Reading Widget 摘要（ADR-021 D-13）：「上次在讀」＝最後閱讀時間最新的一篇；「未讀」＝收齊（done／partial）或只存連結、
+ * 且 read_status 空白的（ADR-025 D-3：📖 閱讀中不算未讀）。
  * 只看自己的、刪掉的不算。title 取內文第一行（沒有就作者、網址）
  */
 function readingWidget_(ss, user) {
@@ -1173,7 +1204,7 @@ function readingWidget_(ss, user) {
   var mine = clipsVisibleTo_(read.rows, user).filter(function (r) { return !clipDeleted_(r); });
   var unread = mine.filter(function (r) {
     var st = String(r.status || '').trim();
-    return (st === 'done' || st === 'partial' || st === CLIP_LINK) && String(r.read_status || '').trim() !== 'read';
+    return (st === 'done' || st === 'partial' || st === CLIP_LINK) && !String(r.read_status || '').trim();
   }).length;
   var last = null, lastMs = 0;
   mine.forEach(function (r) {
@@ -1272,6 +1303,31 @@ function clipsRebuildContentMd_() {
     try { props.setProperty(CLIPS_MD_FIX_KEY, new Date().toISOString()); }
     catch (err) { out.failed.push('記不了「已做完」（下次初始化會再重產一次）：' + String(err && err.message || err)); }
   }
+  return out;
+}
+
+/**
+ * ADR-025 D-7：未刪除的列 read_status 清空（全部回未讀）；last_read_at 保留（「上次在讀」不受影響）。
+ * 只跑一次：CLIPS_READ_RESET_KEY 有值就略過。不拿鎖：初始化由 handleInitCommand_ 拿著 script lock。回 { already, reset, flag_failed? }
+ */
+function clipsResetReadState_() {
+  var props = PropertiesService.getScriptProperties();
+  var out = { already: false, reset: 0 };
+  if (props.getProperty(CLIPS_READ_RESET_KEY)) { out.already = true; return out; }
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CLIPS_SHEET);
+  var t = sheet && sheet.getLastRow() >= 2 ? clipsTable_(sheet) : null;
+  var todo = t && t.headers.indexOf('read_status') !== -1 ? t.rows.filter(function (x) {
+    return !clipDeleted_(x.rec) && String(x.rec.read_status == null ? '' : x.rec.read_status).trim() !== '';
+  }) : [];
+  // 先記旗標再清：要清的時候旗標寫不進就一列都不動（回 flag_failed，下次初始化再試）；清到一半失敗也不會在
+  // 下次初始化又清一次（蓋掉之後手動調的狀態）。沒有要清的：旗標盡量記，記不了也沒有東西會被蓋
+  try { props.setProperty(CLIPS_READ_RESET_KEY, new Date().toISOString()); }
+  catch (err) { if (todo.length) out.flag_failed = String(err && err.message || err); }
+  if (out.flag_failed) return out;
+  todo.forEach(function (x) {
+    clipsWriteRow_(sheet, t.headers, x, { read_status: '' });
+    out.reset++;
+  });
   return out;
 }
 
