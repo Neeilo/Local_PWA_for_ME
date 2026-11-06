@@ -4,7 +4,8 @@
  * runGmailController() 每天 9 點：依 gmail_rules 掃最近 3 天 → 只貼標籤 → 帳單 PDF 存 Drive → 寫 gmail_log。
  * 這裡守的是：
  *   1. 同一封信跑兩次只寫一列；一封信命中多條規則取 rule_id 最小、其餘寫 logs
- *   2. Gmail 端只准讀與貼標籤：封存、已讀、刪除、垃圾桶一律不碰（假 GmailApp 只放行白名單方法）
+ *   2. Gmail 端只准讀與貼標籤：已讀、刪除、垃圾桶一律不碰（假 GmailApp 只放行白名單方法）。
+ *      ADR-026 起「封存」由規則決定且預設預演——決策取代原本的「禁止封存」，封存的契約在 tests/adr-026-mail-archive.test.mjs
  *   3. 去重以 msg_id 為準，不以標籤為準：GmailApp 的標籤是整串的，同主旨的 eTag 會被歸成一串，
  *      靠標籤去重會讓之後進來的新信永遠被跳過
  *   4. 附件白名單：只有 save_attachment 的規則、只有 PDF、電子報一律不存；路徑與檔名照規格；同名不覆蓋
@@ -20,9 +21,10 @@ import assert from 'node:assert/strict';
 import { loadCodeGs, FakeSheet } from './fake-apps-script.mjs';
 
 const RULE_HEADERS = ['rule_id', 'is_active', 'source_name', 'mail_type', 'bill_category', 'from', 'subject_kw',
-                      'label', 'save_attachment', 'notify', 'parser', 'note'];
+                      'label', 'save_attachment', 'notify', 'parser', 'note', 'inbox_action', 'bucket'];
 const LOG_HEADERS = ['msg_id', 'received_at', 'rule_id', 'mail_type', 'source_name', 'subject', 'amount', 'due_date',
-                     'status', 'attachment_url', 'gmail_link', 'processed_at'];
+                     'status', 'attachment_url', 'gmail_link', 'processed_at',
+                     'bucket', 'requested_inbox_action', 'inbox_action_status', 'inbox_action_at', 'inbox_action_note'];
 
 /** 2026-10-12 09:00 台北 */
 const NOW = new Date(Date.UTC(2026, 9, 12, 1, 0, 0));
@@ -214,7 +216,7 @@ describe('T2 掃信：只貼標籤、去重、多規則', () => {
     assert.match(tx[4], /規則 1 的 parser「cathay_v1」不認得，當留白/);
   });
 
-  test('只碰白名單方法：不封存、不標已讀、不刪除、不丟垃圾桶；也不打外部網址', () => {
+  test('規則都是留下（keep）時只碰白名單方法：不封存、不標已讀、不刪除、不丟垃圾桶；也不打外部網址', () => {
     const t = thread('t1', [msg('m1', 'service@cathaybk.com.tw', '帳單', daysAgo(1), [att('帳單.pdf'), att('logo.png')])]);
     const t2 = thread('t2', [msg('n1', 'news@cw.com.tw', '電子報', daysAgo(1), [att('a.pdf')])]);
     const e = env({ threads: [t, t2] });
@@ -360,7 +362,7 @@ describe('T1／T4「初始化」', () => {
     const e = env({ sheets: { line_users: usersSheet(), line_groups: groupsSheet() }, extraFiles: INIT_FILES });
     const r = e.call('installGmail_');
     assert.equal(r.level, 'ok', r.text);
-    assert.deepEqual(e.sheets.gmail_rules.values[0], RULE_HEADERS);
+    assert.deepEqual(e.sheets.gmail_rules.values[0], RULE_HEADERS);   // ADR-026：最右邊多 inbox_action、bucket
     assert.deepEqual(e.sheets.gmail_log.values[0], LOG_HEADERS);
     assert.deepEqual(e.sheets.line_users.values[0].slice(-1), ['feat_gmail']);
     assert.deepEqual(e.sheets.line_users.toRecords().map((u) => u.feat_gmail), ['TRUE', ''], '只替管理員打勾');
@@ -381,8 +383,10 @@ describe('T1／T4「初始化」', () => {
     e.call('installGmail_');
     e.sheets.gmail_rules.values.push(RULE_HEADERS.map((h) => (BILL[h] === undefined ? '' : BILL[h])));
     e.sheets.line_users.values[2][5] = 'TRUE';     // 管理者後來替媽媽打勾，不能被蓋回去
-    const before = JSON.stringify([e.sheets.gmail_rules.values, e.sheets.line_users.values]);
+    // ADR-026：第二次跑會替這條規則填空白的 bucket／inbox_action（只填空白），之後再跑一格都不動
     e.call('installGmail_');
+    assert.deepEqual(e.sheets.gmail_rules.values[1].slice(-2), ['keep', 'pay']);
+    const before = JSON.stringify([e.sheets.gmail_rules.values, e.sheets.line_users.values]);
     const r = e.call('installGmail_');
     assert.equal(JSON.stringify([e.sheets.gmail_rules.values, e.sheets.line_users.values]), before);
     assert.deepEqual(e.drive.folders, ['Neil OS', 'Neil OS/Gmail 附件']);
@@ -542,10 +546,12 @@ describe('T6 群組彙總推播', () => {
     e.run();
     assert.deepEqual(e.pushes.map((p) => p.to), ['Cgmail']);
     const text = e.pushes[0].text;
-    assert.match(text, /^📬 Gmail 彙總 10\/12（5 封）/);
-    assert.match(text, /🧾 帳單\n・國泰世華｜NT\$12,345｜10\/25 截止｜📎 https:\/\/drive\//);
-    assert.match(text, /🚗 eTag 2 筆，合計 NT\$200/);
-    assert.match(text, /📰 電子報 2 封：天下、商周/);
+    // ADR-026 D-5：改成處理結果彙報，依三組分、各報數量＋去向；notify=TRUE 逐封列
+    assert.match(text, /^📬 Gmail 整理 10\/12（共 5 封）/);
+    assert.match(text, /🧾 要付錢的 1 封｜留在收件匣\n・國泰世華｜NT\$12,345｜10\/25 截止｜📎 https:\/\/drive\//);
+    assert.match(text, /📄 知道就好 2 封｜留在收件匣\n・eTag｜NT\$120｜10\/20 截止\n・eTag｜NT\$80｜10\/21 截止/);
+    assert.match(text, /📰 電子報 2 封｜留在收件匣\n・天下\n・商周/);
+    assert.match(text, /⚠️ 跳過 0｜失敗 0$/);
     assert.doesNotMatch(text, /cathaybk|fetc|@/, '不寫寄件者地址');
   });
 
@@ -553,7 +559,7 @@ describe('T6 群組彙總推播', () => {
     const e = envB({ rules: [BILL_P], threads: [thread('t1', [msg('m1', 'service@cathaybk.com.tw', '國泰世華 9 月帳單', daysAgo(1), [], '改版了')])] });
     e.run();
     assert.match(e.pushes[0].text, /⚠️ 待確認\n・國泰世華 9 月帳單\n　https:\/\/mail\.google\.com\/mail\/u\/0\/#all\/t1/);
-    assert.match(e.pushes[0].text, /🧾 帳單\n・國泰世華｜金額解析不到｜截止日解析不到/);   // ADR-023：有解析器卻抓不到
+    assert.match(e.pushes[0].text, /🧾 要付錢的 1 封｜留在收件匣\n・國泰世華｜金額解析不到｜截止日解析不到/);   // ADR-023：有解析器卻抓不到
   });
 
   test('沒有解析器的帳單（只貼標籤）：照舊「金額待確認」，不寫「解析不到」（ADR-023）', () => {
@@ -564,7 +570,8 @@ describe('T6 群組彙總推播', () => {
     assert.doesNotMatch(e.pushes[0].text, /解析不到/);
   });
 
-  test('0 封不推；notify 沒開的不列；全部都沒開也不推', () => {
+  // ADR-026 D-5：彙報涵蓋所有處理的信——notify=FALSE 不再「整封不推」，而是只計數、不逐封列（決策取代原本的「不列也不推」）
+  test('0 封不推；notify 沒開的只計數、不逐封列', () => {
     const e0 = envB();
     e0.run();
     assert.equal(e0.pushes.length, 0);
@@ -572,7 +579,9 @@ describe('T6 群組彙總推播', () => {
     const e1 = envB({ rules: [quiet], threads: [thread('t1', [msg('m1', 'service@cathaybk.com.tw', '帳單', daysAgo(1))])] });
     e1.run();
     assert.equal(logRows(e1).length, 1, '照樣處理');
-    assert.equal(e1.pushes.length, 0);
+    assert.equal(e1.pushes.length, 1);
+    assert.match(e1.pushes[0].text, /🧾 要付錢的 1 封｜留在收件匣/);
+    assert.doesNotMatch(e1.pushes[0].text, /・國泰世華/);
   });
 
   test('同一封只推一次：第二次跑沒有新信就不推', () => {
@@ -616,7 +625,7 @@ describe('T6 群組彙總推播', () => {
       pushImpl: () => ({ ok: false, code: 429, reason: 'HTTP 429' }) });
     e.run();
     const tx = e.transactions.find((x) => /^Gmail 控制員/.test(x[2]));
-    assert.match(tx[4], /彙總推到 Cgmail 失敗（HTTP 429）/);
+    assert.match(tx[4], /推播 ❌ 到 Cgm…（Gmail 控制員）：HTTP 429/);   // ADR-026 D-7b：成敗同一種寫法
   });
 });
 

@@ -30,7 +30,7 @@
 | `search.gs` | 按需跨模組關鍵字搜尋 |
 | `scheduler.gs` | 唯一 5 分鐘排程總管 |
 | `stock.gs` | 股票報價、自選、交易與規則 |
-| `gmail.gs` | Gmail 標籤控制、摘要與附件 |
+| `gmail.gs` | Gmail 標籤、附件、解析、規則封存（ADR-026，預設預演）、處理結果彙報、整理報告與即時純文字內文 |
 | `sheet-guide.gs` | Sheets 分頁登記與 `_guide` |
 
 ## 原則與故障排查
@@ -42,9 +42,10 @@
 - **Library 故障**：檢查 Apify 用量／成功率、`clips` status、Drive 原始素材；AI 整理失敗不得覆蓋 `caption` 或 `note`。文字辨識失敗不覆蓋舊的 `ocr_output`；logs 若出現「暫存文件殘留」，到 Drive 搜 `tmp_ocr_` 手動刪。
 - **搜尋慢**：按需搜尋會讀取多張 Sheet，觀察資料量及時間，切勿改成開機自動搜尋。
 - **新分頁**：同步更新 `guideRegistry_()`；執行初始化只補缺少的欄位／表，不得重置使用者設定。
+- **Gmail 封存（ADR-026）**：開關是指令碼屬性 `gmail_archive_live`（空＝預演；有值＝正式封存的**開啟時間**），只由管理員在 App「設定▸管理▸📬 郵件封存」切換，**不要在編輯器手動設**。看去向：`gmail_log` 的 `inbox_action_status`（kept／dry_run／archived／skipped／failed）與 `inbox_action_note`；`failed` 會在 7 天內每輪自動重掃。最後一次完成摘要在屬性 `gmail_last_run`。要立刻停止封存：關回預演即可（已封存的不會搬回收件匣）。
 
 ## 安全紅線
 
-不公開權杖、裝置 token、GAS scriptId 憑證與私人雲端檔案。不在本機手動 clasp push。不要更換正式 deployment ID；新 exec URL 會使 LINE Webhook 與 PWA 指向不同後端。
+不公開權杖、裝置 token、GAS scriptId 憑證與私人雲端檔案。不對真實 Gmail 做批次封存或任何測試性操作；不刪信、不標已讀、不動星號；信件內文與金額不進 logs／performance／fixtures。不在本機手動 clasp push。不要更換正式 deployment ID；新 exec URL 會使 LINE Webhook 與 PWA 指向不同後端。
 
 詳見：[`../CLAUDE.md`](../CLAUDE.md) 與 [2.0 Pilot](../docs/NEILOS_2_0_PILOT.md)。

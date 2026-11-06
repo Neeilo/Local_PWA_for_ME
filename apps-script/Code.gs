@@ -654,18 +654,33 @@ function mailSummary_(ss, today) {
   if (read.error) return null;
   var from = addDaysKeyCode_(today, -(MAIL_NEW_BILL_DAYS - 1));
   var out = { today: 0, bill: 0, newsletter: 0, etag: 0, bills_3d: 0 };
+  // ADR-026 D-9（2.0 Widget）：「今天整理了 N 封」依 processed_at（台北日）、分三組＋去向。
+  // 上面的 today／bill…是 1.0 首頁磚用的（依 received_at），一個字都不變
+  var org = { total: 0, pay: 0, fyi: 0, news: 0, kept: 0, archived: 0, dry_run: 0, skipped: 0, failed: 0, check: 0 };
+  var bucketOf = { bill: 'pay', etag: 'fyi', newsletter: 'news' };
   read.rows.forEach(function (r) {
+    var type = keyValue_(r.mail_type);
+    var p = toTime_(r.processed_at);
+    if (!isNaN(p) && taipeiDateKey_(new Date(p)) === today) {
+      org.total++;
+      var b = keyValue_(r.bucket);
+      b = org.hasOwnProperty(b) && ['pay', 'fyi', 'news'].indexOf(b) !== -1 ? b : (bucketOf[type] || 'fyi');
+      org[b]++;
+      var st = keyValue_(r.inbox_action_status);
+      if (['kept', 'archived', 'dry_run', 'skipped', 'failed'].indexOf(st) !== -1) org[st]++;
+      if (String(r.status == null ? '' : r.status).indexOf('待確認') !== -1) org.check++;
+    }
     // received_at 是 UTC 的 ISO 字串：取前 10 碼會把台北早上 8 點前收的信算成前一天。換成時間再取台北的日期
     // （taipeiDateKey_ 在 stock.gs，同一個 GAS 專案、測試也一律載入）
     var t = toTime_(r.received_at);
     if (isNaN(t)) return;
     var day = taipeiDateKey_(new Date(t));
-    var type = keyValue_(r.mail_type);
     if (type === 'bill' && day >= from && day <= today) out.bills_3d++;
     if (day !== today) return;
     out.today++;
     if (out.hasOwnProperty(type)) out[type]++;
   });
+  out.org = org;
   return out;
 }
 
@@ -795,8 +810,11 @@ function routePwaSync_(body, perf) {
   if (body.action === 'pushPreview') return jsonOut(pushPreview_(caller, body));
   if (body.action === 'pushSend') return jsonOut(pushSend_(caller, body));
   if (body.action === 'stockConfigSet') return jsonOut(stockConfigSet_(caller, body.key, body.value));
-  if (body.action === 'gmailView') return jsonOut(gmailView_(caller, body.what));
+  if (body.action === 'gmailView') return jsonOut(gmailView_(caller, body.what, { days: body.days }));
   if (body.action === 'gmailRuleSet') return jsonOut(gmailRuleSet_(caller, body.record));
+  // ADR-026：正式封存開關、即時內文（都限管理者＋feat_gmail，gmail.gs 檢查）
+  if (body.action === 'gmailArchiveSet') return jsonOut(gmailArchiveSet_(caller, body.live));
+  if (body.action === 'gmailBody') return jsonOut(gmailBody_(caller, body.msg_id));
   if (body.action === 'stockPushMe') return jsonOut(stockPushMe_(caller, body.symbol));
   if (body.action === 'selfNoteSet') return jsonOut(selfNoteSet_(caller, body.text));
   if (body.action === 'aiConfigGet') return jsonOut(aiConfigGet_(caller));
