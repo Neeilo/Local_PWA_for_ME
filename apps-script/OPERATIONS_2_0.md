@@ -36,6 +36,7 @@
 ## 原則與故障排查
 
 - **資料不一致**：先看當次裝置／使用者、`logs`、雲端列與 revision，不要直接用本機 state 覆蓋 Sheet。
+- **logs 與 performance 的分工（ADR-026 D-8）**：`logs` 記「改變狀態或對外送出」（PWA 新增／編輯／刪除、設定、圖書館狀態／分類／筆記、Gmail 推播成敗、LINE 回覆失敗、讀郵件內文）；`performance` 記讀取與速度。logs 只寫表名、id、動作＋短摘要，不複製整筆內容。
 - **權限被拒**：辨識 `authDevice_`、`line_users` feat_*、`_module_registry` 是否停用，拒絕和連線錯誤處理不同。
 - **首頁慢**：比對 `performance` 的 `ui` 標記，區分 core boot、延後的財務／股票 Widget 與停留頁面輪詢，不做全表重新讀取。
 - **天氣沒資料**：檢查 `WEATHER_API`、地點設定、排程更新、`weather_cache`（Apps Script **指令碼屬性**，由 `widgets.gs` 的 `WEATHER_CACHE_KEY` 指定，**不是 Google Sheets 分頁**），勿把失敗當作「沒有下雨」。

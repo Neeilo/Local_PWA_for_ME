@@ -89,7 +89,9 @@ describe('開閱讀頁（clipRead，D-2）', () => {
 /* ========================================================================== */
 describe('手動設狀態（clipReadState，D-6）', () => {
 
-  test('三種值都寫得進（含改回未讀）；回傳寫進去的值；不寫 logs、不動 last_read_at', () => {
+  // ADR-026 D-8 修訂本交棒「clipReadState 不寫 logs」：手動設狀態成功也記（每次一列，來源「收藏」）。
+  // 開頁（clipRead）屬讀取，照舊不記——上一則測試守著
+  test('三種值都寫得進（含改回未讀）；回傳寫進去的值；每次記一筆 logs（ADR-026）、不動 last_read_at', () => {
     const e = env([clipRow('c1', { last_read_at: OLD_AT })]);
     for (const st of ['reading', 'read', '']) {
       const r = setState(e, 'c1', st);
@@ -97,7 +99,8 @@ describe('手動設狀態（clipReadState，D-6）', () => {
       assert.equal(byId(e, 'c1').read_status, st);
     }
     assert.equal(byId(e, 'c1').last_read_at, OLD_AT);
-    assert.equal(e.transactions.length, 0);
+    assert.deepEqual(e.transactions.map((t) => [t[0], t[1], t[3]]),
+      [['收藏', '成功', '閱讀狀態 → 閱讀中'], ['收藏', '成功', '閱讀狀態 → 已讀'], ['收藏', '成功', '閱讀狀態 → 未讀']]);
   });
 
   test('非法值（亂打、大小寫不對、沒帶、不是字串）→ invalid_state 永久拒絕、不動', () => {

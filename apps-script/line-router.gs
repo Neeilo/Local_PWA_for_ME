@@ -1975,6 +1975,7 @@ function lineReply_(replyToken, text) {
 
   if (!token) {
     console.log('回覆略過：指令碼屬性 LINE_CHANNEL_ACCESS_TOKEN 不存在或是空字串');
+    lineReplyFailLog_('權杖沒設', 'LINE_CHANNEL_ACCESS_TOKEN 不存在或是空字串');
     return;
   }
   console.log('權杖長度 ' + token.length + ' 字元');
@@ -2000,9 +2001,26 @@ function lineReply_(replyToken, text) {
       console.log('LINE 回覆成功');
     } else {
       console.log('LINE 回覆失敗 HTTP ' + code + '：' + res.getContentText());
+      lineReplyFailLog_('HTTP ' + code, res.getContentText());
     }
   } catch (err) {
     console.log('LINE 回覆連線失敗：' + err);
+    lineReplyFailLog_('連線失敗', String(err && err.message || err));
+  }
+}
+
+/**
+ * ADR-026 D-8：LINE 回覆失敗寫 logs（以前只進 console，從 Sheet 看不到使用者沒收到回覆）。
+ * 事件進行中走 LINE_LOG_QUEUE（logTransaction_ 自己會排隊），回覆之後一次寫。
+ * 只記狀態碼與 LINE 回的錯誤說明（截短），不記回覆內容；寫失敗不影響主流程
+ */
+var LINE_REPLY_LOG_SOURCE = 'LINE';
+function lineReplyFailLog_(result, detail) {
+  try {
+    logTransaction_(LINE_REPLY_LOG_SOURCE, '失敗', 'lineReply', '回覆失敗：' + result,
+      String(detail == null ? '' : detail).replace(/\s+/g, ' ').slice(0, 200), '', '');
+  } catch (err) {
+    console.log('寫 logs 失敗（主流程不受影響）：' + err);
   }
 }
 

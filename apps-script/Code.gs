@@ -774,7 +774,12 @@ function routePwaSync_(body, perf) {
   // 股票不再夾在 boot／readMany 裡（ADR-018 D-6）：前端進首頁後另打 action=stock
   if (body.action === 'boot') return perfJsonOut_(perf, body.core === true ? bootCoreResponse_(caller, perf) : bootResponse_(caller, perf));
   if (body.action === 'widgets') return perfJsonOut_(perf, widgetsResponse_(caller, perf, body));
-  if (body.action === 'widgetConfigSet') return jsonOut(widgetConfigSet_(caller, body.config));
+  if (body.action === 'widgetConfigSet') {
+    var wc = widgetConfigSet_(caller, body.config);
+    var wcFields = body.config && typeof body.config === 'object' ? Object.keys(body.config).filter(function (k) { return body.config[k] !== undefined; }) : [];
+    pwaActionLog_(SETTINGS_LOG_SOURCE, caller, 'widgetConfigSet', wc, '首頁設定：' + (wcFields.join('、') || '（沒有欄位）'));
+    return jsonOut(wc);
+  }
   if (body.action === 'stock') return perfJsonOut_(perf, stockResponse_(caller, body, perf));
   if (body.action === 'readMany') {
     perf.sheets = Array.isArray(body.sheets) ? body.sheets.filter(function (x) { return typeof x === 'string'; }).join(',') : '';
@@ -796,7 +801,11 @@ function routePwaSync_(body, perf) {
   if (body.action === 'listDevices') return jsonOut(listDevices_(caller, body.line_id));
   if (body.action === 'revokeDevice') return jsonOut(revokeDevices_(caller, body.device_id, body.all_of));
   if (body.action === 'archiveMail') return jsonOut(archiveByMail_(caller));
-  if (body.action === 'setMyEmail') return jsonOut(setMyEmail_(caller, body.email));
+  if (body.action === 'setMyEmail') {
+    var em = setMyEmail_(caller, body.email);
+    pwaActionLog_(SETTINGS_LOG_SOURCE, caller, 'setMyEmail', em, '更新 email');   // 不寫 email 本身
+    return jsonOut(em);
+  }
   if (body.action === 'perfSummary') return jsonOut(perfSummary_(caller));
   if (body.action === 'perfPurge') return jsonOut(perfPurge_(caller, body.days));
   if (body.action === 'adminView') return jsonOut(adminView_(caller, body.what));
@@ -816,7 +825,11 @@ function routePwaSync_(body, perf) {
   if (body.action === 'gmailArchiveSet') return jsonOut(gmailArchiveSet_(caller, body.live));
   if (body.action === 'gmailBody') return jsonOut(gmailBody_(caller, body.msg_id));
   if (body.action === 'stockPushMe') return jsonOut(stockPushMe_(caller, body.symbol));
-  if (body.action === 'selfNoteSet') return jsonOut(selfNoteSet_(caller, body.text));
+  if (body.action === 'selfNoteSet') {
+    var sn = selfNoteSet_(caller, body.text);
+    pwaActionLog_(SETTINGS_LOG_SOURCE, caller, 'selfNoteSet', sn, '更新給自己的一段話（' + String(sn && sn.text || '').length + ' 字）');   // 不存全文
+    return jsonOut(sn);
+  }
   if (body.action === 'aiConfigGet') return jsonOut(aiConfigGet_(caller));
   if (body.action === 'aiConfigSet') return jsonOut(aiConfigSet_(caller, body.provider, body.model));
   // ADR-022 PR-B：查價只回差異；確認才寫（都限管理者）
@@ -829,11 +842,25 @@ function routePwaSync_(body, perf) {
   // 收藏的重跑／刪除（ADR-020）：只限擁有者，不走一般 upsert
   if (body.action === 'clipRetry' || body.action === 'clipDelete' || body.action === 'clipRead') return jsonOut(clipPwaAction_(caller, body.action, body.id));
   // 圖書館（ADR-021 PR-E）：筆記（revision 比對）、AI 整理（另存）、加網址。同樣只限擁有者
-  if (body.action === 'clipNote') return jsonOut(clipNote_(caller, body.id, body.note, body.revision));
+  if (body.action === 'clipNote') {
+    var cn = clipNote_(caller, body.id, body.note, body.revision);
+    pwaActionLog_(CLIPS_LOG_SOURCE, caller, 'clipNote ' + keyValue_(body.id), cn,
+      '筆記 rev ' + (cn && cn.revision) + '（' + String(body.note == null ? '' : body.note).length + ' 字）', clipLogAlready_);
+    return jsonOut(cn);
+  }
   if (body.action === 'clipAi') return jsonOut(clipAi_(caller, body.id, body.discard === true));
   if (body.action === 'clipAdd') return jsonOut(clipAdd_(caller, body.url));
-  if (body.action === 'clipReadState') return jsonOut(clipReadStateSet_(caller, body.id, body.state));
-  if (body.action === 'clipCategory') return jsonOut(clipCategorySet_(caller, body.id, body.category));
+  // ADR-026 D-8：閱讀狀態、分類、筆記成功也記（修訂 ADR-025 交棒「clipReadState 不寫 logs」）；clipRead 開頁屬讀取，不記
+  if (body.action === 'clipReadState') {
+    var rs = clipReadStateSet_(caller, body.id, body.state);
+    pwaActionLog_(CLIPS_LOG_SOURCE, caller, 'clipReadState ' + keyValue_(body.id), rs, '閱讀狀態 → ' + ({ reading: '閱讀中', read: '已讀' }[rs && rs.state] || '未讀'), clipLogAlready_);
+    return jsonOut(rs);
+  }
+  if (body.action === 'clipCategory') {
+    var cc = clipCategorySet_(caller, body.id, body.category);
+    pwaActionLog_(CLIPS_LOG_SOURCE, caller, 'clipCategory ' + keyValue_(body.id), cc, '分類 → ' + ((cc && cc.category) || '（未分類）'), clipLogAlready_);
+    return jsonOut(cc);
+  }
   // 圖片辨識（ADR-024）：按了才跑、一次一篇，只限擁有者
   if (body.action === 'clipOcr') return jsonOut(clipOcr_(caller, body.id, body.discard === true));
   if (body.action === 'clipVision') return jsonOut(clipVision_(caller, body.id, body.discard === true));
@@ -874,7 +901,11 @@ function routePwaSync_(body, perf) {
    */
   if (body.action === 'upsert' || body.action === 'completeRecurring') {
     var writeLock = LockService.getScriptLock();
-    if (!writeLock.tryLock(UPSERT_LOCK_MS)) return jsonOut({ error: 'busy' });
+    if (!writeLock.tryLock(UPSERT_LOCK_MS)) {
+      // ADR-026 D-8：沒拿到鎖也是一次沒寫成（前端會重送）；只記 upsert，completeRecurring 有自己的紀錄
+      if (body.action === 'upsert') pwaUpsertLog_(body.sheet, body.record, caller, { error: 'busy（前端會重送）' });
+      return jsonOut({ error: 'busy' });
+    }
     try {
       return jsonOut(body.action === 'upsert' ? pwaUpsert_(body, caller, sheet) : completeRecurring_(body, caller, sheet));
     } finally {
@@ -906,6 +937,11 @@ function routePwaSync_(body, perf) {
 
 var UPSERT_LOCK_MS = 10000;
 
+/** 收藏那邊自己已經記過的失敗：不是擁有者（clipOwnRow_）、筆記衝突（clipNote_） */
+function clipLogAlready_(out) {
+  return out.reason === 'not_owner' || out.error === 'conflict';
+}
+
 /** PWA 單筆 upsert。呼叫端（routePwaSync_）已拿著寫入鎖 */
 function pwaUpsert_(body, caller, sheet) {
   const headers = sheetHeaders_(sheet);
@@ -934,14 +970,87 @@ function pwaUpsert_(body, caller, sheet) {
     record = guarded.record;
     keyField = body.sheet === STOCK_WATCH_SHEET ? 'symbol' : 'id';
     // 0050 不能被 Sheet 轉成 50：不走 upsertRow_（它新增時用 appendRow，不管欄位格式），見 stock.gs writeStockRow_
-    var stockOut = writeStockRow_(sheet, headers, record, keyField);
+    var stockOut;
+    try {
+      stockOut = writeStockRow_(sheet, headers, record, keyField);
+    } catch (err) {
+      pwaUpsertLog_(body.sheet, record, caller, null, err);
+      throw err;
+    }
     stockOut.record = plainRecord_(record, headers);
     if (guarded.overridden) stockOut.owner_overridden = true;
+    pwaUpsertLog_(body.sheet, record, caller, stockOut);
     return stockOut;
   }
-  const out = upsertRow_(sheet, headers, record, body.sheet, keyField);
+  var out;
+  try {
+    out = upsertRow_(sheet, headers, record, body.sheet, keyField);
+  } catch (err) {
+    pwaUpsertLog_(body.sheet, record, caller, null, err);
+    throw err;
+  }
   if (body.sheet === LINE_USERS_SHEET) invalidateLineUsersCache_();
+  pwaUpsertLog_(body.sheet, record, caller, out);
   return out;
+}
+
+/* ---------- ADR-026 D-8：PWA 改狀態的動作寫 logs ----------
+   原則：logs 記「改變狀態或對外送出」，performance 記讀取與速度。只記表名、id、動作＋簡短摘要（與 LINE 同級），
+   不複製整筆內容；摘要有長度上限。寫 logs 失敗不影響主流程（ADR-006 §D：logTransaction_ 自己吞例外，這裡再包一層）。
+   守門已經自己記過的失敗（模組關閉、白板不是擁有者、股票被擋、筆記衝突、收藏不是擁有者）不重複記 */
+var PWA_LOG_SUMMARY_MAX = 30;
+var PWA_LOG_SUMMARY_FIELDS = ['title', 'text', 'item', 'content', 'name', 'symbol', 'note'];
+
+/** 一段文字的短摘要：壓成一行、最多 PWA_LOG_SUMMARY_MAX 字 */
+function logSummary_(v, max) {
+  var n = max || PWA_LOG_SUMMARY_MAX;
+  var t = String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n) + '…' : t;
+}
+
+/** upsert 的 logs 來源：沿用各模組（任務／記帳／收入／雜記／股票／設定），其他歸「同步」 */
+function pwaLogSource_(sheetName, record) {
+  if (sheetName === TASKS_SHEET) return '任務';
+  if (sheetName === 'expenses') return String((record || {}).type || '').trim() === 'income' ? '收入' : '記帳';
+  if (sheetName === 'notes') return '雜記';
+  if (sheetName === STOCK_TRADES_SHEET || sheetName === STOCK_WATCH_SHEET || sheetName === STOCK_RULES_SHEET) return STOCK_LOG_SOURCE;
+  if (sheetName === LINE_USERS_SHEET) return SETTINGS_LOG_SOURCE;
+  return '同步';
+}
+
+function pwaUpsertLog_(sheetName, record, caller, out, err) {
+  try {
+    var rec = record || {};
+    var id = keyValue_(rec.id != null && rec.id !== '' ? rec.id : (rec.symbol != null ? rec.symbol : rec.line_id));
+    var input = 'PWA upsert ' + sheetName + ' id=' + id;
+    var lineId = (caller && caller.line_id) || '';
+    if (err || !out || !out.success) {
+      logTransaction_(pwaLogSource_(sheetName, rec), '失敗', input, '寫入失敗',
+        logSummary_(err ? (err.message || err) : (out && out.error) || '沒有回應', 120), '', lineId);
+      return;
+    }
+    var verb = truthy_(rec.del) ? '刪除' : out.updated ? '修改' : '新增';
+    var field = PWA_LOG_SUMMARY_FIELDS.filter(function (f) { return rec[f] != null && String(rec[f]).trim() !== ''; })[0];
+    var brief = field ? logSummary_(rec[field]) : '';
+    if (rec.amount != null && rec.amount !== '' && sheetName === 'expenses') brief += (brief ? ' ' : '') + rec.amount;
+    logTransaction_(pwaLogSource_(sheetName, rec), '成功', input, verb + (brief ? '：' + brief : ''), '', out.row || '', lineId);
+  } catch (e) {
+    console.log('寫 logs 失敗（主流程不受影響）：' + e);
+  }
+}
+
+/** 其他 PWA 動作（設定、圖書館）的成敗。skip(out) 為 true＝那個失敗函式自己已經記過了 */
+function pwaActionLog_(source, caller, input, out, okText, skip) {
+  try {
+    if (out && out.success) {
+      logTransaction_(source, '成功', input, okText, '', '', (caller && caller.line_id) || '');
+      return;
+    }
+    if (skip && skip(out || {})) return;
+    logTransaction_(source, '失敗', input, '失敗：' + ((out && out.error) || '沒有回應'), '', '', (caller && caller.line_id) || '');
+  } catch (e) {
+    console.log('寫 logs 失敗（主流程不受影響）：' + e);
+  }
 }
 
 /**
