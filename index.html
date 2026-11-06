@@ -2458,7 +2458,8 @@ const NOTE_TAGS = ['文章','作品','系統','分享','其他'];
 let selectedNoteTag = null;
 
 /* ---------- LOG 頁（ADR-006 §C／§D） ---------- */
-const LOG_SOURCES = ['任務','記帳','收入','查詢','註冊','配對','設定','推播'];
+// ADR-026 D-8：logs 補齊後多了雜記（PWA 寫入）、收藏（閱讀狀態／分類／筆記）、郵件（讀內文）、LINE（回覆失敗）
+const LOG_SOURCES = ['任務','記帳','收入','雜記','收藏','郵件','查詢','註冊','配對','設定','推播','LINE'];
 const LOG_WINDOW_DAYS = 7;
 // 抓回來的記錄只活在記憶體裡：不進 state、不寫 localStorage、不進待送佇列
 let logsCache = null;
