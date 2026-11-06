@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { loadCodeGs, FakeSheet } from './fake-apps-script.mjs';
 
 const HEADERS = ['rule_id', 'is_active', 'source_name', 'mail_type', 'bill_category', 'from', 'subject_kw',
-                 'label', 'save_attachment', 'notify', 'parser', 'note'];
+                 'label', 'save_attachment', 'notify', 'parser', 'note', 'inbox_action', 'bucket'];
 
 const rule = (o) => HEADERS.map((h) => (o[h] === undefined ? '' : o[h]));
 const rulesSheet = (rows) => new FakeSheet('gmail_rules', [HEADERS, ...rows.map(rule)]);
@@ -232,12 +232,20 @@ describe('「初始化」建 gmail_rules', () => {
     assert.deepEqual(e.sheets.gmail_rules.values, [HEADERS]);
   });
 
-  test('已存在：不重建、不動 Neil 填的規則，回覆說「已存在」與規則數', () => {
+  // ADR-026：已存在時只補 bucket／inbox_action 的「空白格」（決策取代原本「一格都不動」）；Neil 填的值不動，重跑結果相同
+  test('已存在：不重建、不動 Neil 填的規則，回覆說「已存在」與規則數；只填空白的 bucket／inbox_action', () => {
     const e = env();
-    const before = JSON.stringify(e.sheets.gmail_rules.values);
+    const before = e.sheets.gmail_rules.toRecords();
     const r = e.call('installGmailRules_');
     assert.match(r.text, /gmail_rules 已存在（3 列規則）/);
-    assert.equal(JSON.stringify(e.sheets.gmail_rules.values), before);
+    const after = e.sheets.gmail_rules.toRecords();
+    after.forEach((row, i) => {
+      for (const h of HEADERS.slice(0, 12)) assert.equal(row[h], before[i][h], h + ' 不動');
+    });
+    assert.deepEqual(after.map((x) => [x.bucket, x.inbox_action]), [['pay', 'keep'], ['fyi', 'keep'], ['news', 'keep']]);
+    const once = JSON.stringify(e.sheets.gmail_rules.values);
+    e.call('installGmailRules_');
+    assert.equal(JSON.stringify(e.sheets.gmail_rules.values), once, '重跑結果相同');
   });
 
   test('已存在但缺欄：往右補上，既有資料不動', () => {

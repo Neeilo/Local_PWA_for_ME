@@ -149,7 +149,7 @@ describe('控制員：金額＋截止日進 gmail_log 與摘要', () => {
     const text = env.pushes[0].text;
     assert.match(text, /・國泰世華｜NT\$1,704｜11\/13 截止/);
     assert.match(text, /・兆豐｜NT\$27,466｜10\/28 截止/);
-    assert.match(text, /🚗 eTag 1 筆，合計 NT\$503/);
+    assert.match(text, /📄 知道就好 1 封｜留在收件匣\n・ETC｜NT\$503/);   // ADR-026：改依 bucket 分組、逐封列
     assert.doesNotMatch(JSON.stringify(rows) + text, /99999|xxxxx/);
   });
 

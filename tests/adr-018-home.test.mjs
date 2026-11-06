@@ -282,7 +282,10 @@ describe('郵件摘要（郵件磚＋新帳單）', () => {
       at('2026-10-13T03:00:00.000Z', 'etag')
     ] });
     const m = e.call('mailSummary_', e.ss, TODAY);
-    assert.deepEqual({ ...m }, { today: 3, bill: 1, newsletter: 1, etag: 1, bills_3d: 2 });
+    // ADR-026 另加 org（2.0 Widget 用），1.0 首頁磚的欄位一個字都不變
+    const { org, ...old } = m;
+    assert.deepEqual(old, { today: 3, bill: 1, newsletter: 1, etag: 1, bills_3d: 2 });
+    assert.equal(typeof org, 'object');
   });
 
   test('boot：管理者＋feat_gmail 才帶；一般成員就算被勾了也沒有', () => {
