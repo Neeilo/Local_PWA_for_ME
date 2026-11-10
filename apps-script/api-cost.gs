@@ -59,6 +59,7 @@ function apiCatalog_() {
     twse: { label: '證交所', billing: 'count' },
     tpex: { label: '櫃買中心', billing: 'count' },
     cwa: { label: '氣象署', billing: 'free_quota' },
+    cwa_mirror: { label: '氣象署 AWS 鏡像', billing: 'count' },   // API 擋 Google 時的備援（2026-11-10）
     jina: { label: 'Jina Reader', billing: 'free_quota' },
     web: { label: '網頁／圖片下載', billing: 'count' },
     drive_ocr: { label: 'Drive 文字辨識', billing: 'count' },   // ADR-024：一張圖 3 個請求（轉文件、讀文字、刪暫存）

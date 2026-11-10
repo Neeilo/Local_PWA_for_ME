@@ -9,6 +9,11 @@
  * 授權碼放指令碼屬性 WEATHER_API。排程總管每小時依縣市抓一次（同一縣市只打一次），
  * 摘要存指令碼屬性 weather_cache；Widget 只讀存好的，不在請求裡打氣象署。
  * 換了地點的人當場抓一次那個縣市，不用等下一輪。
+ *
+ * 2026-11-10 修：氣象署 API 會間歇拒絕 Google 的機器（GAS 報「使用できないアドレス」，一次卡約 50 秒）。
+ * 改成 API 失敗就讀氣象署官方 AWS 鏡像（同一份 F-D0047、不用授權碼、約 6 小時更新一次＝跟 API 同步），
+ * 並記下「API 暫停」6 小時，這段時間直接讀鏡像，不再每小時卡 50 秒。
+ * 兩邊都失敗：保留上一份成功的摘要（標 stale），不把畫面洗成「連不上」；從沒成功過才回 error。
  */
 var WIDGET_IDS = ['tasks', 'finance', 'mail', 'stocks', 'reading', 'weather'];
 var WIDGET_DEFAULT_ORDER = ['tasks', 'finance', 'mail', 'stocks', 'reading', 'weather'];
@@ -31,6 +36,11 @@ var WEATHER_DEFAULT = { county: '臺北市', district: '中正區' };
 var WEATHER_KEY_PROP = 'WEATHER_API';
 var WEATHER_CACHE_KEY = 'weather_cache';
 var WEATHER_URL = 'https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-D0047-';
+/** 氣象署官方 AWS 開放資料鏡像（registry.opendata.aws/cwa_opendata）：同一份資料，外層包法不同（cwaopendata.Dataset） */
+var WEATHER_MIRROR_URL = 'https://cwaopendata.s3.ap-northeast-1.amazonaws.com/Forecast/F-D0047-';
+/** API 失敗後多久內直接讀鏡像（不再先打 API 卡 50 秒） */
+var WEATHER_API_PAUSE_MS = 6 * 3600000;
+var WEATHER_API_PAUSE_KEY = 'weather_api_paused_until';
 var WEATHER_LOG_SOURCE = '天氣';
 var WEATHER_UMBRELLA_POP = 50;
 var WEATHER_DISTRICT_RE = /^[㐀-鿿]{1,10}$/;
@@ -193,7 +203,7 @@ function weatherWanted_() {
   return Object.keys(out).map(function (k) { return out[k]; });
 }
 
-function weatherFetchCounty_(county, key) {
+function weatherFetchApi_(county, key) {
   var url = WEATHER_URL + WEATHER_DATASETS[county] + '?Authorization=' + encodeURIComponent(key) + '&format=JSON';
   var res = callApi_('cwa', url, { method: 'get', muteHttpExceptions: true });
   var code = res.getResponseCode();
@@ -201,40 +211,84 @@ function weatherFetchCounty_(county, key) {
   return JSON.parse(res.getContentText());
 }
 
+function weatherFetchMirror_(county) {
+  var res = callApi_('cwa_mirror', WEATHER_MIRROR_URL + WEATHER_DATASETS[county] + '.json', { method: 'get', muteHttpExceptions: true });
+  var code = res.getResponseCode();
+  if (code !== 200) throw new Error('鏡像 HTTP ' + code);
+  return JSON.parse(res.getContentText());
+}
+
+/**
+ * 抓一個縣市：先 API（沒在暫停期、有授權碼），失敗改讀鏡像。回 { json, via }；兩邊都失敗丟例外（訊息兩段都帶、授權碼已遮）。
+ * state：這一輪共用（API 一失敗，同一輪其他縣市也直接讀鏡像）
+ */
+function weatherFetchCounty_(county, key, state) {
+  var props = PropertiesService.getScriptProperties();
+  var errs = [];
+  var paused = Number(props.getProperty(WEATHER_API_PAUSE_KEY) || 0) > state.nowMs;
+  if (key && !paused && !state.apiDown) {
+    try {
+      return { json: weatherFetchApi_(county, key), via: 'api' };
+    } catch (err) {
+      state.apiDown = true;
+      errs.push('API：' + String(err && err.message || err).split(key).join('***'));
+      try { props.setProperty(WEATHER_API_PAUSE_KEY, String(state.nowMs + WEATHER_API_PAUSE_MS)); } catch (e2) {}
+    }
+  }
+  try {
+    return { json: weatherFetchMirror_(county), via: 'mirror' };
+  } catch (err) {
+    errs.push('鏡像：' + String(err && err.message || err));
+    throw new Error(errs.join('；'));
+  }
+}
+
 /**
  * 排程（每小時）：依縣市抓、整理成摘要存起來。only＝只抓這一個地點（換地點時當場抓，結果併進既有的）。
- * 一個縣市失敗：那個縣市的地點記 error、寫 logs，其他照常。沒設授權碼：寫 logs、不打網路
+ * 一個縣市兩邊都失敗：那個縣市的地點保留上一份成功的（標 stale），沒有就記 error；寫 logs，其他照常。
+ * 沒設授權碼：照樣讀鏡像（鏡像不用授權碼），但寫一筆 logs 提醒
  */
 function runWeatherJob_(now, only) {
   var key = String(PropertiesService.getScriptProperties().getProperty(WEATHER_KEY_PROP) || '').trim();
   if (!key) {
-    try { logTransaction_(WEATHER_LOG_SOURCE, '失敗', '天氣排程', '沒設授權碼，沒有抓', '專案設定 → 指令碼屬性 → WEATHER_API', '', ''); } catch (err) {}
-    return { skipped: 'no_key' };
+    try { logTransaction_(WEATHER_LOG_SOURCE, '失敗', '天氣排程', '沒設授權碼，只讀氣象署鏡像', '專案設定 → 指令碼屬性 → WEATHER_API', '', ''); } catch (err) {}
   }
   var nowMs = (now || new Date()).getTime();
   var wanted = only ? [only] : weatherWanted_();
   var byCounty = {};
   wanted.forEach(function (w) { (byCounty[w.county] = byCounty[w.county] || []).push(w.district); });
-  var cache = only ? weatherCache_() : {};
-  var failed = 0;
+  var prev = weatherCache_();
+  // 整輪：只留現在還有人要的地點；換地點：併進既有的
+  var cache = only ? prev : {};
+  var state = { nowMs: nowMs, apiDown: false };
+  var failed = 0, mirrored = 0;
   Object.keys(byCounty).forEach(function (county) {
-    var json = null;
+    var got = null;
     try {
-      json = weatherFetchCounty_(county, key);
+      got = weatherFetchCounty_(county, key, state);
+      if (got.via === 'mirror') mirrored++;
     } catch (err) {
       failed++;
-      // GAS 的網路例外訊息可能帶整串網址（含 ?Authorization=授權碼）：寫進 logs 前把授權碼遮掉
-      var msg = String(err && err.message || err).split(key).join('***');
-      try { logTransaction_(WEATHER_LOG_SOURCE, '失敗', '抓 ' + county, '氣象署讀不到，這一輪沒有更新', msg, '', ''); } catch (e2) {}
+      var msg = String(err && err.message || err);
+      if (key) msg = msg.split(key).join('***');
+      try { logTransaction_(WEATHER_LOG_SOURCE, '失敗', '抓 ' + county, '氣象署 API 與鏡像都讀不到，保留上一份', msg, '', ''); } catch (e2) {}
     }
     byCounty[county].forEach(function (district) {
-      cache[weatherKey_(county, district)] = json
-        ? weatherSummaryOf_(json, district, nowMs)
-        : { error: 'fetch_failed', district: district, at: new Date(nowMs).toISOString() };
+      var k = weatherKey_(county, district);
+      var fresh = got ? weatherSummaryOf_(got.json, district, nowMs) : null;
+      if (fresh && !fresh.error) { cache[k] = fresh; return; }
+      var old = prev[k];
+      if (old && !old.error) { cache[k] = Object.assign({}, old, { stale: true }); return; }
+      cache[k] = fresh || { error: 'fetch_failed', district: district, at: new Date(nowMs).toISOString() };
     });
   });
   PropertiesService.getScriptProperties().setProperty(WEATHER_CACHE_KEY, JSON.stringify(cache));
-  return { counties: Object.keys(byCounty).length, failed: failed };
+  return { counties: Object.keys(byCounty).length, failed: failed, mirrored: mirrored };
+}
+
+/** API 是陣列、鏡像（XML 轉的 JSON）單筆時是物件：一律當陣列 */
+function weatherArr_(x) {
+  return x == null ? [] : Array.isArray(x) ? x : [x];
 }
 
 /** 大小寫兩種都認（官方 2024 年改過一次欄位名的大小寫） */
@@ -249,23 +303,25 @@ function weatherPick_(o, name) {
  * 今天還有時段就報今天剩下的（高低溫、最高降雨機率、現在或下一段的天氣），沒有了（深夜）就報明天
  */
 function weatherSummaryOf_(json, district, nowMs) {
-  var records = weatherPick_(json, 'records') || {};
+  // API：records；鏡像：cwaopendata.Dataset（其餘同一套欄位名）
+  var mirror = weatherPick_(json, 'cwaopendata');
+  var records = weatherPick_(json, 'records') || (mirror && weatherPick_(mirror, 'Dataset')) || {};
   var locs = [];
-  (weatherPick_(records, 'Locations') || []).forEach(function (l) { locs = locs.concat(weatherPick_(l, 'Location') || []); });
+  weatherArr_(weatherPick_(records, 'Locations')).forEach(function (l) { locs = locs.concat(weatherArr_(weatherPick_(l, 'Location'))); });
   var loc = locs.filter(function (l) { return String(weatherPick_(l, 'LocationName') || '').trim() === district; })[0];
   if (!loc) return { error: 'district_not_found', district: district, at: new Date(nowMs).toISOString() };
-  var elements = weatherPick_(loc, 'WeatherElement') || [];
+  var elements = weatherArr_(weatherPick_(loc, 'WeatherElement'));
   var series = function (field) {
     var el = elements.filter(function (e) {
-      var t = (weatherPick_(e, 'Time') || [])[0];
-      var v = t ? (weatherPick_(t, 'ElementValue') || [])[0] : null;
+      var t = weatherArr_(weatherPick_(e, 'Time'))[0];
+      var v = t ? weatherArr_(weatherPick_(t, 'ElementValue'))[0] : null;
       return v && v[field] !== undefined;
     })[0];
-    return (el ? weatherPick_(el, 'Time') || [] : []).map(function (t) {
+    return (el ? weatherArr_(weatherPick_(el, 'Time')) : []).map(function (t) {
       var start = String(weatherPick_(t, 'DataTime') || weatherPick_(t, 'StartTime') || '');
       var end = weatherPick_(t, 'EndTime');
       return { day: start.slice(0, 10), start: Date.parse(start), end: end ? Date.parse(end) : NaN,
-               v: ((weatherPick_(t, 'ElementValue') || [])[0] || {})[field] };
+               v: (weatherArr_(weatherPick_(t, 'ElementValue'))[0] || {})[field] };
     });
   };
   var T = series('Temperature'), P = series('ProbabilityOfPrecipitation'), W = series('Weather');
@@ -290,12 +346,17 @@ function weatherSummaryOf_(json, district, nowMs) {
   };
 }
 
-/** 在編輯器手動執行：抓預設地點一次，看授權碼與格式對不對（不寫快取） */
+/** 在編輯器手動執行：API 與鏡像各抓預設地點一次，看哪邊通、格式對不對（不寫快取、不動暫停旗標） */
 function probeWeather() {
   var key = String(PropertiesService.getScriptProperties().getProperty(WEATHER_KEY_PROP) || '').trim();
-  if (!key) { console.log('❌ 沒設 WEATHER_API'); return null; }
-  var json = weatherFetchCounty_(WEATHER_DEFAULT.county, key);
-  var s = weatherSummaryOf_(json, WEATHER_DEFAULT.district, Date.now());
-  console.log(JSON.stringify(s));
-  return s;
+  var out = {};
+  if (!key) out.api = '❌ 沒設 WEATHER_API';
+  else {
+    try { out.api = weatherSummaryOf_(weatherFetchApi_(WEATHER_DEFAULT.county, key), WEATHER_DEFAULT.district, Date.now()); }
+    catch (err) { out.api = '❌ ' + String(err && err.message || err).split(key).join('***'); }
+  }
+  try { out.mirror = weatherSummaryOf_(weatherFetchMirror_(WEATHER_DEFAULT.county), WEATHER_DEFAULT.district, Date.now()); }
+  catch (err) { out.mirror = '❌ ' + String(err && err.message || err); }
+  console.log(JSON.stringify(out));
+  return out;
 }

@@ -5034,7 +5034,8 @@ function renderWeatherWidget(){
     return `<div class="w-row"><span class="lbl">${where}・${esc(d.period||'今天')}</span>
       <span class="txt">${esc(d.wx||'—')}　${temp}</span>
       ${d.pop!=null ? `<small>降雨機率 ${d.pop}%</small>` : ''}</div>`
-      + (d.umbrella ? '<div class="w-umbrella">☔ 記得帶傘</div>' : '');
+      + (d.umbrella ? '<div class="w-umbrella">☔ 記得帶傘</div>' : '')
+      + (d.stale && d.at ? `<div class="w-foot">氣象署暫時連不上，顯示 ${hhmm(Date.parse(d.at))} 的資料</div>` : '');
   }, notFound ? 'ok' : undefined);
   if(notFound){
     const el=document.getElementById('wWeather');
