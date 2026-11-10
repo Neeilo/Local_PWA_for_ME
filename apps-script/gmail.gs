@@ -1,7 +1,7 @@
 /**
  * Gmail 控制員（ADR-016）。
  *
- * 每天 9 點 runGmailController 依 gmail_rules 掃最近 3 天的信 → Gmail 貼標籤 →
+ * 每天 7 點、16 點 runGmailController 依 gmail_rules 掃最近 3 天的信 → Gmail 貼標籤 →
  * 帳單 PDF 原封不動存 Drive → 規則有解析器就抓金額／截止日 → 寫 gmail_log（一封一列）→
  * 「掃一遍」依規則決定留下／封存（ADR-026：預設預演，只記不動；管理員親手開正式封存）→
  * 推一則處理結果彙報到開了 notify_gmail 的群組。不標已讀、不刪除、不動星號、不呼叫 Gemini。
@@ -310,7 +310,9 @@ var GMAIL_SCAN_DAYS = 3;
 var GMAIL_SCAN_MAX = 100;
 var GMAIL_DRIVE_ROOT = ['Neil OS', 'Gmail 附件'];
 var GMAIL_CONTROLLER_FUNCTION = 'runGmailController';
-var GMAIL_CONTROLLER_HOUR = 9;       // 與到期提醒同時段（D-8）
+/** 每天跑的時段（台北）。2026-11-10 Neil 改成早上 7 點＋下午 4 點（原本 9 點、與到期提醒同時段，D-8）。
+ *  一天多跑一次是安全的：去重看 gmail_log 的 msg_id，彙報只列這一輪新處理的、0 封不推 */
+var GMAIL_CONTROLLER_HOURS = [7, 16];
 var GMAIL_AUTH_HINT = '在 GAS 編輯器執行一次 authorizeGmailController';
 
 /**
@@ -955,7 +957,7 @@ function installGmail_() {
   }
 
   // 觸發器由排程總管統一管（ADR-019 D-1），這裡不再自己裝
-  lines.push('排程：由排程總管每天 ' + GMAIL_CONTROLLER_HOUR + ' 點後第一輪執行');
+  lines.push('排程：由排程總管每天 ' + GMAIL_CONTROLLER_HOURS.join('、') + ' 點後第一輪執行');
   return { level: warn ? 'warn' : 'ok', changed: changed, text: lines.join('\n　') };
 }
 

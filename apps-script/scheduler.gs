@@ -18,6 +18,7 @@
  *
  * ⚠️ 總管是單點：掛了全部停。靠每日心跳＋慢執行 log 發現（ADR-019 後果）。
  * ⚠️ 每日類工作最多晚 5 分鐘（9 點後第一輪）。
+ * ⚠️ 每日多時段（daily_hours）：每個時段到了跑一次；一個時段錯過了（總管停過），回來時補一次，不會連補好幾次。
  */
 var SCHEDULER_FUNCTION = 'runScheduler';
 var SCHEDULER_MINUTES = 5;
@@ -47,7 +48,8 @@ function schedulerJobs_() {
       run: function (now) { return checkStockRules(now); } },
     { name: 'dueCheck', module: 'tasks', label: '到期提醒', when: '每天 ' + DUE_CHECK_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: DUE_CHECK_HOUR },
       run: function () { return checkDueReminders(); } },
-    { name: 'gmail', module: 'mail', label: 'Gmail 控制員', when: '每天 ' + GMAIL_CONTROLLER_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: GMAIL_CONTROLLER_HOUR },
+    { name: 'gmail', module: 'mail', label: 'Gmail 控制員', when: '每天 ' + GMAIL_CONTROLLER_HOURS.join('、') + ' 點後第一輪',
+      rule: { kind: 'daily_hours', hours: GMAIL_CONTROLLER_HOURS },
       run: function (now) { return runGmailController_(now); } },
     { name: 'guide', label: '_guide 導覽', when: '每天 ' + GUIDE_REFRESH_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: GUIDE_REFRESH_HOUR },
       run: function () { return refreshGuide(); } },
@@ -97,6 +99,13 @@ function schedulerDue_(rule, nowMs, st) {
       return isTwTradingTime_(now);
     case 'daily':
       return hour >= rule.hour && (last === null || taipeiDateKey_(new Date(last)) !== today);
+    case 'daily_hours': {
+      // 今天已經到的最晚那個時段；上次執行早於它就跑。今天第一個時段之前不跑（不補昨天的）
+      var passed = (rule.hours || []).filter(function (h) { return hour >= h; });
+      if (!passed.length) return false;
+      var slotMs = (nowMs - p.minutes * 60000 - (nowMs % 60000)) + Math.max.apply(null, passed) * HOUR_MS;
+      return last === null || last < slotMs;
+    }
     case 'hourly':
       return newHour;
     case 'every':

@@ -97,7 +97,7 @@ function guideRegistry_() {
       key: 'rule_id', adr: '016、026' },
     { sheet: GMAIL_LOG_SHEET, category: '功能模組', purpose: 'Gmail 控制員處理過的信，一封一列（不存卡號、不存內文）；msg_id 是去重的依據。status 是解析狀態。' +
         'ADR-026 加 bucket、requested_inbox_action（寫入當下的規則快照）、inbox_action_status（kept／dry_run 預演／archived／skipped／failed；空白＝舊列，永不封存）、inbox_action_at、inbox_action_note（原因，不含主旨內文）',
-      writers: '只有 runGmailController 排程（每天約 9 點；去向三欄由同一輪的「掃一遍」寫）', readers: 'GAS、App 的管理員（郵件列表、整理報告、首頁 Widget）',
+      writers: '只有 runGmailController 排程（每天約 7 點、16 點；去向三欄由同一輪的「掃一遍」寫）', readers: 'GAS、App 的管理員（郵件列表、整理報告、首頁 Widget）',
       key: 'msg_id', adr: '016、026' },
     { sheet: API_REGISTRY_SHEET, category: '功能模組', purpose: 'API 價目表與免費額度（改價＝新增一列帶 effective_from，舊列不改；AI 單價由「重新查價」帶入）',
       writers: '初始化（補還沒登記的 api_id＋model）、Neil 在 Sheet 上改；PWA 讀寫都擋', readers: 'callApi_ 查當下單價、排程收尾算額度百分比',
