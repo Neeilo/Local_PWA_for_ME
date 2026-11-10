@@ -42,6 +42,15 @@ function cwaSample(district = '中正區', day = '2026-10-20') {
   };
 }
 
+/** 氣象署 AWS 鏡像的包法（2026-11-10 實際抓的 F-D0047-073 結構）：cwaopendata.Dataset、Locations 是物件、ElementValue 是物件 */
+function mirrorSample(district = '中正區', day = '2026-10-20') {
+  const api = cwaSample(district, day).records.Locations[0];
+  const objVal = (loc) => Object.assign({}, loc, { WeatherElement: loc.WeatherElement.map((el) => Object.assign({}, el, {
+    Time: el.Time.map((t) => Object.assign({}, t, { ElementValue: t.ElementValue[0] })) })) });
+  return { cwaopendata: { Dataset: { DatasetInfo: { DatasetDescription: '臺灣各縣市鄉鎮未來3天天氣預報' },
+    Locations: { LocationsName: api.LocationsName, Location: api.Location.map(objVal) } } } };
+}
+
 function env({ feats = FEATS, admin = true, extra = {}, props = {}, fetch = null, opts = {} } = {}) {
   const sheets = Object.assign({
     line_users: new FakeSheet('line_users', [
@@ -159,11 +168,82 @@ describe('Weather：排程抓、存雲端；Widget 只讀存好的', () => {
     assert.equal(cache['臺北市|大安區'].district, '大安區');
   });
 
-  test('排程抓失敗：寫 logs；那個地點記 error，其他照常', () => {
+  test('API 與鏡像都失敗、之前沒成功過：寫 logs；那個地點記 error，其他照常', () => {
     const e = env({ fetch: () => { throw new Error('模擬：連不上'); } });
     e.call('runWeatherJob_', new Date('2026-10-20T03:00:00Z'));
     assert.ok(e.transactions.some((t) => t[0] === '天氣' && t[1] === '失敗'));
     assert.equal(JSON.parse(e.properties.weather_cache)['臺北市|中正區'].error, 'fetch_failed');
+  });
+
+  /* 2026-11-10 實際狀況：GAS 打 opendata.cwa.gov.tw 報「使用できないアドレス」，一次卡約 50 秒；
+     原本一失敗就把上一份好的洗成 fetch_failed，首頁天氣整格「連不上」 */
+  const apiBlocked = (mirrorJson, seen = []) => (url) => {
+    seen.push(url);
+    if (/opendata\.cwa\.gov\.tw/.test(url)) throw new Error('使用できないアドレス: ' + url);
+    return { getResponseCode: () => 200, getContentText: () => JSON.stringify(mirrorJson) };
+  };
+
+  test('API 被擋：改讀氣象署 AWS 鏡像（同資料集、不帶授權碼），摘要照常', () => {
+    const seen = [];
+    const e = env({ fetch: apiBlocked(mirrorSample(), seen) });
+    const r = e.call('runWeatherJob_', new Date('2026-10-20T03:00:00Z'));
+    assert.match(seen[1], /cwaopendata\.s3\.ap-northeast-1\.amazonaws\.com\/Forecast\/F-D0047-061\.json$/);
+    assert.doesNotMatch(seen[1], /Authorization/, '鏡像不需要、也不該帶授權碼');
+    const w = JSON.parse(e.properties.weather_cache)['臺北市|中正區'];
+    assert.deepEqual([w.wx, w.max, w.min, w.pop, w.umbrella, w.stale], ['多雲', 30, 24, 60, true, undefined]);
+    assert.equal(r.mirrored, 1);
+  });
+
+  test('API 失敗後 6 小時內直接讀鏡像（不再每小時先卡 50 秒）；過了再試 API', () => {
+    const seen = [];
+    const e = env({ fetch: apiBlocked(mirrorSample(), seen) });
+    e.call('runWeatherJob_', new Date('2026-10-20T03:00:00Z'));
+    seen.length = 0;
+    e.call('runWeatherJob_', new Date('2026-10-20T04:00:00Z'));
+    assert.equal(seen.length, 1);
+    assert.match(seen[0], /amazonaws/);
+    seen.length = 0;
+    e.call('runWeatherJob_', new Date('2026-10-20T09:30:00Z'));
+    assert.match(seen[0], /opendata\.cwa\.gov\.tw/, '暫停期過了，先試回 API');
+  });
+
+  test('同一輪 API 一失敗，其他縣市也直接讀鏡像', () => {
+    const seen = [];
+    const cfg = new FakeSheet('widget_config', [['line_id', 'weather_county', 'weather_district'], [ME, '臺中市', '南屯區']]);
+    const sample = mirrorSample();
+    sample.cwaopendata.Dataset.Locations.Location.push(Object.assign({}, sample.cwaopendata.Dataset.Locations.Location[1], { LocationName: '南屯區' }));
+    const e = env({ extra: { widget_config: cfg }, fetch: apiBlocked(sample, seen) });
+    e.call('runWeatherJob_', new Date('2026-10-20T03:00:00Z'));
+    assert.equal(seen.filter((u) => /opendata\.cwa\.gov\.tw/.test(u)).length, 1);
+    assert.equal(seen.filter((u) => /amazonaws/.test(u)).length, 2);
+    assert.equal(JSON.parse(e.properties.weather_cache)['臺中市|南屯區'].wx, '多雲');
+  });
+
+  test('兩邊都失敗、之前有成功的：保留上一份（標 stale），不洗成連不上', () => {
+    const good = { district: '中正區', wx: '晴', max: 30, min: 22, pop: 10, umbrella: false, period: '今天', at: '2026-10-20T01:00:00.000Z' };
+    const e = env({ props: { weather_cache: JSON.stringify({ '臺北市|中正區': good }) }, fetch: () => { throw new Error('模擬：連不上'); } });
+    e.call('runWeatherJob_', new Date('2026-10-20T03:00:00Z'));
+    const w = JSON.parse(e.properties.weather_cache)['臺北市|中正區'];
+    assert.equal(w.error, undefined);
+    assert.equal(w.wx, '晴');
+    assert.equal(w.stale, true);
+    assert.equal(w.at, good.at, '時間留原本的，前端才講得出是幾點的資料');
+    assert.ok(e.transactions.some((t) => t[0] === '天氣' && t[1] === '失敗'));
+  });
+
+  test('鏡像成功後 stale 拿掉；沒人要的舊地點整輪時清掉', () => {
+    const e = env({ props: { weather_cache: JSON.stringify({ '臺北市|中正區': { wx: '晴', stale: true, at: 'x' }, '花蓮縣|秀林鄉': { wx: '雨', at: 'x' } }) },
+      fetch: apiBlocked(mirrorSample()) });
+    e.call('runWeatherJob_', new Date('2026-10-20T03:00:00Z'));
+    const cache = JSON.parse(e.properties.weather_cache);
+    assert.equal(cache['臺北市|中正區'].stale, undefined);
+    assert.equal(cache['花蓮縣|秀林鄉'], undefined);
+  });
+
+  test('鏡像格式（cwaopendata.Dataset、Locations 是物件、ElementValue 是物件）解析結果跟 API 一樣', () => {
+    const e = env();
+    const at = Date.parse('2026-10-20T11:00:00+08:00');
+    assert.deepEqual(e.call('weatherSummaryOf_', mirrorSample(), '中正區', at), e.call('weatherSummaryOf_', cwaSample(), '中正區', at));
   });
 
   test('網路例外訊息帶著網址（含授權碼）：寫進 logs 前遮掉', () => {
@@ -174,12 +254,14 @@ describe('Weather：排程抓、存雲端；Widget 只讀存好的', () => {
     assert.match(logged, /\*\*\*/);
   });
 
-  test('沒設授權碼：寫 logs、不打網路', () => {
-    let called = 0;
-    const e = env({ props: { WEATHER_API: '' }, fetch: () => { called++; } });
-    e.call('runWeatherJob_', new Date());
-    assert.equal(called, 0);
+  test('沒設授權碼：寫 logs 提醒、不打 API，只讀鏡像（鏡像不用授權碼）', () => {
+    const seen = [];
+    const e = env({ props: { WEATHER_API: '' }, fetch: okFetch(mirrorSample(), seen) });
+    e.call('runWeatherJob_', new Date('2026-10-20T03:00:00Z'));
+    assert.equal(seen.length, 1);
+    assert.match(seen[0], /amazonaws/);
     assert.ok(e.transactions.some((t) => t[0] === '天氣' && /WEATHER_API/.test(t[3] + t[4])));
+    assert.equal(JSON.parse(e.properties.weather_cache)['臺北市|中正區'].wx, '多雲');
   });
 
   test('Widget：讀這個人地點的那一份（預設臺北市中正區）；不在請求裡打氣象署', () => {

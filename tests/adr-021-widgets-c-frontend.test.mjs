@@ -159,6 +159,18 @@ describe('各 Widget 的內容', () => {
     assert.doesNotMatch(el('wWeather').innerHTML, /連不上/);
   });
 
+  test('天氣 stale（氣象署暫時連不上、後端保留上一份）：照常顯示，並講是幾點的資料；正常的不講', () => {
+    const { e, el } = env();
+    const at = '2026-11-10T01:00:00.000Z';
+    e.call('applyWidgets', { weather: { county: '臺中市', district: '南屯區', period: '今天', wx: '多雲', max: 25, min: 17, pop: 0, umbrella: false, stale: true, at } }, ['weather']);
+    const h = el('wWeather').innerHTML;
+    assert.match(h, /多雲/);
+    assert.doesNotMatch(h, /連不上・重試/);
+    assert.match(h, new RegExp('氣象署暫時連不上，顯示 ' + e.call('hhmm', Date.parse(at)) + ' 的資料'));
+    e.call('applyWidgets', { weather: { county: '臺中市', district: '南屯區', period: '今天', wx: '多雲', max: 25, min: 17, pop: 0, umbrella: false, at } }, ['weather']);
+    assert.doesNotMatch(el('wWeather').innerHTML, /暫時連不上/);
+  });
+
   test('天氣抓失敗：那一格連不上・重試', () => {
     const { e, el } = env();
     e.call('applyWidgets', { weather: { error: 'fetch_failed' } }, ['weather']);
