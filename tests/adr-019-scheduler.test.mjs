@@ -49,6 +49,30 @@ describe('該不該跑（純函式）', () => {
     assert.equal(due(e, daily, tpe(2026, 10, 20, 9, 1), { last: MON(9, 0) }), true, '隔天 9 點後');
   });
 
+  /* 2026-11-10：Gmail 控制員改成每天 7 點＋16 點。重點：每個時段剛好一次、錯過的時段只補一次、不補昨天的 */
+  test('每日多時段（7、16 點）：各時段後第一輪跑；同時段不跑第二次；錯過只補一次；不補昨天', () => {
+    const e = env();
+    const r = { kind: 'daily_hours', hours: [7, 16] };
+    assert.equal(due(e, r, MON(6, 59), { last: tpe(2026, 10, 18, 16, 0) }), false, '7 點前不跑（也不補昨天 16 點）');
+    assert.equal(due(e, r, MON(7, 0), { last: tpe(2026, 10, 18, 16, 0) }), true, '7:00 第一輪');
+    assert.equal(due(e, r, MON(7, 5), { last: MON(7, 0) }), false, '同一時段跑過了');
+    assert.equal(due(e, r, MON(15, 55), { last: MON(7, 0) }), false, '16 點前不跑第二次');
+    assert.equal(due(e, r, MON(16, 0), { last: MON(7, 0) }), true, '16:00 第二輪');
+    assert.equal(due(e, r, MON(16, 5), { last: MON(16, 0) }), false);
+    assert.equal(due(e, r, MON(23, 55), { last: MON(16, 0) }), false, '晚上不再跑');
+    assert.equal(due(e, r, MON(17, 0), { last: tpe(2026, 10, 18, 16, 0) }), true, '總管停了一整天、17 點才回來：補一次');
+    assert.equal(due(e, r, MON(17, 5), { last: MON(17, 0) }), false, '補過就不再補（7 點那輪不另外補）');
+    assert.equal(due(e, r, MON(7, 0)), true, '從沒跑過');
+  });
+
+  test('Gmail 控制員排在 7、16 點（到期提醒仍是 9 點）', () => {
+    const e = env();
+    const jobs = (n) => e.read('schedulerJobs_().filter(function(j){ return j.name === "' + n + '"; })[0]');
+    assert.deepEqual(jobs('gmail').rule, { kind: 'daily_hours', hours: [7, 16] });
+    assert.match(jobs('gmail').when, /7、16 點/);
+    assert.deepEqual(jobs('dueCheck').rule, { kind: 'daily', hour: 9 });
+  });
+
   test('盤中每輪：週一～五 9:00～13:30', () => {
     const e = env();
     const market = { kind: 'market' };

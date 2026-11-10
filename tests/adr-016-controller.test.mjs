@@ -369,7 +369,7 @@ describe('T1／T4「初始化」', () => {
     assert.deepEqual(e.sheets.line_groups.values[0].slice(-2), ['cmd_gmail', 'notify_gmail']);
     assert.deepEqual(e.drive.folders, ['Neil OS', 'Neil OS/Gmail 附件']);
     assert.deepEqual(e.triggers, [], 'ADR-019 D-1：觸發器只由「初始化」的排程總管裝');
-    assert.match(r.text, /排程：由排程總管每天 9 點後第一輪執行/);
+    assert.match(r.text, /排程：由排程總管每天 7、16 點後第一輪執行/);
     assert.match(r.text, /新建 gmail_rules/);
     assert.match(r.text, /新建 gmail_log/);
     assert.match(r.text, /line_users 補上：feat_gmail（預設只開管理者 1 人）/);
@@ -415,7 +415,7 @@ describe('T1／T4「初始化」', () => {
     const labels = e.read('initSteps_().map(function (s) { return s.label; })');
     assert.ok(labels.includes('Gmail 控制員'), labels.join('｜'));
     // ADR-019：時段在排程總管的登記表
-    assert.ok(e.read('schedulerJobList_()').includes('Gmail 控制員（每天 9 點後第一輪）'));
+    assert.ok(e.read('schedulerJobList_()').includes('Gmail 控制員（每天 7、16 點後第一輪）'));
   });
 
   test('authorizeGmailController 要求全部權限（選擇性授權：任何一個沒勾就重新跳出授權畫面）', () => {
