@@ -40,7 +40,7 @@ function guideRegistry_() {
     { sheet: SELF_NOTES_SHEET, category: '資料', purpose: '給自己的一段話（一人一列，只有本人讀得到）',
       writers: 'PWA 首頁（只走 selfNoteSet）', readers: 'PWA 開機（boot 只帶自己那一列；PWA 一般讀寫碰不到）',
       key: 'line_id', adr: '018' },
-    { sheet: CLIPS_SHEET, category: '資料', purpose: 'IG 收藏，一篇一列（全文、Drive 資料夾與圖片檔 ID；status＝pending／done／partial／failed，只存連結的 kind／status＝link；category＝圖書館分類（單選、存名稱，清單在 _clip_categories，ADR-023 D-7）；read_status＝空白＝未讀／reading＝閱讀中／read＝已讀（2.0 開閱讀頁未讀→閱讀中，手動可改，ADR-025）、last_read_at＝最後開啟時間，ADR-021 D-13；note／note_revision／note_updated_at＝筆記、ai_output／ai_provider／ai_at＝AI 整理，ADR-021 D-10／D-11；ocr_output／ocr_at＝📝 文字辨識（每張圖一段）、vision_output／vision_provider／vision_at＝🤖 AI 辨識，ADR-024 D-4）',
+    { sheet: CLIPS_SHEET, category: '資料', purpose: 'IG 收藏，一篇一列（全文、Drive 資料夾與圖片檔 ID；status＝pending／done／partial／failed，只存連結的 kind／status＝link；category＝圖書館分類（單選、存名稱，清單在 _clip_categories，ADR-023 D-7）；read_status＝空白＝未讀／reading＝閱讀中／read＝已讀（2.0 開閱讀頁未讀→閱讀中，手動可改，ADR-025）、last_read_at＝最後開啟時間，ADR-021 D-13；note／note_revision／note_updated_at＝筆記、ai_output／ai_provider／ai_at＝AI 整理，ADR-021 D-10／D-11；ocr_output／ocr_at＝📝 文字辨識（每張圖一段；排程每 10 分鐘自動替 ocr_at 空白的篇跑，捨棄＝清 ocr_output、ocr_at 記捨棄時間）、vision_output／vision_provider／vision_at＝🤖 AI 辨識，ADR-024 D-4）',
       writers: 'LINE 一對一貼網址（IG 登記 pending、其他只存連結）、排程總管 clips 工作（抓取、存 Drive、重試、合併）、PWA clipRetry／clipDelete／clipRead／clipReadState／clipNote／clipAi／clipAdd／clipCategory／clipOcr／clipVision（只限擁有者）',
       readers: 'PWA（只回自己的列）', key: 'id', adr: '020' },
     { sheet: 'notes', category: '資料', purpose: '雜記（[類別] 內容）',

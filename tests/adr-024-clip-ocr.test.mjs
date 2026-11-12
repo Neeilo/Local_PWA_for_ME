@@ -6,7 +6,7 @@
  *  - 「初始化」還沒補 ocr_* 欄就講 not_ready，不默默丟掉結果
  *  - 部分圖失敗：成功的照存、失敗的那張寫「（辨識失敗：原因）」；**全部失敗才算失敗**，舊結果留著（D-4）
  *  - 暫存文件不論成功失敗都刪（佔空間又看不見）
- *  - 結果另存 ocr_output／ocr_at，不動原文、筆記、AI 整理；捨棄只清這兩欄
+ *  - 結果另存 ocr_output／ocr_at，不動原文、筆記、AI 整理；捨棄只動這兩欄（2026-11-12 起 ocr_at 記捨棄時間，排程不再自動辨識它）
  *  - 只存連結、沒有圖的篇：講 no_images，不打 API
  *
  * 跑法：npm test
@@ -116,7 +116,8 @@ describe('📝 文字辨識：clipOcr', () => {
     assert.ok(e.transactions.some((t) => t[1] === '失敗' && /文字辨識/.test(t[3])));
   });
 
-  test('重跑＝取代；捨棄只清 ocr 兩欄、不打 API', () => {
+  // 2026-11-12 起捨棄會在 ocr_at 記捨棄時間：排程自動辨識看到 ocr_at 有值就不碰，捨棄掉的不會被辨識回來
+  test('重跑＝取代；捨棄清掉圖片文字、ocr_at 記捨棄時間，不打 API', () => {
     const e = env({ clipsRows: [clip({ ocr_output: '舊的', ocr_at: '2026-11-01T00:00:00.000Z' })] });
     post(e, { action: 'clipOcr', id: 'c1' });
     assert.match(rows(e)[0].ocr_output, /封面字/);
@@ -124,7 +125,8 @@ describe('📝 文字辨識：clipOcr', () => {
     assert.equal(post(e, { action: 'clipOcr', id: 'c1', discard: true }).success, true);
     assert.equal(e.api.calls.length, n);
     const row = rows(e)[0];
-    assert.deepEqual([row.ocr_output, row.ocr_at, row.ai_output, row.note], ['', '', '舊 AI 整理', '我的筆記']);
+    assert.deepEqual([row.ocr_output, row.ai_output, row.note], ['', '舊 AI 整理', '我的筆記']);
+    assert.ok(row.ocr_at && row.ocr_at !== '2026-11-01T00:00:00.000Z', 'ocr_at 記的是捨棄的時間');
   });
 
   test('暫存刪不掉：結果照存，logs 記下殘留的暫存文件 id', () => {

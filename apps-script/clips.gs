@@ -878,9 +878,38 @@ function clipOcrFormat_(results, skipped) {
 }
 
 /**
+ * 一篇的圖逐張辨識（手動 📝 與排程共用）。budgetMs：從第二張起，超過就停在那張（已辨識的照算）。
+ * 回 { images, results, leftovers, ms, ok, skipped }；不寫表、不寫 logs（呼叫端決定）
+ */
+function clipOcrRun_(images, budgetMs) {
+  var token = clipOcrToken_();
+  var t0 = Date.now();
+  var results = [];
+  var leftovers = [];
+  for (var i = 0; i < images.length; i++) {
+    if (i > 0 && Date.now() - t0 > budgetMs) break;
+    var r = clipOcrImage_(images[i].id, token);
+    if (!r.cleaned) leftovers.push(r.leftover);
+    results.push({ name: images[i].name, ok: r.ok, text: r.text, error: r.error });
+  }
+  return {
+    results: results, leftovers: leftovers, ms: Date.now() - t0,
+    ok: results.filter(function (x) { return x.ok; }).length,
+    skipped: images.length - results.length
+  };
+}
+
+/** logs 的 detail：幾張、成功幾張、耗時、殘留的暫存文件、網址 */
+function clipOcrDetail_(run, total, rec) {
+  return run.results.length + '／' + total + ' 張｜成功 ' + run.ok + '｜' + run.ms + ' ms' +
+    (run.leftovers.length ? '｜⚠️ 暫存文件殘留（到 Drive 搜 tmp_ocr_ 手動刪）：' + run.leftovers.join('、') : '') + '｜' + String(rec.url || '');
+}
+
+/**
  * action=clipOcr（ADR-024 D-1、D-5）：📝 文字辨識，按了才跑、一次一篇。比照 clipAi_：只限擁有者、缺欄 not_ready、
  * 結果另存 ocr_output／ocr_at（不動原文、筆記、AI 整理）、一篇留最新一份。
- * 單張失敗不讓整篇失敗；**全部失敗才算失敗**，那時不寫、舊結果留著。discard＝捨棄（清兩欄，不打 API）
+ * 單張失敗不讓整篇失敗；**全部失敗才算失敗**，那時不寫、舊結果留著。
+ * discard＝捨棄（不打 API）：清掉 ocr_output，ocr_at 記捨棄的時間——排程看到 ocr_at 有值就不會再自動辨識回來
  */
 function clipOcr_(caller, id, discard) {
   var own = clipOwnRow_(caller, discard ? 'clipOcrDiscard' : 'clipOcr', id);
@@ -889,43 +918,137 @@ function clipOcr_(caller, id, discard) {
   if (missing) return missing;
   var rec = own.rec;
   if (discard) {
-    try { clipsPatch_(own.sheet, id, { ocr_output: '', ocr_at: '' }); } catch (err) { return { error: 'busy' }; }
+    try { clipsPatch_(own.sheet, id, { ocr_output: '', ocr_at: new Date().toISOString() }); } catch (err) { return { error: 'busy' }; }
     logTransaction_(CLIPS_LOG_SOURCE, '成功', 'clipOcr ' + id, '捨棄文字辨識', String(rec.url || ''), '', caller.line_id);
     return { success: true };
   }
   var images = rec.kind === CLIP_LINK ? [] : clipImageList_(rec);
   if (!images.length) return { error: 'no_images', permanent: true };
 
-  var token = clipOcrToken_();
-  var t0 = Date.now();
-  var results = [];
-  var leftovers = [];
-  for (var i = 0; i < images.length; i++) {
-    if (i > 0 && Date.now() - t0 > CLIP_OCR_BUDGET_MS) break;
-    var r = clipOcrImage_(images[i].id, token);
-    if (!r.cleaned) leftovers.push(r.leftover);
-    results.push({ name: images[i].name, ok: r.ok, text: r.text, error: r.error });
-  }
-  var ms = Date.now() - t0;
-  var ok = results.filter(function (x) { return x.ok; }).length;
-  var skipped = images.length - results.length;
-  var detail = results.length + '／' + images.length + ' 張｜成功 ' + ok + '｜' + ms + ' ms' +
-    (leftovers.length ? '｜⚠️ 暫存文件殘留（到 Drive 搜 tmp_ocr_ 手動刪）：' + leftovers.join('、') : '') + '｜' + String(rec.url || '');
-  if (!ok) {
-    var reason = results.length ? String(results[0].error || '原因不明') : '原因不明';
+  var run = clipOcrRun_(images, CLIP_OCR_BUDGET_MS);
+  var detail = clipOcrDetail_(run, images.length, rec);
+  if (!run.ok) {
+    var reason = run.results.length ? String(run.results[0].error || '原因不明') : '原因不明';
     logTransaction_(CLIPS_LOG_SOURCE, '失敗', 'clipOcr ' + id, '文字辨識失敗：' + reason, detail, '', caller.line_id);
     return { error: 'ocr_failed', reason: reason };
   }
-  var text = clipOcrFormat_(results, skipped);
+  var text = clipOcrFormat_(run.results, run.skipped);
   var at = new Date().toISOString();
   try {
     clipsPatch_(own.sheet, id, { ocr_output: text, ocr_at: at });
   } catch (err) {
     return { error: 'busy' };
   }
-  logTransaction_(CLIPS_LOG_SOURCE, '成功', 'clipOcr ' + id, '文字辨識' + (ok < results.length ? '（' + (results.length - ok) + ' 張失敗）' : '') +
-    (skipped ? '（' + skipped + ' 張沒跑完）' : ''), detail, '', caller.line_id);
-  return { success: true, ocr_output: text, ocr_at: at, failed: results.length - ok, skipped: skipped };
+  var failed = run.results.length - run.ok;
+  logTransaction_(CLIPS_LOG_SOURCE, '成功', 'clipOcr ' + id, '文字辨識' + (failed ? '（' + failed + ' 張失敗）' : '') +
+    (run.skipped ? '（' + run.skipped + ' 張沒跑完）' : ''), detail, '', caller.line_id);
+  return { success: true, ocr_output: text, ocr_at: at, failed: failed, skipped: run.skipped };
+}
+
+/* -------------------------------------------------------------------------- */
+/* 📝 文字辨識・排程自動跑（Neil 2026-11-12：圖書館預設排程跑 Drive 文字辨識）              */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * 收齊的篇（done／partial、有圖、沒刪）而且 ocr_at 空白＝從沒辨識過、也沒被捨棄過 → 排程替你按 📝。
+ *  - 新收的先跑（表的下面＝新的）；一次最多 CLIP_OCR_AUTO_PER_RUN 篇；這一輪剩的時間不夠一篇就留給下一輪
+ *  - ocr_at 有值就不碰：手動跑過的、捨棄過的（捨棄會記 ocr_at）都不會被排程蓋掉或辨識回來
+ *  - 寫回在鎖內再看一次 ocr_at：辨識途中你剛好手動按了或捨棄，以你的為準
+ *  - 整篇失敗不寫、記一次失敗；同一篇失敗 CLIP_OCR_AUTO_MAX_FAILS 次就不再自動試（App 裡照樣可以手動按）
+ *  - Drive API 不收費，只記次數（callApi_('drive_ocr')）；不呼叫 AI
+ */
+var CLIP_OCR_AUTO_PER_RUN = 3;
+var CLIP_OCR_AUTO_MINUTES = 10;
+var CLIP_OCR_AUTO_MIN_BUDGET_MS = 60000;      // 這一輪剩不到 1 分鐘：不開新的一篇
+var CLIP_OCR_AUTO_RESERVE_MS = 30000;         // 一篇的辨識時間＝剩餘預算扣 30 秒（留給寫回、logs）
+var CLIP_OCR_AUTO_MAX_FAILS = 3;
+var CLIP_OCR_AUTO_FAILS_KEY = 'clip_ocr_auto_fails';
+var CLIP_OCR_AUTO_INPUT = 'clipOcr（排程）';
+
+function clipOcrAutoFails_() {
+  var m = null;
+  try { m = JSON.parse(PropertiesService.getScriptProperties().getProperty(CLIP_OCR_AUTO_FAILS_KEY) || 'null'); } catch (err) { m = null; }
+  return m && typeof m === 'object' ? m : {};
+}
+
+function clipOcrAutoSaveFails_(m) {
+  try { PropertiesService.getScriptProperties().setProperty(CLIP_OCR_AUTO_FAILS_KEY, JSON.stringify(m)); }
+  catch (err) { console.log('存不了自動文字辨識的失敗次數：' + err); }
+}
+
+/** 這篇該不該由排程自動辨識。純函式（不看 Drive）：沒圖的在 clipImageList_ 那一步才知道 */
+function clipOcrAutoWanted_(rec, fails) {
+  if (!rec || !String(rec.id || '').trim() || clipDeleted_(rec)) return false;
+  if (rec.kind === CLIP_LINK) return false;
+  var st = String(rec.status || '').trim();
+  if (st !== 'done' && st !== 'partial') return false;
+  if (String(rec.ocr_output == null ? '' : rec.ocr_output).trim()) return false;
+  if (String(rec.ocr_at == null ? '' : rec.ocr_at).trim()) return false;
+  if ((fails[String(rec.id)] || 0) >= CLIP_OCR_AUTO_MAX_FAILS) return false;
+  var ids = [];
+  try { ids = JSON.parse(String(rec.image_ids || '[]')); } catch (err) { ids = []; }
+  return (Array.isArray(ids) && ids.length > 0) || !!String(rec.drive_folder_id || '').trim();
+}
+
+/** 排程總管每 CLIP_OCR_AUTO_MINUTES 分鐘叫一次。回 { processed, ok, failed, skipped } */
+function runClipOcrJob_(now, ctx) {
+  var started = Date.now();
+  var budgetLeft = (ctx && ctx.budgetLeft) || function () { return Infinity; };
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CLIPS_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return { processed: 0 };
+  var t = clipsTable_(sheet);
+  if (clipColsMissing_(t.headers, ['ocr_output', 'ocr_at'])) return { processed: 0, reason: 'not_ready' };
+  var fails = clipOcrAutoFails_();
+  var queue = t.rows.map(function (x) { return x.rec; })
+    .filter(function (r) { return clipOcrAutoWanted_(r, fails); })
+    .reverse()                                              // 新收的先跑
+    .slice(0, CLIP_OCR_AUTO_PER_RUN);
+  var out = { processed: 0, ok: 0, failed: 0, skipped: 0 };
+  var failsChanged = false;
+
+  queue.forEach(function (rec) {
+    var left = budgetLeft();
+    if (left < CLIP_OCR_AUTO_MIN_BUDGET_MS) { out.skipped++; return; }
+    var id = String(rec.id);
+    out.processed++;
+    var images = clipImageList_(rec);
+    var run = images.length ? clipOcrRun_(images, Math.min(CLIP_OCR_BUDGET_MS, left - CLIP_OCR_AUTO_RESERVE_MS)) : null;
+    if (!run || !run.ok) {
+      var reason = !run ? '找不到圖片' : String((run.results[0] || {}).error || '原因不明');
+      fails[id] = (fails[id] || 0) + 1;
+      failsChanged = true;
+      out.failed++;
+      logTransaction_(CLIPS_LOG_SOURCE, '失敗', CLIP_OCR_AUTO_INPUT + ' ' + id, '自動文字辨識失敗（第 ' + fails[id] + ' 次）：' + reason,
+        (run ? clipOcrDetail_(run, images.length, rec) : String(rec.url || '')) +
+        (fails[id] >= CLIP_OCR_AUTO_MAX_FAILS ? '｜不再自動重試，要的話到 App 按 📝' : ''), '', String(rec.line_id || ''));
+      return;
+    }
+    var text = clipOcrFormat_(run.results, run.skipped);
+    var at = new Date().toISOString();
+    var wrote = false;
+    try {
+      clipsPatch_(sheet, id, function (cur) {
+        // 鎖內重看：辨識途中被手動跑過、捨棄、刪掉，以那個為準
+        if (clipDeleted_(cur) || String(cur.ocr_at == null ? '' : cur.ocr_at).trim() || String(cur.ocr_output == null ? '' : cur.ocr_output).trim()) return {};
+        wrote = true;
+        return { ocr_output: text, ocr_at: at };
+      });
+    } catch (err) {
+      out.failed++;
+      logTransaction_(CLIPS_LOG_SOURCE, '失敗', CLIP_OCR_AUTO_INPUT + ' ' + id, '自動文字辨識寫不回去（clips 忙碌），下次再試', String(rec.url || ''), '', String(rec.line_id || ''));
+      return;
+    }
+    if (fails[id]) { delete fails[id]; failsChanged = true; }
+    if (!wrote) return;
+    out.ok++;
+    var failed = run.results.length - run.ok;
+    logTransaction_(CLIPS_LOG_SOURCE, '成功', CLIP_OCR_AUTO_INPUT + ' ' + id, '自動文字辨識' + (failed ? '（' + failed + ' 張失敗）' : '') +
+      (run.skipped ? '（' + run.skipped + ' 張沒跑完）' : ''), clipOcrDetail_(run, images.length, rec), '', String(rec.line_id || ''));
+  });
+
+  if (failsChanged) clipOcrAutoSaveFails_(fails);
+  if (out.processed) recordSchedulePerf_('clipsOcr', out.processed, Date.now() - started);
+  return out;
 }
 
 /** 🤖 AI 辨識（D-6）：單篇最多送幾張；三家都收的圖片格式（HEIC 只有 Gemini 收，一律略過講明）；單張上限（Claude 5MB，留餘裕） */
