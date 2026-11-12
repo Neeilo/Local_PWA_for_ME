@@ -1,6 +1,8 @@
 # NeilOS — Personal Command Center
 
-> **2.0 試營運（Pilot）** · 更新：2026-11-04（`main@3538aa6`，PR #104） · [開啟 PWA](https://neeilo.github.io/Local_PWA_for_ME/)
+> **2.0 試營運（Pilot）** · 更新：2026-11-12（`main@213a48a`，PR #111） · [開啟 PWA](https://neeilo.github.io/Local_PWA_for_ME/)
+>
+> **第一次接手（人或 AI Agent）**：先讀 [AGENTS.md](AGENTS.md)，再看 [架構總覽](docs/ARCHITECTURE.md) 與 [模組索引](docs/MODULES.md)。完整文件導覽見下方「文件」。
 
 NeilOS 是個人資訊中樞：早上用 **Dashboard Widgets** 掌握重要資訊，白天用 **LINE** 登錄與查詢，透過 **Library** 閱讀收藏、做筆記，必要時才讓 AI 協助整理。2.0 已上線試營運，**1.0 仍保留切回入口**。詳見 [2.0 Pilot](docs/NEILOS_2_0_PILOT.md)。
 
@@ -11,7 +13,7 @@ NeilOS 是個人資訊中樞：早上用 **Dashboard Widgets** 掌握重要資�
 | Shell / Apps | 2.0 切換、五格 Tab、App Grid、模組開關 | UI 模組化，並非獨立安裝的外掛系統 |
 | 總覽 Widgets | 任務、財務、郵件、股票（pin 最多 4 檔、今日／未實現損益）、閱讀、天氣；排序／隱藏／釘選 | 核心摘要先載；財務與股票延後；盤中排序 |
 | Tasks | Dashboard 勾選完成、雲端確認 | 寫入仍需後端驗證 |
-| Library | Instagram 擷取、其他網址只存連結；閱讀、個人筆記、已讀、分類；按需 📝 文字辨識（Drive OCR，免費）、🤖 AI 辨識（選定的 AI 看圖，最多 10 張）、AI 整理（會讀辨識結果） | 辨識一律手動、一次一篇，不批次跑舊資料、新收藏不自動跑；尚無通用網頁擷取；辨識文字未納入搜尋；AI 不可假裝看過未辨識的圖片 |
+| Library | Instagram 擷取、其他網址只存連結；閱讀、個人筆記、已讀、分類；📝 文字辨識（Drive OCR，免費；排程每 10 分鐘自動替還沒辨識過的篇跑，也可手動）、🤖 AI 辨識（選定的 AI 看圖，最多 10 張，只手動）、AI 整理（會讀辨識結果） | AI 辨識一律手動、一次一篇；捨棄過的文字辨識不會被排程跑回來；尚無通用網頁擷取；辨識文字未納入搜尋；AI 不可假裝看過未辨識的圖片 |
 | Search | 任務、提醒、雜記、圖書館文字與筆記、記帳備註 | 關鍵字搜尋；郵件／股票／筆電檔案不納入 |
 | Settings | Widget 個人化、模組總開關與既有設定拆分；💸 用量與成本卡（管理者） | 模組總開關同時影響 1.0／2.0 |
 
@@ -60,7 +62,7 @@ npm run scan
 npm run preflight
 ```
 
-1. 先閱讀 [CLAUDE.md](CLAUDE.md) 的開發契約。架構重大變動先對照 Notion ADR（決策的 source of truth）。
+1. 先閱讀 [AGENTS.md](AGENTS.md) 的開發契約（Claude Code 另讀 [CLAUDE.md](CLAUDE.md)）。架構決策見 [ADR 索引](docs/adr/README.md)：ADR-027 起正式決策放 repo 的 `docs/adr/`，更早的正文在 Notion。
 2. 建立分支與 PR；`pr-check` 成功後再審查合併。**PR 檢查不部署**。
 3. `main` 部署分為 GitHub Pages 與 Apps Script 兩個 job；GAS 透過 `clasp push` 和 **既有 deployment ID** 發新版本，不能隨意產生新 exec 網址。
 4. 部署後按需要由管理者在 LINE 私訊執行「初始化」；檢查後端授權、分頁與資料遷移，勿以綠燈直接替代實機驗收。
@@ -73,6 +75,20 @@ npm run preflight
 - Library 保存 → 閱讀 → 筆記 revision 衝突 → 📝 文字辨識／🤖 AI 辨識 → AI 整理不再標「圖片內容未辨識」 → 搜尋找回。
 - 權限與全域模組開關：關閉時不得由 PWA、LINE 或搜尋繞過。
 
-相關文件：[2.0 Pilot](docs/NEILOS_2_0_PILOT.md) · [Apps Script 維運速查](apps-script/OPERATIONS_2_0.md) · [Apps Script 詳細紀錄](apps-script/README.md)。
+## 文件
+
+| 文件 | 內容 |
+|---|---|
+| [AGENTS.md](AGENTS.md) | 開發協作契約：12 條原則、不可破壞的契約、公開資訊分類規則（所有 Agent 的入口） |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 一頁架構總覽與 LINE 入口的安全邊界 |
+| [docs/MODULES.md](docs/MODULES.md) | 模組索引與前端段落索引 |
+| [docs/API.md](docs/API.md) | PWA 動作與 LINE 指令目錄（含權限） |
+| [docs/DATA.md](docs/DATA.md) | Sheets 分頁與 Drive 結構 |
+| [docs/CONFIG.md](docs/CONFIG.md) | 設定鍵（只有名稱與用途） |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | 部署、回退、資料還原、常見故障 |
+| [docs/adr/README.md](docs/adr/README.md) | ADR 索引與治理規則 |
+| [docs/checklists/](docs/checklists/) | 新增動作、分頁、靜態資源、排程工作的檢查清單 |
+| [tests/README.md](tests/README.md) | 測試與假環境說明、防漂移檢查 |
+| [2.0 Pilot](docs/NEILOS_2_0_PILOT.md) · [Apps Script 維運速查](apps-script/OPERATIONS_2_0.md) · [Apps Script 詳細紀錄](apps-script/README.md) | 試營運範圍、部署後檢查、各 `.gs` 的歷史 |
 
 > 1.0 詳細歷史規格（LINE 配對／自行註冊、離線與部署順序、單元測試、ADR-007 部署管道）可查 [本檔在 git history 的舊版本](https://github.com/Neeilo/Local_PWA_for_ME/commits/main/README.md)、既有 ADR 與 [Apps Script 詳細維運紀錄](apps-script/README.md)。此首頁文件反映當前試營運，不代表所有未來願景已完成。

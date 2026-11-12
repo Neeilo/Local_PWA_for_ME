@@ -1,7 +1,7 @@
 # AGENTS.md — NeilOS PWA 開發協作契約（所有 AI Agent 的共同入口）
 
 > 這份是跨 Agent 的中立入口（Claude Code、Codex 或其他工具都先讀這裡）。內容自 `CLAUDE.md` 搬來，**規則只搬位置、不改內容**；12 條原則的編號沿用原本的編號，程式註解與交棒紀錄裡的「CLAUDE.md 原則 5」「Rule 9」指的就是這裡的同號原則。
-> 「已實作」以最新程式和測試為準；重大決策以 ADR 為準（ADR-004～026 的正文在專案擁有者的 Notion）。
+> 「已實作」以最新程式和測試為準；正式生效的工程決策見 [ADR 索引](docs/adr/README.md)（ADR-027 起正文放 repo；ADR-004～026 的正文在專案擁有者的 Notion）。
 
 ## 專案速覽
 - 純 HTML/CSS/JS PWA（`index.html`）、Google Apps Script（`apps-script/`）、Google Sheets／Drive、LINE、GitHub Pages。2.0 包含 Shell、Widget、Apps、Library、Search；**不是微服務或可安裝外掛系統**。
@@ -58,6 +58,8 @@
 | [docs/checklists/new-sheet.md](docs/checklists/new-sheet.md) | 新增一張 Sheet 分頁 |
 | [docs/checklists/new-static-asset.md](docs/checklists/new-static-asset.md) | 前端新增圖示、檔案等靜態資源 |
 | [docs/checklists/new-scheduled-job.md](docs/checklists/new-scheduled-job.md) | 新增排程工作 |
+| [docs/adr/README.md](docs/adr/README.md) | 程式註解提到 `ADR-NNN`：查它是哪一份決策、現行還是被取代 |
+| [tests/README.md](tests/README.md) | 要寫或改測試：三個假環境假到什麼程度、每個測試檔對應的模組、防漂移檢查 |
 | [docs/NEILOS_2_0_PILOT.md](docs/NEILOS_2_0_PILOT.md) | 2.0 試營運的範圍與驗收重點 |
 | [apps-script/OPERATIONS_2_0.md](apps-script/OPERATIONS_2_0.md) | 部署後檢查與常見故障 |
 | [apps-script/README.md](apps-script/README.md) | 各 `.gs` 檔的詳細歷史與安裝步驟 |
