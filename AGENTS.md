@@ -33,7 +33,7 @@
 - **相容性**：試營運中 1.0 與 2.0 共存，任何新增欄位、切換或資料遷移都須測試 1.0 不受損。
 - **部署**：`apps-script/` 是來源；不要在 GAS 編輯器直接維護。必要的緊急修改要 `npm run pull` 回收進版本庫；不要在本機手動 `clasp push`。
 - **安全**：金鑰／憑證僅留 Secret 或 GAS Properties；不寫入 repo。新 Sheet 須同步更新 `guideRegistry_()`，避免結構文件漂移。
-- **Gmail（ADR-026）**：封存只由規則決定、預設預演；正式封存開關（屬性 `gmail_archive_live`）只有 Neil 在 App 親手打開。不得對真實 Gmail 批次封存或做測試性操作，不刪信、不標已讀、不動星號；內文即時讀、不存副本，內文與金額不進 logs／performance／fixtures。
+- **Gmail（ADR-026）**：封存只由規則決定、預設預演；正式封存開關（屬性 `gmail_archive_live`）只有專案擁有者在 App 親手打開。不得對真實 Gmail 批次封存或做測試性操作，不刪信、不標已讀、不動星號；內文即時讀、不存副本，內文與金額不進 logs／performance／fixtures。
 
 ## 工作流程
 
