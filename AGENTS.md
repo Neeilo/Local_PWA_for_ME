@@ -48,7 +48,12 @@
 
 | 文件 | 什麼時候讀 |
 |---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 第一次接手：一頁看懂元件、資料流、同步與權限、部署管線、LINE 入口的安全邊界 |
 | [docs/MODULES.md](docs/MODULES.md) | 要改某個功能：找它的前端段落、後端檔案與函式、API 動作、分頁、測試、ADR |
+| [docs/API.md](docs/API.md) | 每個 PWA 動作的參數、回應、權限、寫入與 logs；LINE 指令與事件 |
+| [docs/DATA.md](docs/DATA.md) | 每張分頁的用途、鍵欄、欄位、寫入者與讀取者；Drive 資料夾結構 |
+| [docs/CONFIG.md](docs/CONFIG.md) | 指令碼屬性、GitHub Secrets、`localStorage` 鍵、`feat_*`、模組開關（只有名稱與用途） |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | 部署、確認線上版本、回退、資料還原、常見故障 |
 | [docs/checklists/new-action.md](docs/checklists/new-action.md) | 新增一個 PWA 雲端動作 |
 | [docs/checklists/new-sheet.md](docs/checklists/new-sheet.md) | 新增一張 Sheet 分頁 |
 | [docs/checklists/new-static-asset.md](docs/checklists/new-static-asset.md) | 前端新增圖示、檔案等靜態資源 |
