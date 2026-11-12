@@ -140,15 +140,18 @@ function clipApifyConfig_(props) {
  * 一次 Apify run（啟動＋輪詢，不用 run-sync：同步端點最長要等 5 分鐘，會先被 GAS 砍掉）。按篇計費：maxItems＝篇數。
  * 回 { stage, ... }：stage＝'start'（啟動失敗）｜'run'（狀態不是 SUCCEEDED）｜'dataset'（讀結果失敗）｜'ok'。
  * actor 沒認得 input 時會回帶 _sample 的範例資料（2026-10-16 實測），一律排除，只算 samples 筆數。
+ * 選填（ADR-027 PR-0 起）：opt.input 取代預設的 { maxItems }（各 actor 的 input 不同）；
+ * opt.maxUsd 帶 maxTotalChargeUsd（按事件計費的 actor 一次 run 最多扣多少）。不給就跟原本一樣。
  */
 function clipApifyRun_(cfg, urls, opt) {
   opt = opt || {};
-  var out = { stage: 'start', detail: '', ms: 0, usd: null, runStatus: '', timedOut: false, items: [], samples: 0, keys: [] };
+  var out = { stage: 'start', detail: '', ms: 0, usd: null, runStatus: '', timedOut: false, items: [], samples: 0, keys: [], kvs: '' };
   var headers = { Authorization: 'Bearer ' + cfg.token };
-  var input = { maxItems: urls.length };
+  var input = opt.input ? Object.assign({}, opt.input) : { maxItems: urls.length };
   input[cfg.field] = urls;
   var started = Date.now();
-  var r = clipFetch_(CLIP_APIFY_BASE + '/acts/' + encodeURIComponent(cfg.actor) + '/runs?waitForFinish=' + opt.waitSec,
+  var r = clipFetch_(CLIP_APIFY_BASE + '/acts/' + encodeURIComponent(cfg.actor) + '/runs?waitForFinish=' + opt.waitSec +
+    (typeof opt.maxUsd === 'number' ? '&maxTotalChargeUsd=' + opt.maxUsd : ''),
     { method: 'post', contentType: 'application/json', payload: JSON.stringify(input), headers: headers });
   var run = (clipJson_(r) || {}).data;
   for (var i = 0; run && run.id && CLIP_APIFY_DONE.indexOf(run.status) === -1 && i < opt.maxPolls; i++) {
@@ -163,6 +166,7 @@ function clipApifyRun_(cfg, urls, opt) {
   }
   out.runStatus = run.status;
   out.usd = typeof run.usageTotalUsd === 'number' ? run.usageTotalUsd : null;
+  out.kvs = run.defaultKeyValueStoreId || '';
   if (run.status !== 'SUCCEEDED') {
     out.stage = 'run';
     out.timedOut = CLIP_APIFY_DONE.indexOf(run.status) === -1;

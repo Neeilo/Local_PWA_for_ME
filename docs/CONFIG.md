@@ -28,6 +28,7 @@
 | `JINA_API_KEY` | 實驗探針的備援擷取服務金鑰（選填） | `lab-clip.gs` | 探針略過那一段 |
 | `CLIP_PROBE_URLS` | 實驗探針要測的網址清單（選填） | `lab-clip.gs` | 探針用內建清單 |
 | `CLIP_OCR_PROBE_ID` | 文字辨識探針要測的那一篇（收藏 id 或 Drive 資料夾 id） | `lab-clip.gs`（`CLIP_OCR_PROBE_PROP`） | 探針提示先設定 |
+| `CLIP_THREADS_PROBE_URLS` | Threads 探針要測的貼文網址（逗號分隔，最多 3 篇） | `lab-clip.gs`（`CLIP_THREADS_PROBE_PROP`） | 探針提示先設定、不打 Apify |
 
 ### 程式自己維護的（不要手動改）
 
