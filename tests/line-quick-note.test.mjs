@@ -121,6 +121,12 @@ describe('LINE「幫我記/」：寫進雜記、不給分類', () => {
     assert.equal(notesOf(e).length, 0);
   });
 
+  test('_guide 的 notes 說明列出 LINE「幫我記/」這個寫入者（不然查「這筆雜記從哪來」會找錯地方）', () => {
+    const notes = env().call('guideRegistry_').find((g) => g.sheet === 'notes');
+    assert.match(notes.writers, /幫我記/);
+    assert.match(notes.writers, /PWA/);
+  });
+
   test('指令字典：一對一列得到、群組列不到；沒有 feat_notes 的人看不到', () => {
     const e = env();
     assert.match(say(e, ME, '?'), /幫我記\/內容/);
