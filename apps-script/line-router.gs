@@ -138,6 +138,7 @@ var INIT_LOCK_MS = 10000;
  *  format      : 成功時回給 LINE 的訊息
  *  summary     : 成功時寫進 logs 的 result 摘要（一句話）
  *  expenseType : 僅記帳/收入使用，決定 expenses.type 欄的值
+ *  logSource   : logs 的 source 欄（選填，預設＝前綴）。「幫我記」寫「雜記」，App 的 LOG 頁「雜記」鈕才篩得到
  *
  * 記帳與收入共用 buildExpenseRow_ / parseExpense_，差別只在 expenseType。
  */
@@ -177,6 +178,16 @@ var ROUTE_TABLE = {
     build: buildExpenseRow_,
     format: formatExpenseSuccess_,
     summary: summarizeExpense_
+  },
+  // Neil 2026-11-12：LINE 隨手記一筆雜記，不給分類（之後進 App 用 🏷️ 分）。整串都是內容，含「/」也不切
+  '幫我記': {
+    sheetName: 'notes',
+    usage: '幫我記/內容',
+    logSource: '雜記',
+    parse: parseNote_,
+    build: buildNoteRow_,
+    format: formatNoteSuccess_,
+    summary: summarizeNote_
   }
 };
 
@@ -561,28 +572,29 @@ function routeLineMessage_(rawText, userId, chatId) {
     return supportedPrefixesMessage_() + '\n' + versionLine_();
   }
 
+  var logSrc = route.logSource || prefix;
   // 模組總開關（ADR-021）先講：關掉的模組不是「沒權限」，叫人去開權限只會白跑一趟
   var offModule = sheetModuleOff_(route.sheetName) || (route.taskKind === 'reminder' && !moduleOn_('reminders') ? 'reminders' : '');
   if (offModule) {
-    logTransaction_(prefix, '失敗', text, '「' + moduleName_(offModule) + '」模組已停用', 'code=module_off｜' + offModule, '', userId);
+    logTransaction_(logSrc, '失敗', text, '「' + moduleName_(offModule) + '」模組已停用', 'code=module_off｜' + offModule, '', userId);
     return moduleOffText_(offModule);
   }
   // 功能權限（ADR-012 D-3）：跟 PWA 同一張對照表、同一個 canUse_
   var feature = FEATURE_BY_SHEET[route.sheetName];
   if (!canUse_(lineUserById_(userId), feature)) {
     var label = FEATURE_LABEL[feature] || feature;
-    logTransaction_(prefix, '失敗', text, '沒有「' + label + '」功能的權限', 'code=forbidden｜' + feature, '', userId);
+    logTransaction_(logSrc, '失敗', text, '沒有「' + label + '」功能的權限', 'code=forbidden｜' + feature, '', userId);
     return '你沒有「' + label + '」功能的權限。\n需要的話請管理者到 App 的「成員與權限」打開。';
   }
   if (slash === -1) {
     var missing = '「' + prefix + '」後面要接內容喔。\n格式：' + route.usage;
-    logTransaction_(prefix, '失敗', text, '缺少內容', '', '', userId);
+    logTransaction_(logSrc, '失敗', text, '缺少內容', '', '', userId);
     return missing;
   }
 
   var parsed = route.parse(text.slice(slash + 1), route);
   if (parsed.error) {
-    logTransaction_(prefix, '失敗', text, firstLine_(parsed.error), '', '', userId);
+    logTransaction_(logSrc, '失敗', text, firstLine_(parsed.error), '', '', userId);
     return parsed.error;
   }
 
@@ -606,13 +618,13 @@ function recordRoute_(prefix, route, parsed, userId, text, chatId) {
     // 在哪個群組交代的，到期提醒就推回哪裡（ADR-014 D-17）。白板與這個無關
     if (route.sheetName === 'tasks') record.origin_chat = chatId || '';
     var rowNumber = appendToSheet_(route.sheetName, record);
-    logTransaction_(prefix, '成功', text, route.summary(parsed, route), '', rowNumber, userId);
+    logTransaction_(route.logSource || prefix, '成功', text, route.summary(parsed, route), '', rowNumber, userId);
     // 任務建好再問到期日（ADR-014 D-20）：不按也沒關係，任務已經在了
     if (route.sheetName === 'tasks') return taskDatePrompt_(route.format(parsed, route), record.id, userId, record.kind === 'reminder');
     return route.format(parsed, route);
   } catch (err) {
     console.log('寫入失敗：' + err);
-    logTransaction_(prefix, '失敗', text, '寫入失敗', String(err && err.stack || err), '', userId);
+    logTransaction_(route.logSource || prefix, '失敗', text, '寫入失敗', String(err && err.stack || err), '', userId);
     return '寫入失敗了：' + err.message;
   }
 }
@@ -1006,6 +1018,28 @@ function parseReminder_(rest, route) {
   var content = String(rest).trim();
   if (!content) return { error: '內容是空的喔。\n格式：' + route.usage };
   return { content: content };
+}
+
+/* ---------- 幫我記（雜記，不給分類） ---------- */
+
+/** 「幫我記/」之後整串都是內容；不加 [類別]——分類是之後在 App 補的（Neil 2026-11-12） */
+function parseNote_(rest, route) {
+  var content = String(rest).trim();
+  if (!content) return { error: '內容是空的喔。\n格式：' + route.usage };
+  return { content: content };
+}
+
+/** notes：id | text | created_at | line_id | del | board（line_id 由 recordRoute_ 蓋上）。id 用 Date.now()，跟 App 寫的同一種 */
+function buildNoteRow_(parsed) {
+  return { id: Date.now(), text: parsed.content, created_at: new Date().toISOString() };
+}
+
+function formatNoteSuccess_(parsed) {
+  return '📎 記下來了（未分類，進 App 雜記按 🏷️ 再分）\n' + parsed.content;
+}
+
+function summarizeNote_(parsed) {
+  return '雜記（未分類）' + parsed.content.length + ' 字';
 }
 
 /** expenses：id | expense_date | type | category | subcategory | targets | amount | note | created_at */
@@ -1795,7 +1829,7 @@ function supportedPrefixesMessage_() {
 /* ========================================================================== */
 var HELP_COMMANDS = ['?', '？', '指令'];
 var CLIP_COMMAND_KEY = '（傳 IG 網址）';
-var COMMAND_GROUPS = ['任務', '記帳', '查詢', '收藏', '股票', '帳號與裝置', '管理', '說明'];
+var COMMAND_GROUPS = ['任務', '記帳', '雜記', '查詢', '收藏', '股票', '帳號與裝置', '管理', '說明'];
 var COMMANDS = [
   { key: '任務', group: '任務', usage: ROUTE_TABLE['任務'].usage, example: '任務/繳電話費/H',
     note: '建好會問到期日', scope: 'both', groupCmd: 'cmd_tasks', feat: 'feat_tasks' },
@@ -1807,6 +1841,8 @@ var COMMANDS = [
     scope: 'both', groupCmd: 'cmd_expense', feat: 'feat_expense' },
   { key: CATEGORY_COMMAND, group: '記帳', usage: CATEGORY_COMMAND, note: '看記帳可用的大類、細項、對象',
     scope: 'both', groupCmd: 'cmd_expense', feat: 'feat_expense' },
+  { key: '幫我記', group: '雜記', usage: ROUTE_TABLE['幫我記'].usage, example: '幫我記/週末去看那家書店',
+    note: '不用分類，之後進 App 雜記按 🏷️ 再分', scope: 'private', feat: 'feat_notes' },
   { key: QUERY_PREFIX, group: '查詢', usage: QUERY_USAGE, example: '查/這個月花多少',
     note: '問題裡加 [類別] 只查那一類雜記，例：查/[文章] 最近存了什麼', scope: 'both', groupCmd: 'cmd_query', feat: '' },
   // ADR-020：不是前綴、是「訊息裡有 IG 網址」；路由在 routeLineMessage_ 查不到前綴時才攔（clipLineReply_）

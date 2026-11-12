@@ -654,6 +654,8 @@
 .board-item .tag{ font-size:11px; opacity:.6; flex:0 0 auto; }
 .pin{ background:none; border:none; cursor:pointer; opacity:.35; font-size:14px; padding:0 2px; }
 .pin.on{ opacity:1; }
+.note-tag{ background:none; border:none; cursor:pointer; font-size:12px; padding:0 4px; color:var(--muted, #888); opacity:.7; }
+.note-tag.none{ opacity:1; font-weight:600; }
 /* 模組總開關（ADR-021）：白板、提醒關掉時，入口不擺（雲端也擋，這裡只是不放按不動的按鈕） */
 :root[data-mod-off~="board"] .pin, :root[data-mod-off~="reminders"] #taskSeg button[data-val="reminder"]{ display:none; }
 .due-pick{ margin-top:8px; font-size:13px; }
@@ -2456,6 +2458,10 @@ function cloudUpsert(sheet, record, keyField){
    要統計就得靠字串解析——對這個規模的系統划算。 */
 const NOTE_TAGS = ['文章','作品','系統','分享','其他'];
 let selectedNoteTag = null;
+/* 事後分類（Neil 2026-11-12）：LINE「幫我記/」進來的不帶類別，在雜記清單按 🏷️ 補上或換掉。
+   只改內容開頭的 [類別]，內文一字不動；走既有的 pushNote（upsert＋待送佇列），不新增雲端動作 */
+const NOTE_TAG_RE = /^\[([^\]]+)\]\s*/;
+let taggingNoteId = null;
 
 /* ---------- LOG 頁（ADR-006 §C／§D） ---------- */
 // ADR-026 D-8：logs 補齊後多了雜記（PWA 寫入）、收藏（閱讀狀態／分類／筆記）、郵件（讀內文）、LINE（回覆失敗）
@@ -5601,6 +5607,28 @@ function delNote(id){
   state.notes=state.notes.filter(x=>x.id!==id);
   renderNotes();
 }
+function noteTagOf(txt){ const m=NOTE_TAG_RE.exec(String(txt||'')); return m ? m[1] : ''; }
+function openNoteTag(id){
+  taggingNoteId = taggingNoteId===id ? null : id;
+  renderNotes();
+}
+/* tag 空字串＝拿掉類別。同一個類別再按一次也是拿掉（跟新增時的選填按鈕一樣） */
+function setNoteTag(id, tag){
+  const n=state.notes.find(x=>x.id===id);
+  taggingNoteId=null;
+  if(!n || boardLocked(n)){ renderNotes(); return; }
+  const body=String(n.txt||'').replace(NOTE_TAG_RE,'');
+  const next = tag && tag!==noteTagOf(n.txt) ? '['+tag+'] '+body : body;
+  if(next===n.txt){ renderNotes(); return; }
+  n.txt=next;
+  pushNote(n); renderNotes(); toast(noteTagOf(next) ? '已分到「'+noteTagOf(next)+'」' : '已拿掉類別');
+}
+function noteTagPickerHtml(n){
+  const cur=noteTagOf(n.txt);
+  return '<div class="output-type-row">'+NOTE_TAGS.map(function(t){
+    return '<button class="type-btn'+(cur===t?' sel':'')+'" onclick="setNoteTag('+n.id+',\''+t+'\')">'+esc(t)+'</button>';
+  }).join('')+'</div>';
+}
 function renderNotes(){
   renderNoteSeg();
   const el=document.getElementById('noteList');
@@ -5610,10 +5638,11 @@ function renderNotes(){
     <div class="note-item" id="note-${esc(n.id)}">
       <div class="note-txt">${esc(n.txt)}</div>
       <div class="note-meta">
-        <span class="mood-meta">${fmtTime(n.ts)}</span>
+        <span><span class="mood-meta">${fmtTime(n.ts)}</span>${boardLocked(n) ? '' : ` <button class="note-tag${noteTagOf(n.txt)?'':' none'}" onclick="openNoteTag(${n.id})" aria-label="分類" title="${noteTagOf(n.txt)?'換類別':'分類'}">🏷️ ${noteTagOf(n.txt)?'換類別':'未分類'}</button>`}</span>
         ${boardLocked(n) ? boardOwnerTag(n) : `<button class="pin ${n.board?'on':''}" onclick="toggleBoard('notes',${n.id})" aria-label="釘到白板" title="釘到共用白板">📌</button>
         <button class="del" onclick="delNote(${n.id})" aria-label="刪除">✕</button>`}
       </div>
+      ${taggingNoteId===n.id && !boardLocked(n) ? noteTagPickerHtml(n) : ''}
     </div>`).join('');
 }
 

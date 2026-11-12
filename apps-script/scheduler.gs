@@ -62,6 +62,10 @@ function schedulerJobs_() {
     // ADR-020 C-1：每輪最多 5 篇；預算不夠一篇就不開始（ctx.budgetLeft）
     { name: 'clips', module: 'library', label: '收藏搜集', when: '每輪，最多 ' + CLIPS_PER_ROUND + ' 篇', rule: { kind: 'always' },
       run: function (now, ctx) { return runClipsJob_(now, ctx); } },
+    // Neil 2026-11-12：收齊的篇自動跑 📝 文字辨識（Drive，免費）；排在收藏搜集後面，剛收好的下一次就辨識
+    { name: 'clipsOcr', module: 'library', label: '圖書館文字辨識', when: '每 ' + CLIP_OCR_AUTO_MINUTES + ' 分鐘，最多 ' + CLIP_OCR_AUTO_PER_RUN + ' 篇',
+      rule: { kind: 'every', minutes: CLIP_OCR_AUTO_MINUTES },
+      run: function (now, ctx) { return runClipOcrJob_(now, ctx); } },
     // RD-HF1 HF-C：Apify 本月用量＋近 3 天收藏成功率，給管理員頁看（ADR-020 的備案條件）
     { name: 'apifyUsage', module: 'library', label: 'Apify 用量', when: '每天 ' + CLIPS_USAGE_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: CLIPS_USAGE_HOUR },
       run: function (now) { return runApifyUsageJob_(now); } },
