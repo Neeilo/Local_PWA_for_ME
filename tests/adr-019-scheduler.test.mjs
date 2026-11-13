@@ -65,12 +65,12 @@ describe('該不該跑（純函式）', () => {
     assert.equal(due(e, r, MON(7, 0)), true, '從沒跑過');
   });
 
-  test('Gmail 控制員排在 7、16 點（到期提醒仍是 9 點）', () => {
+  test('Gmail 控制員排在 7、16 點；到期提醒自 ADR-029 起同時段', () => {
     const e = env();
     const jobs = (n) => e.read('schedulerJobs_().filter(function(j){ return j.name === "' + n + '"; })[0]');
     assert.deepEqual(jobs('gmail').rule, { kind: 'daily_hours', hours: [7, 16] });
     assert.match(jobs('gmail').when, /7、16 點/);
-    assert.deepEqual(jobs('dueCheck').rule, { kind: 'daily', hour: 9 });
+    assert.deepEqual(jobs('dueCheck').rule, { kind: 'daily_hours', hours: [7, 16] });
   });
 
   test('盤中每輪：週一～五 9:00～13:30', () => {

@@ -17,7 +17,7 @@
  *  - 行為不變：各工作的寫法、範圍、只推一次、推播失敗不翻頁全部保留，只是「誰叫它」變了
  *
  * ⚠️ 總管是單點：掛了全部停。靠每日心跳＋慢執行 log 發現（ADR-019 後果）。
- * ⚠️ 每日類工作最多晚 5 分鐘（9 點後第一輪）。
+ * ⚠️ 每日類工作最多晚 5 分鐘（例：到期提醒是 07:00、16:00 後第一輪）。
  * ⚠️ 每日多時段（daily_hours）：每個時段到了跑一次；一個時段錯過了（總管停過），回來時補一次，不會連補好幾次。
  */
 var SCHEDULER_FUNCTION = 'runScheduler';
@@ -46,7 +46,8 @@ function schedulerJobs_() {
   return [
     { name: 'stockRules', module: 'stocks', label: '股票提醒規則', when: '盤中每輪', rule: { kind: 'market' },
       run: function (now) { return checkStockRules(now); } },
-    { name: 'dueCheck', module: 'tasks', label: '到期提醒', when: '每天 ' + DUE_CHECK_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: DUE_CHECK_HOUR },
+    // ADR-029：07:00、16:00 後各一輪（與 Gmail 同時段）；拖到 16:00 後才跑的那天只跑一次（daily_hours 只補最晚那個時段）
+    { name: 'dueCheck', module: 'tasks', label: '到期提醒', when: '每天 ' + DUE_CHECK_HOURS.join('、') + ' 點後第一輪', rule: { kind: 'daily_hours', hours: DUE_CHECK_HOURS },
       run: function () { return checkDueReminders(); } },
     { name: 'gmail', module: 'mail', label: 'Gmail 控制員', when: '每天 ' + GMAIL_CONTROLLER_HOURS.join('、') + ' 點後第一輪',
       rule: { kind: 'daily_hours', hours: GMAIL_CONTROLLER_HOURS },
