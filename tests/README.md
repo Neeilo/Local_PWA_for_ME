@@ -126,6 +126,7 @@
 | `adr-024-ocr-probe.test.mjs` | 圖書館（探針） | 文字辨識探針與共用的 clipOcrImage_ |
 | `adr-027-threads.test.mjs` | 圖書館 | Threads 收藏：網址與短網址、轉址與判重、串文合併、圖書館設定、達上限兩個都停與本月強制續抓、初始化補抓 |
 | `adr-027-threads-frontend.test.mjs` | 圖書館 | Threads 來源標籤、「串文可能不完整」、⚙️ 圖書館設定、成本卡分開顯示 |
+| `adr-028-clip-report-frontend.test.mjs` | 圖書館 | 圖書館週報前端：📊 週報分段四種畫面、立即產生、一鍵標已讀（取消勾選、二次確認）、🤖 AI 建議篩選、閱讀頁理由、我的關注、1.0 不變 |
 | `adr-028-clip-report.test.mjs` | 圖書館 | 圖書館週報：週五時段、候選與分組、提示詞與解析、產生一期（不改 read_status）、排程與手動、一鍵標已讀、我的關注 |
 | `adr-027-threads-probe.test.mjs` | 圖書館（探針） | Threads 收藏探針 probeClipThreads：網址辨識、作者串文排序、圖片下載、費用推估與結論 |
 | `adr-025-read-state-frontend.test.mjs` | 圖書館 | 閱讀狀態三態（前端） |
