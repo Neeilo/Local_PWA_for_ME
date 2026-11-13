@@ -66,6 +66,10 @@ function schedulerJobs_() {
     { name: 'clipsOcr', module: 'library', label: '圖書館文字辨識', when: '每 ' + CLIP_OCR_AUTO_MINUTES + ' 分鐘，最多 ' + CLIP_OCR_AUTO_PER_RUN + ' 篇',
       rule: { kind: 'every', minutes: CLIP_OCR_AUTO_MINUTES },
       run: function (now, ctx) { return runClipOcrJob_(now, ctx); } },
+    // ADR-028 D-2：每週五 19:00（台北）後替每位有 feat_clips 的人產生圖書館週報；一人一週一份，預算不夠留給下一輪
+    { name: 'clipReport', module: 'library', label: '圖書館週報', when: '每週五 ' + CLIP_REPORT_HOUR + ' 點後（每 ' + CLIP_REPORT_JOB_MINUTES + ' 分鐘看一次）',
+      rule: { kind: 'every', minutes: CLIP_REPORT_JOB_MINUTES },
+      run: function (now, ctx) { return runClipReportJob_(now, ctx); } },
     // RD-HF1 HF-C：Apify 本月用量＋近 3 天收藏成功率，給管理員頁看（ADR-020 的備案條件）
     { name: 'apifyUsage', module: 'library', label: 'Apify 用量', when: '每天 ' + CLIPS_USAGE_HOUR + ' 點後第一輪', rule: { kind: 'daily', hour: CLIPS_USAGE_HOUR },
       run: function (now) { return runApifyUsageJob_(now); } },

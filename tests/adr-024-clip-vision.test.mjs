@@ -162,7 +162,11 @@ describe('callAi_ 既有行為不變（純文字）', () => {
 describe('🤖 AI 辨識：clipVision', () => {
   test('欄位：vision_output／vision_provider／vision_at 接在最右邊；_guide 同步', () => {
     const e = env();
-    assert.deepEqual(e.read('CLIPS_HEADERS').slice(-3), ['vision_output', 'vision_provider', 'vision_at']);
+    // ADR-028 起 report_* 接在 vision_* 後面：這裡只盯 vision 三欄連在一起、在 ocr 之後
+    const H = e.read('CLIPS_HEADERS');
+    const at = H.indexOf('vision_output');
+    assert.deepEqual(H.slice(at, at + 3), ['vision_output', 'vision_provider', 'vision_at']);
+    assert.ok(at > H.indexOf('ocr_at'));
     const guide = JSON.stringify(e.call('guideRegistry_'));
     assert.match(guide, /vision_output/);
     assert.match(guide, /clipVision/);

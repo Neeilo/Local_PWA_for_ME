@@ -134,6 +134,11 @@
 | `clipCategory` | `clips.gs` `clipCategorySet_` | `id`、`category`（空白＝未分類） | `success` | 共通、`invalid_category`、`busy` | 擁有者＋feat_clips | `category` | 是 | 是 |
 | `clipSettings` | `clips.gs` `clipSettingsView_` | — | `success`、`settings`、`gate`（本月合計、IG／Threads 用量、是否暫停、是否強制續抓）、`threads` | `forbidden` | 管理者＋feat_clips | — | 否 | 是 |
 | `clipSettingsSet` | `clips.gs` `clipSettingsSet_` | `key`（`ig_images`／`ig_videos`／`threads_images`／`threads_videos`／`force`）、`value`（布林） | `success`、`settings`、`gate`、`threads` | `forbidden`、`invalid_key`、`invalid_value`、`save_failed` | 管理者＋feat_clips | 指令碼屬性 `clips_settings` | 是 | 是 |
+| `clipReport` | `clip-report.gs` `clipReportView_` | `id`（選填；沒給＝最新一期） | `success`、`report`（JSON 欄已解開）、`history`（最多 20 期摘要）、`focus_set` | `forbidden`、`not_found` | 本人＋feat_clips | — | 否 | 是 |
+| `clipReportRun` | `clip-report.gs` `clipReportRun_` | — | `success`、`report`；失敗時 `error`＝`report_failed`＋`reason` | `forbidden`、`busy`、`report_failed` | 本人＋feat_clips | `clip_reports` 一列、`clips` 的 `report_*`（不改 `read_status`）；呼叫 AI（`clip_report`） | 是 | 是 |
+| `clipMarkRead` | `clip-report.gs` `clipMarkRead_` | `ids`（陣列，最多 200） | `success`、`changed`、`ids`（實際改到的） | `forbidden`、`invalid_ids`、`not_ready`、`busy` | 本人＋feat_clips；只改本人、未刪、還不是已讀的列 | `read_status`＝`read` | 是（筆數） | 是 |
+| `clipFocus` | `clip-report.gs` `clipFocusView_` | — | `success`、`focus`、`max` | `forbidden` | 本人＋feat_clips | — | 否 | 是 |
+| `clipFocusSet` | `clip-report.gs` `clipFocusSet_` | `focus`（字串；空白＝清掉；最多 2,000 字） | `success`、`focus` | `forbidden`、`invalid_value`、`too_long`、`save_failed` | 本人＋feat_clips | 指令碼屬性 `clip_focus_<line_id>` | 是（只記字數） | 是 |
 | `clipNote` | `clips.gs` `clipNote_` | `id`、`note`、`revision` | `success` 與新 `revision` | 共通、`conflict`（附雲端新版）、`too_long`、`busy` | 擁有者＋feat_clips | `note`、`note_revision`、`note_updated_at` | 是（只寫字數） | 是 |
 | `clipAi` | `clips.gs` `clipAi_` | `id`、`discard` | `success` 與整理結果 | 共通、`empty`、`busy`、AI 失敗 | 擁有者＋feat_clips | `ai_output` 等三欄（不動原文與筆記） | 是 | 是 |
 | `clipOcr` | `clips.gs` `clipOcr_` | `id`、`discard` | `success`、`ocr_output`、`ocr_at` | 共通、`no_images`、`ocr_failed`、`busy` | 擁有者＋feat_clips | `ocr_output`、`ocr_at`（捨棄時清空結果、`ocr_at` 記捨棄時間） | 是 | 是 |

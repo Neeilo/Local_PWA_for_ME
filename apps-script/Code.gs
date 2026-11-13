@@ -40,6 +40,8 @@ var STOCK_RULES_SHEET = 'stock_rules';
 var CLIPS_SHEET = 'clips';
 /** 圖書館分類清單（ADR-023 D-7）：Neil 在 Sheet 上維護（比照 _expense_config），PWA 只拿 readMany 附帶的整理好的清單 */
 var CLIP_CATEGORIES_SHEET = '_clip_categories';
+/** ADR-028 圖書館週報：一期一列（擁有者、期間、推薦／可略過清單、數字總覽）。只經專用動作讀寫 */
+var CLIP_REPORTS_SHEET = 'clip_reports';
 var STOCK_DAILY_SHEET = 'stock_daily';
 var STOCK_CONFIG_SHEET = '_stock_config';
 /** GOOGLEFINANCE 備援的公式暫存頁（第三順位報價，見 stock.gs） */
@@ -78,7 +80,7 @@ var GUIDE_SHEET = '_guide';
 var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_CONFIG_SHEET, INSTALLMENTS_SHEET,
                     LINE_GROUPS_SHEET, STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET,
                     SELF_NOTES_SHEET, CLIPS_SHEET, MODULE_REGISTRY_SHEET, WIDGET_CONFIG_SHEET,
-                    API_REGISTRY_SHEET, API_USAGE_SHEET, API_DAILY_SHEET, API_MONTHLY_SHEET, CLIP_CATEGORIES_SHEET];
+                    API_REGISTRY_SHEET, API_USAGE_SHEET, API_DAILY_SHEET, API_MONTHLY_SHEET, CLIP_CATEGORIES_SHEET, CLIP_REPORTS_SHEET];
 
 /**
  * PWA 連讀都不准讀的分頁（ADR-010 D-8）。
@@ -103,7 +105,7 @@ var NO_PWA_WRITE = [GUIDE_SHEET, LINE_DEVICES_SHEET, PERFORMANCE_SHEET, EXPENSE_
 var NO_PWA_READ = [LINE_DEVICES_SHEET, PERFORMANCE_SHEET, LINE_GROUPS_SHEET,
                    STOCK_DAILY_SHEET, STOCK_CONFIG_SHEET, STOCK_GF_SHEET, GMAIL_RULES_SHEET, GMAIL_LOG_SHEET,
                    SELF_NOTES_SHEET, MODULE_REGISTRY_SHEET, WIDGET_CONFIG_SHEET,
-                   API_REGISTRY_SHEET, API_USAGE_SHEET, API_DAILY_SHEET, API_MONTHLY_SHEET, CLIP_CATEGORIES_SHEET];
+                   API_REGISTRY_SHEET, API_USAGE_SHEET, API_DAILY_SHEET, API_MONTHLY_SHEET, CLIP_CATEGORIES_SHEET, CLIP_REPORTS_SHEET];
 
 /**
  * 功能矩陣的欄位清單，與前端 FEATURE_BY_VIEW 的值一一對應。
@@ -867,6 +869,12 @@ function routePwaSync_(body, perf) {
   // ADR-027：圖書館設定（各平台存不存圖片／影片、本月強制續抓），限管理者＋feat_clips
   if (body.action === 'clipSettings') return jsonOut(clipSettingsView_(caller));
   if (body.action === 'clipSettingsSet') return jsonOut(clipSettingsSet_(caller, body.key, body.value));
+  // ADR-028 圖書館週報：讀、立即產生、一鍵標已讀、我的關注（只限本人＋feat_clips，clip-report.gs）
+  if (body.action === 'clipReport') return jsonOut(clipReportView_(caller, body.id));
+  if (body.action === 'clipReportRun') return jsonOut(clipReportRun_(caller));
+  if (body.action === 'clipMarkRead') return jsonOut(clipMarkRead_(caller, body.ids));
+  if (body.action === 'clipFocus') return jsonOut(clipFocusView_(caller));
+  if (body.action === 'clipFocusSet') return jsonOut(clipFocusSet_(caller, body.focus));
   if (body.action === 'clipOcr') return jsonOut(clipOcr_(caller, body.id, body.discard === true));
   if (body.action === 'clipVision') return jsonOut(clipVision_(caller, body.id, body.discard === true));
   // 搜尋（ADR-021 PR-F，search.gs）：只搜自己的（白板例外），按了才跑

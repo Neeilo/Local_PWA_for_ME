@@ -714,6 +714,7 @@ function initSteps_() {
     { label: 'Gmail 控制員', run: installGmail_ },
     { label: '收藏搜集器', run: installClips_ },
     { label: '圖書館分類', run: installClipCategories_ },
+    { label: '圖書館週報', run: installClipReports_ },
     { label: '用量與成本記帳', run: installApiCost_ },
     // RD-HF1：兩個補救都可重複執行；要在補欄（installClips_ 補 video_saved）之後
     { label: '收藏 content.md 重產', run: function () {

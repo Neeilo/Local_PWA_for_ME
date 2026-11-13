@@ -15,6 +15,7 @@
 | `modules.gs` | 模組登記表 `_module_registry` 與總開關 `moduleOn_`、`moduleSet_` | 模組總開關 |
 | `widgets.gs` | 2.0 總覽個人設定 `widget_config`、天氣 | Widget、天氣 |
 | `clips.gs` | 收藏搜集、圖書館（筆記、分類、閱讀狀態、AI 整理、文字辨識、AI 辨識） | 圖書館 |
+| `clip-report.gs` | 圖書館週報（候選挑選、提示詞、解析、數字總覽、排程、LINE 提醒、一鍵標已讀、我的關注；ADR-028） | 圖書館 |
 | `search.gs` | 按需關鍵字搜尋 `search_` | 搜尋 |
 | `stock.gs` | 股票報價、持股、交易把關、提醒規則、再平衡、LINE 股票指令 | 股票 |
 | `gmail.gs` | Gmail 控制員、規則、封存（預設預演）、整理報告、即時內文 | 郵件 |
@@ -195,13 +196,13 @@
 | 負責範圍 | `clips` 全部生命週期：LINE 或 App 登記 → 排程抓取存 Drive → 閱讀頁；只限擁有者的各種修改；排程自動文字辨識 |
 | 不負責的事 | 通用網頁全文擷取（未實作）；辨識文字納入搜尋（未實作） |
 | 前端入口 | 「📚 收藏（ADR-020 RD-2）」`loadClips`；「📚 圖書館（ADR-021 D-10～D-13｜PR-E，只在 2.0）」；「圖書館分類（ADR-023 D-7、D-8，只在 2.0）」；「圖片辨識（ADR-024，只在 2.0）」；「⚙️ 圖書館設定（ADR-027，只在 2.0 管理者）」`loadClipCfg` |
-| 後端入口 | `clips.gs`：`clipLineReply_`、`clipsRegister_`、`runClipsJob_`、`runClipOcrJob_`、`runApifyUsageJob_`、`clipOwnRow_`、`clipPwaAction_`、`clipNote_`、`clipAi_`、`clipAdd_`、`clipReadStateSet_`、`clipCategorySet_`、`clipOcr_`、`clipVision_`、`clipsVisibleTo_`、`clipCollectThreads_`、`clipsCostGate_`、`clipSettingsView_`、`clipSettingsSet_`、`clipsThreadsBackfill_`；探針 `lab-clip.gs` |
-| 相關 API action | `clipRetry`、`clipDelete`、`clipRead`、`clipNote`、`clipAi`、`clipAdd`、`clipReadState`、`clipCategory`、`clipOcr`、`clipVision`、`clipSettings`、`clipSettingsSet`、`readMany`（只回自己的列） |
-| 主要分頁 | `clips`、`_clip_categories` |
+| 後端入口 | `clips.gs`：`clipLineReply_`、`clipsRegister_`、`runClipsJob_`、`runClipOcrJob_`、`runApifyUsageJob_`、`clipOwnRow_`、`clipPwaAction_`、`clipNote_`、`clipAi_`、`clipAdd_`、`clipReadStateSet_`、`clipCategorySet_`、`clipOcr_`、`clipVision_`、`clipsVisibleTo_`、`clipCollectThreads_`、`clipsCostGate_`、`clipSettingsView_`、`clipSettingsSet_`、`clipsThreadsBackfill_`；`clip-report.gs`：`runClipReportJob_`、`clipReportGenerate_`、`clipReportView_`、`clipReportRun_`、`clipMarkRead_`、`clipFocusView_`、`clipFocusSet_`；探針 `lab-clip.gs` |
+| 相關 API action | `clipRetry`、`clipDelete`、`clipRead`、`clipNote`、`clipAi`、`clipAdd`、`clipReadState`、`clipCategory`、`clipOcr`、`clipVision`、`clipSettings`、`clipSettingsSet`、`clipReport`、`clipReportRun`、`clipMarkRead`、`clipFocus`、`clipFocusSet`、`readMany`（只回自己的列） |
+| 主要分頁 | `clips`、`_clip_categories`、`clip_reports` |
 | 外部服務 | Apify（IG 擷取；Threads 用 `architekture~threads-replies-scraper`，按筆計費）、threads.com（分享短網址轉址）、圖片下載、Drive API（文字辨識）、AI 供應商（AI 整理、AI 辨識）；探針另用 Jina |
 | 主要副作用 | 寫 `clips`；在 Drive 建資料夾、存圖片與原始檔；文字辨識建暫存文件後永久刪除；寫 logs |
-| 相關測試檔 | `adr-020-clips.test.mjs`、`adr-020-clips-frontend.test.mjs`、`adr-021-library-e.test.mjs`、`adr-021-library-e-frontend.test.mjs`、`adr-023-library-categories.test.mjs`、`adr-023-library-categories-frontend.test.mjs`、`adr-024-clip-ocr.test.mjs`、`adr-024-clip-ocr-frontend.test.mjs`、`adr-024-clip-vision.test.mjs`、`adr-024-clip-vision-frontend.test.mjs`、`adr-024-clip-ai-recog.test.mjs`、`adr-024-ocr-probe.test.mjs`、`adr-025-read-state.test.mjs`、`adr-025-read-state-frontend.test.mjs`、`clip-ocr-auto.test.mjs`、`rd-clip-probe.test.mjs`、`adr-027-threads.test.mjs`、`adr-027-threads-frontend.test.mjs`、`adr-027-threads-probe.test.mjs` |
-| 相關 ADR | 收藏搜集器（ADR-020）；圖書館閱讀、筆記 revision、AI 整理（ADR-021）；分類（ADR-023）；圖片辨識（ADR-024）；閱讀狀態（ADR-025）；Threads 收藏、圖書館設定、成本上限兩個都停（ADR-027） |
+| 相關測試檔 | `adr-020-clips.test.mjs`、`adr-020-clips-frontend.test.mjs`、`adr-021-library-e.test.mjs`、`adr-021-library-e-frontend.test.mjs`、`adr-023-library-categories.test.mjs`、`adr-023-library-categories-frontend.test.mjs`、`adr-024-clip-ocr.test.mjs`、`adr-024-clip-ocr-frontend.test.mjs`、`adr-024-clip-vision.test.mjs`、`adr-024-clip-vision-frontend.test.mjs`、`adr-024-clip-ai-recog.test.mjs`、`adr-024-ocr-probe.test.mjs`、`adr-025-read-state.test.mjs`、`adr-025-read-state-frontend.test.mjs`、`clip-ocr-auto.test.mjs`、`rd-clip-probe.test.mjs`、`adr-027-threads.test.mjs`、`adr-027-threads-frontend.test.mjs`、`adr-027-threads-probe.test.mjs`、`adr-028-clip-report.test.mjs` |
+| 相關 ADR | 收藏搜集器（ADR-020）；圖書館閱讀、筆記 revision、AI 整理（ADR-021）；分類（ADR-023）；圖片辨識（ADR-024）；閱讀狀態（ADR-025）；Threads 收藏、圖書館設定、成本上限兩個都停（ADR-027）；圖書館週報（ADR-028） |
 | 已知限制 | `lab-clip.gs` 實驗探針目前隨正式版部署；文字辨識一張圖 3 個 Drive 請求，暫存刪不掉時要人工到 Drive 搜 `tmp_ocr_` |
 
 ### 11. 郵件
@@ -297,7 +298,7 @@
 | 負責範圍 | 供應商與模型選擇、文字與看圖呼叫、最後一次錯誤 |
 | 不負責的事 | 權限、金額計算、去重等確定性邏輯（原則 5） |
 | 前端入口 | 「🤖 AI 供應商（ADR-017 D-1～D-4、D-6）」 |
-| 後端入口 | `ai.gs`：`callAi_`、`callAiVision_`、`aiProviders_`、`aiConfigGet_`、`aiConfigSet_`；呼叫者 `line-router.gs` 的 `handleQuery_`、`clips.gs` 的 `clipAi_`／`clipVision_` |
+| 後端入口 | `ai.gs`：`callAi_`、`callAiVision_`、`callAiLong_`（純文字長輸出，週報用）、`aiProviders_`、`aiConfigGet_`、`aiConfigSet_`；呼叫者 `line-router.gs` 的 `handleQuery_`、`clips.gs` 的 `clipAi_`／`clipVision_` |
 | 相關 API action | `aiConfigGet`、`aiConfigSet`（限管理者） |
 | 主要分頁 | 無（設定在指令碼屬性） |
 | 外部服務 | Gemini、OpenAI、Anthropic API（皆經 `callApi_`） |
@@ -340,7 +341,7 @@
 | 相關 ADR | 排程總管（ADR-019） |
 | 已知限制 | 總管是單點，掛了全部停；靠每日心跳與慢執行 logs 發現 |
 
-目前登記的工作（順序即執行順序，以 `schedulerJobs_()` 為準）：股票提醒規則、到期提醒、Gmail 控制員、`_guide` 導覽、未驗證彙總、盤後收盤價、收藏搜集、圖書館文字辨識、Apify 用量、天氣、API 用量記帳、效能紀錄落地。
+目前登記的工作（順序即執行順序，以 `schedulerJobs_()` 為準）：股票提醒規則、到期提醒、Gmail 控制員、`_guide` 導覽、未驗證彙總、盤後收盤價、收藏搜集、圖書館文字辨識、圖書館週報、Apify 用量、天氣、API 用量記帳、效能紀錄落地。
 
 ### 19. 效能紀錄
 
