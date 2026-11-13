@@ -25,7 +25,7 @@
 | `moods` | 資料（已退場） | `id` | | | `del`、`archive`；封存 | 018 |
 | `notes` | 資料 | `id` | | | `del`、`archive`；封存 | — |
 | `self_notes` | 資料 | `line_id` | ✓ | ✓ | — | 018 |
-| `clips` | 資料 | `id` | ✓ | | `del` | 020、021、023、024、025、027 |
+| `clips` | 資料 | `id` | ✓ | | `del` | 020、021、023、024、025、027、028 |
 | `widget_config` | 資料 | `line_id` | ✓ | ✓ | — | 021 |
 | `stock_trades` | 資料 | `id` | | | `del`、`archive` | 015 |
 | `stock_watch` | 資料 | `symbol` | | | `is_active` | 015 |
@@ -38,6 +38,7 @@
 | `performance` | 系統 | `id` | ✓ | ✓ | — | 012、014 |
 | `_expense_config` | 系統 | `kind`＋`name` | ✓ | | `is_active` | 013 |
 | `_clip_categories` | 系統 | `name` | ✓ | ✓ | `is_active` | 023 |
+| `clip_reports` | 資料 | `id` | ✓ | ✓ | | 028 |
 | `stock_daily` | 系統 | `date`＋`symbol` | ✓ | ✓ | — | 015 |
 | `_stock_config` | 系統 | `key` | ✓ | ✓ | — | 015 |
 | `_stock_gf` | 系統 | `symbol` | ✓ | ✓ | — | 015 |
@@ -93,6 +94,7 @@
   - 收集：`id`、`line_id`、`source_text`、`url`、`shortcode`、`kind`、`status`（`pending`／`done`／`partial`／`failed`／`link`）、`attempts`、`next_try_at`、`error`、`author`、`posted_at`、`caption`、`media_expected`、`media_saved`、`drive_folder_id`、`image_ids`、`video_saved`、`collected_at`、`last_collected_at`
   - 整理：`category`（單選、存名稱）、`read_status`（空白＝未讀／`reading`／`read`）、`last_read_at`、`note`、`note_revision`、`note_updated_at`、`ai_output`、`ai_provider`、`ai_at`
   - 圖片辨識：`ocr_output`、`ocr_at`（捨棄時清空結果、`ocr_at` 記捨棄時間）、`vision_output`、`vision_provider`、`vision_at`
+  - 週報判斷（ADR-028）：`report_verdict`（`recommend`／`normal`／`skip`）、`report_reason`、`report_id`、`report_at`（只留最新一次；產生週報不改 `read_status`）
   - 共通：`del`、`created_at`、`updated_at`
 - **專用寫入路徑**：LINE 一對一貼網址（登記）；排程 `clips`（抓取、存 Drive、重試）、`clipsOcr`（自動文字辨識）；PWA 只走 `clipRetry`、`clipDelete`、`clipRead`、`clipReadState`、`clipNote`、`clipAi`、`clipAdd`、`clipCategory`、`clipOcr`、`clipVision`（除 `clipAdd` 外只限擁有者）；LINE「初始化」一次性把只存連結的 Threads 轉成等待抓取（ADR-027 D-3）。
 - **讀取者**：PWA（`readMany` 只回自己的列）、搜尋、總覽閱讀 Widget。
@@ -151,6 +153,12 @@
 - **寫入者**：專案擁有者直接在 Sheet 上改；不存在時 GAS 自動建表寫初版；**管理者也可經 `configSet`／`configAdd` 寫入**。
 - ⚠️ 文件與程式不一致：`_guide` 的說明寫「PWA 不可寫」，但程式有管理者專用的 `configSet`／`configAdd`。以程式為準；`_guide` 文字未修改（改它會改變 `_guide` 分頁的輸出）。
 - **讀取者**：GAS（`boot` 送前端、LINE 記帳、「查/」）、`adminView`。
+
+### `clip_reports`
+- **用途**：圖書館週報，一期一列（ADR-028）。
+- **主要欄位**：`id`、`line_id`、`type`（`scheduled`／`manual`）、`week`（那個週五，台北日期；只有排程有）、`period_start`、`period_end`、`created_at`、`provider`、`status`（`ok`／`failed`）、`error`、`recommended`、`skippable`（JSON：`[{ id, group: new｜old, reason }]`）、`summary`（數字總覽 JSON）、`used_focus`。
+- **寫入者**：排程 `clipReport`（每週五 19:00 後、每人每週一份）、PWA `clipReportRun`（手動預覽）。一般寫入不可寫。
+- **讀取者**：PWA `clipReport`（只回本人的）。各篇判斷另寫在 `clips` 的 `report_verdict`／`report_reason`／`report_id`／`report_at`（只留最新一次）。
 
 ### `_clip_categories`
 - **用途**：圖書館分類清單。停用的不出現在按鈕，已歸類的篇照樣顯示原名。

@@ -26,7 +26,9 @@ var CLIPS_HEADERS = ['id', 'line_id', 'source_text', 'url', 'shortcode', 'kind',
   // ADR-024 D-4：📝 文字辨識結果（一篇留最新一份、可捨棄）。同樣加在最右邊
   'ocr_output', 'ocr_at',
   // ADR-024 D-4：🤖 AI 辨識結果（哪一家、什麼時候；一篇留最新一份、可捨棄）
-  'vision_output', 'vision_provider', 'vision_at'];
+  'vision_output', 'vision_provider', 'vision_at',
+  // ADR-028 D-10：圖書館週報的 AI 判斷（recommend／normal／skip）、理由、來自哪一期、判斷時間；只留最新一次
+  'report_verdict', 'report_reason', 'report_id', 'report_at'];
 var CLIPS_FEATURE = 'feat_clips';
 var CLIPS_LOG_SOURCE = '收藏';
 var CLIPS_PER_ROUND = 5;

@@ -110,6 +110,15 @@ function callAiVision_(prompt, images, feature) {
   return aiCall_(prompt, feature, { images: images || [], maxTokens: AI_VISION_MAX_OUTPUT_TOKENS });
 }
 
+/**
+ * 純文字、但輸出比「查/」長（ADR-028 圖書館週報：約 45 篇各一句理由的 JSON，2048 會被截斷、整份解析失敗）。
+ * 同一套選家／失敗不換家，只放寬輸出上限。回傳形狀跟 callAi_ 一樣
+ */
+var AI_LONG_MAX_OUTPUT_TOKENS = 8192;
+function callAiLong_(prompt, feature) {
+  return aiCall_(prompt, feature, { maxTokens: AI_LONG_MAX_OUTPUT_TOKENS });
+}
+
 /** callAi_／callAiVision_ 共用本體。opts 是 null＝純文字，送出的請求跟改版前一個字都不差 */
 function aiCall_(prompt, feature, opts) {
   var id = aiProviderId_();

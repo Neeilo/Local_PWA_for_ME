@@ -151,7 +151,7 @@ describe('有自己一張表的模組：關掉 → 讀寫永久拒絕；其他�
     const e = env({ opts: { extraFiles: ['line-router.gs', 'sheet-guide.gs'] } });
     const owned = e.read('schedulerJobs_().filter(function(j){ return j.module; }).map(function(j){ return [j.name, j.module]; })');
     assert.deepEqual(owned, [['stockRules', 'stocks'], ['dueCheck', 'tasks'], ['gmail', 'mail'], ['stockDaily', 'stocks'],
-      ['clips', 'library'], ['clipsOcr', 'library'], ['apifyUsage', 'library']]);
+      ['clips', 'library'], ['clipsOcr', 'library'], ['clipReport', 'library'], ['apifyUsage', 'library']]);
   });
 });
 

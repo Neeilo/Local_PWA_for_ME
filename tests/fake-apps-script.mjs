@@ -453,7 +453,8 @@ export function loadCodeGs({ sheets = {}, properties = {}, pushImpl = null, extr
   // scheduler.gs：「初始化」裝的唯一觸發器（ADR-019 D-1）；clips.gs：LINE 路由與總管會呼叫它（ADR-020）
   // modules.gs：canUse_ 與各讀寫出口都問總開關（ADR-021）
   // api-cost.gs：所有外部呼叫的唯一出口 callApi_（ADR-022）
-  const ALWAYS = ['stock.gs', 'gmail.gs', 'ai.gs', 'scheduler.gs', 'clips.gs', 'modules.gs', 'widgets.gs', 'search.gs', 'api-cost.gs'];
+  // clip-report.gs：排程總管與 PWA 路由會呼叫它（ADR-028）
+  const ALWAYS = ['stock.gs', 'gmail.gs', 'ai.gs', 'scheduler.gs', 'clips.gs', 'clip-report.gs', 'modules.gs', 'widgets.gs', 'search.gs', 'api-cost.gs'];
   const files = ALWAYS.concat(extraFiles.filter((name) => ALWAYS.indexOf(name) === -1));
   files.forEach((name) => {
     runInContext(readFileSync(join(ROOT, 'apps-script', name), 'utf8'), context, { filename: name });
