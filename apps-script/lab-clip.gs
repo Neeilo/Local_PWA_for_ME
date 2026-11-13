@@ -389,16 +389,23 @@ function probeClipThreads() {
 
 function probeClipThreads_() {
   var props = PropertiesService.getScriptProperties();
-  var posts = clipThreadsProbeList_(props.getProperty(CLIP_THREADS_PROBE_PROP));
-  var report = { verdict: 'not_run', posts: [], apify: null, cost: null };
-  if (!posts.length) {
-    console.log('❌ 沒設 ' + CLIP_THREADS_PROBE_PROP + '（或裡面沒有 Threads 單篇貼文網址）：專案設定 → 指令碼屬性，填最多 ' +
-      CLIP_THREADS_PROBE_MAX + ' 個網址（逗號分隔；至少 1 篇有圖、1 篇有串文），再執行一次');
+  var input = clipThreadsProbeInputs_(props.getProperty(CLIP_THREADS_PROBE_PROP));
+  var report = { verdict: 'not_run', posts: [], shares: [], bad: input.bad, apify: null, cost: null };
+  input.bad.forEach(function (b) { console.log('⚠️ 不認得，略過：' + b + '（要是 Threads 的 /share/代碼、/@帳號/post/代碼 或 /t/代碼）'); });
+  if (!input.items.length) {
+    console.log('❌ ' + clipThreadsPropsHint_());
     return report;
   }
   var cfg = clipApifyConfig_(props);
   if (!cfg.token) {
     console.log('❌ 沒設 APIFY_TOKEN，未測（專案設定 → 指令碼屬性 補上後重跑）');
+    return report;
+  }
+  var posts = clipThreadsProbePosts_(input.items, report);
+  if (!posts.length) {
+    report.verdict = 'fail';
+    console.log('❌ 沒有任何一個網址轉得出貼文代碼，Apify 不跑（省錢）');
+    clipThreadsConclude_(report);
     return report;
   }
   console.log('🔎 Threads 探針｜actor=' + CLIP_THREADS_ACTOR + '｜' + posts.length + ' 篇｜每篇最多 ' + CLIP_THREADS_MAX_REPLIES +
@@ -434,20 +441,96 @@ function probeClipThreads_() {
   return report;
 }
 
+/** 網址之間用什麼隔都可以：半形／全形逗號、頓號、分號、空白、換行（中文輸入法常打出全形） */
+var CLIP_THREADS_SPLIT_RE = /[\s,，、;；]+/;
+/** 短網址最多跟幾次轉址（share → /@帳號/post/代碼?xmt=… 通常一次就到） */
+var CLIP_THREADS_MAX_HOPS = 3;
+
 /**
- * 只認 Threads 單篇貼文：threads.com／threads.net、有無 www、/@帳號/post/代碼 或 /t/代碼；
- * 去掉參數、#、結尾斜線，網域統一成 www.threads.com。同一篇（代碼相同）只留一次，最多 CLIP_THREADS_PROBE_MAX 篇
+ * 一個網址 → { code, user, url }（單篇貼文）｜{ share, url }（分享短網址 /share/代碼，要先轉址）｜null。
+ * 認得 threads.com／threads.net、有無 www、/@帳號/post/代碼、/t/代碼；代碼後面的路徑、參數、# 都去掉，
+ * 網域統一成 www.threads.com
  */
-function clipThreadsProbeList_(raw) {
+function clipThreadsParse_(raw) {
+  var s = String(raw || '').trim().replace(/^["'「『(（<]+|["'」』)）>]+$/g, '');
+  var m = s.match(/^https?:\/\/(?:www\.)?threads\.(?:com|net)\/(?:@([A-Za-z0-9._]+)\/post|t)\/([A-Za-z0-9_-]+)(?:[/?#].*)?$/i);
+  if (m) return { code: m[2], user: m[1] || '', url: 'https://www.threads.com/' + (m[1] ? '@' + m[1] + '/post/' : 't/') + m[2] };
+  var sh = s.match(/^https?:\/\/(?:www\.)?threads\.(?:com|net)\/share\/([A-Za-z0-9_-]+)(?:[/?#].*)?$/i);
+  if (sh) return { share: sh[1], url: 'https://www.threads.com/share/' + sh[1] };
+  return null;
+}
+
+/** 指令碼屬性的原文 → { items: [解析結果（照順序、同一個只留一次）], bad: [認不得的片段] } */
+function clipThreadsProbeInputs_(raw) {
+  var items = [];
+  var bad = [];
   var seen = {};
-  var out = [];
-  String(raw || '').split(/[,\n\r]+/).forEach(function (s) {
-    var m = s.trim().match(/^https?:\/\/(?:www\.)?threads\.(?:com|net)\/(?:@([A-Za-z0-9._]+)\/post|t)\/([A-Za-z0-9_-]+)\/?(?:[?#].*)?$/i);
-    if (!m || seen[m[2]] || out.length >= CLIP_THREADS_PROBE_MAX) return;
-    seen[m[2]] = true;
-    out.push({ code: m[2], user: m[1] || '', url: 'https://www.threads.com/' + (m[1] ? '@' + m[1] + '/post/' : 't/') + m[2] });
+  String(raw || '').split(CLIP_THREADS_SPLIT_RE).forEach(function (tok) {
+    if (!tok) return;
+    var p = clipThreadsParse_(tok);
+    if (!p) { bad.push(tok); return; }
+    var key = p.share ? 's:' + p.share : 'p:' + p.code;
+    if (seen[key]) return;
+    seen[key] = true;
+    items.push(p);
   });
-  return out;
+  return { items: items, bad: bad };
+}
+
+/** 只要已經是單篇貼文網址的（RUN_SUMMARY、status 列比對也用這支），最多 CLIP_THREADS_PROBE_MAX 篇 */
+function clipThreadsProbeList_(raw) {
+  return clipThreadsProbeInputs_(raw).items.filter(function (p) { return p.code; }).slice(0, CLIP_THREADS_PROBE_MAX);
+}
+
+/**
+ * 分享短網址 → 真正的貼文網址：不自動跟轉址，自己讀 Location（最多 CLIP_THREADS_MAX_HOPS 次），
+ * 這樣才看得出 Google 機房打 threads.com 時是正常轉址、被擋，還是被導去登入頁。走 callApi_('web')。
+ * 回 { ok, post（clipThreadsParse_ 的結果）, status, location, error }
+ */
+function clipThreadsResolveShare_(url) {
+  var cur = url;
+  var last = { status: 0, location: '' };
+  for (var hop = 0; hop < CLIP_THREADS_MAX_HOPS; hop++) {
+    var r = clipFetch_(cur, { followRedirects: false });
+    var headers = r.res && r.res.getHeaders ? r.res.getHeaders() || {} : {};
+    var loc = '';
+    Object.keys(headers).forEach(function (k) { if (k.toLowerCase() === 'location') loc = String(headers[k] || ''); });
+    if (loc && loc.charAt(0) === '/') loc = 'https://www.threads.com' + loc;
+    last = { status: r.status, location: loc };
+    if (r.status === 0) return { ok: false, post: null, status: 0, location: '', error: clipHead_(r) };
+    var post = loc ? clipThreadsParse_(loc) : null;
+    if (post && post.code) return { ok: true, post: post, status: r.status, location: loc, error: '' };
+    // 只有轉到的還是短網址才再跟；轉去登入頁之類的就停下來照實回報
+    if (!loc || r.status < 300 || r.status >= 400 || !(post && post.share)) break;
+    cur = loc;
+  }
+  var why = last.location ? '轉到的不是貼文（' + last.location.split('?')[0] + '）' : 'HTTP ' + last.status + (last.status === 200 ? '，沒有轉址（可能是登入頁或要跑 JavaScript 才轉）' : '');
+  return { ok: false, post: null, status: last.status, location: last.location, error: why };
+}
+
+function clipThreadsPropsHint_() {
+  return '沒設 ' + CLIP_THREADS_PROBE_PROP + '（或裡面沒有認得的 Threads 網址）：專案設定 → 指令碼屬性，填最多 ' +
+    CLIP_THREADS_PROBE_MAX + ' 個網址（逗號分隔，全形半形都可以；LINE 分享的 /share/ 短網址可以直接貼；至少 1 篇有圖、1 篇有串文），再執行一次';
+}
+
+/** 短網址先轉址（每個都印結果，是 PR-A 要不要另想辦法的依據）；轉完同一篇只留一次，最多 CLIP_THREADS_PROBE_MAX 篇 */
+function clipThreadsProbePosts_(items, report) {
+  var posts = [];
+  var seen = {};
+  items.forEach(function (p) {
+    var post = p;
+    if (p.share) {
+      var r = clipThreadsResolveShare_(p.url);
+      report.shares.push({ share: p.share, ok: r.ok, status: r.status, code: r.ok ? r.post.code : '', error: r.error });
+      console.log('[短網址] ' + p.url + ' → ' + (r.ok ? '✅ ' + r.post.url + '（HTTP ' + r.status + '）' : '❌ ' + r.error));
+      if (!r.ok) return;
+      post = r.post;
+    }
+    if (seen[post.code] || posts.length >= CLIP_THREADS_PROBE_MAX) return;
+    seen[post.code] = true;
+    posts.push(post);
+  });
+  return posts;
 }
 
 /**
@@ -574,6 +657,11 @@ function clipThreadsConclude_(report) {
     console.log((withThread.length ? '✅ ' : '⚠️ ') + '作者串文：' + withThread.length + '／' + n + ' 篇抓得到' +
       (withThread.length ? '，順序' + (withThread.every(function (x) { return x.threadOrderOk; }) ? '都串得起來' : '有沒把握的（見上）') : '') +
       (recs.some(function (x) { return x.capped; }) ? '｜⚠️ 有篇被回覆上限截斷' : ''));
+  }
+  if (report.shares && report.shares.length) {
+    var okN = report.shares.filter(function (x) { return x.ok; }).length;
+    console.log((okN === report.shares.length ? '✅ ' : '❌ ') + '短網址轉址（GAS 打 threads.com）：' + okN + '／' + report.shares.length + ' 個成功' +
+      (okN < report.shares.length ? '｜失敗原因見上面 [短網址]；PR-A 收 LINE 分享的網址要另想辦法' : ''));
   }
   var c = report.cost;
   if (c) {
