@@ -39,5 +39,6 @@
 | ADR-024 | 圖書館圖片辨識（文字辨識與 AI 辨識） | 現行 |
 | ADR-025 | 圖書館閱讀狀態 | 現行；logs 規則被 ADR-026 修訂 |
 | ADR-026 | Mail 整理 v2 與 logs 補齊 | 現行；正式封存開關只由專案擁有者在 App 開啟 |
+| ADR-027 | 圖書館 Threads 收藏：比照 IG 收齊＋作者串文合併 | 施工中：PR-0 探針（`probeClipThreads`）；正式 ADR 文件隨 PR-A 寫進本資料夾，屆時修訂 ADR-021「非 IG 只存連結」 |
 
 本索引從 ADR-004 開始；ADR-001～003 程式沒有引用，是否存在、內容為何待確認。各 ADR 在程式裡的落點可用 `grep -rn "ADR-0NN" index.html apps-script/` 找；模組對應見 [MODULES.md](../MODULES.md)。

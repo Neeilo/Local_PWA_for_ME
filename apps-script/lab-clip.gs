@@ -355,3 +355,236 @@ function clipOcrProbeRec_(target) {
   }
   return { id: '', drive_folder_id: target, image_ids: '' };
 }
+
+/* ========================================================================== */
+/* ADR-027 PR-0：Threads 收藏可行性探針                                          */
+/* ========================================================================== */
+
+/*
+ * probeClipThreads()：編輯器手動執行。回答「Apify 能不能把一篇 Threads 收齊」：主文、圖片（GAS 下載得到嗎）、
+ * 影片有無、作者自己的接續串文（只要作者的、順序對不對）、混入多少別人的留言、耗時與費用。
+ * 讀指令碼屬性 CLIP_THREADS_PROBE_URLS（逗號或換行分隔，最多 3 篇 Threads 單篇貼文網址），結果只印執行記錄。
+ * 刻意不做：不寫 Sheet、不碰 LINE、不存 Drive、不改正式流程。結論只有三種：可行／只能抓主文／不可行。
+ *
+ * 爬蟲選擇（2026-11-12）：architekture~threads-replies-scraper——一次回主文（recordType=post）與回覆，
+ * 作者自己的接續標 replyType=author_thread、帶 parentCode 可以串順序；按筆計費（主文 US$0.001、回覆 US$0.0025），
+ * 別人的留言也會計費，所以 maxRepliesPerPost 一定要設上限。備案：automation-lab~threads-scraper（只抓主文，
+ * 走 D-6 退回路線時用）。不可行就停下回報，不自行改用其他付費方案（ADR-027 D-4）。
+ */
+var CLIP_THREADS_PROBE_PROP = 'CLIP_THREADS_PROBE_URLS';
+var CLIP_THREADS_PROBE_MAX = 3;
+var CLIP_THREADS_ACTOR = 'architekture~threads-replies-scraper';
+/** 每篇最多回幾列回覆（含別人的留言）；串文在這之內才收得到，探針會印出有沒有被截斷 */
+var CLIP_THREADS_MAX_REPLIES = 30;
+/** 一次探針最多扣多少（3 篇 × 30 列 × US$0.0025 ≈ US$0.23，留一點餘裕） */
+var CLIP_THREADS_PROBE_MAX_USD = 0.5;
+var CLIP_THREADS_USD_POST = 0.001;
+var CLIP_THREADS_USD_REPLY = 0.0025;
+/** 每月推估用的 Threads 收藏篇數（目前全部只存連結的 Threads 才 11 筆，這個數字偏寬） */
+var CLIP_THREADS_MONTHLY_POSTS = 20;
+
+function probeClipThreads() {
+  return probeClipThreads_();
+}
+
+function probeClipThreads_() {
+  var props = PropertiesService.getScriptProperties();
+  var posts = clipThreadsProbeList_(props.getProperty(CLIP_THREADS_PROBE_PROP));
+  var report = { verdict: 'not_run', posts: [], apify: null, cost: null };
+  if (!posts.length) {
+    console.log('❌ 沒設 ' + CLIP_THREADS_PROBE_PROP + '（或裡面沒有 Threads 單篇貼文網址）：專案設定 → 指令碼屬性，填最多 ' +
+      CLIP_THREADS_PROBE_MAX + ' 個網址（逗號分隔；至少 1 篇有圖、1 篇有串文），再執行一次');
+    return report;
+  }
+  var cfg = clipApifyConfig_(props);
+  if (!cfg.token) {
+    console.log('❌ 沒設 APIFY_TOKEN，未測（專案設定 → 指令碼屬性 補上後重跑）');
+    return report;
+  }
+  console.log('🔎 Threads 探針｜actor=' + CLIP_THREADS_ACTOR + '｜' + posts.length + ' 篇｜每篇最多 ' + CLIP_THREADS_MAX_REPLIES +
+    ' 列回覆｜本次花費上限 US$' + CLIP_THREADS_PROBE_MAX_USD);
+  posts.forEach(function (p) { console.log('  · ' + p.url); });
+
+  var urls = posts.map(function (p) { return p.url; });
+  var r = clipApifyRun_({ token: cfg.token, actor: CLIP_THREADS_ACTOR, field: 'postUrls' }, urls, {
+    waitSec: CLIP_APIFY_WAIT_SEC, maxPolls: CLIP_APIFY_MAX_POLLS, maxUsd: CLIP_THREADS_PROBE_MAX_USD,
+    input: { maxRepliesPerPost: CLIP_THREADS_MAX_REPLIES, includeAuthorThread: true, sortOrder: 'TOP' },
+    onPoll: function (status) { console.log('[Apify] 狀態 ' + status + '，再等 ' + CLIP_APIFY_WAIT_SEC + ' 秒…'); }
+  });
+  report.apify = { stage: r.stage, ms: r.ms, usd: r.usd, rows: r.items.length, keys: r.keys };
+  if (r.stage !== 'ok') {
+    report.verdict = 'fail';
+    console.log('[Apify] ❌ ' + (r.stage === 'run' ? 'run 狀態 ' + r.runStatus + (r.timedOut ? '（等太久，到 Apify 後台看結果）' : '') : r.detail));
+    clipThreadsConclude_(report);
+    return report;
+  }
+  console.log('[Apify] ✅ ' + r.items.length + ' 列｜' + r.ms + 'ms' + (r.usd === null ? '' : '｜Apify 回報 US$' + r.usd));
+  console.log('[Apify] 回傳欄位：' + r.keys.join(','));
+  var summary = clipThreadsRunSummary_(cfg.token, r.kvs);
+
+  report.posts = posts.map(function (p) {
+    var rec = clipThreadsPostRecord_(p, r.items, Math.round(r.ms / posts.length));
+    var per = summary.filter(function (x) { var n = clipThreadsProbeList_(x && x.url)[0]; return n && n.code === p.code; })[0];
+    rec.capped = !!(per && per.capped && !per.exhausted);
+    clipThreadsLogPost_(rec);
+    return rec;
+  });
+  report.cost = clipThreadsCost_(r, report.posts);
+  clipThreadsConclude_(report);
+  return report;
+}
+
+/**
+ * 只認 Threads 單篇貼文：threads.com／threads.net、有無 www、/@帳號/post/代碼 或 /t/代碼；
+ * 去掉參數、#、結尾斜線，網域統一成 www.threads.com。同一篇（代碼相同）只留一次，最多 CLIP_THREADS_PROBE_MAX 篇
+ */
+function clipThreadsProbeList_(raw) {
+  var seen = {};
+  var out = [];
+  String(raw || '').split(/[,\n\r]+/).forEach(function (s) {
+    var m = s.trim().match(/^https?:\/\/(?:www\.)?threads\.(?:com|net)\/(?:@([A-Za-z0-9._]+)\/post|t)\/([A-Za-z0-9_-]+)\/?(?:[?#].*)?$/i);
+    if (!m || seen[m[2]] || out.length >= CLIP_THREADS_PROBE_MAX) return;
+    seen[m[2]] = true;
+    out.push({ code: m[2], user: m[1] || '', url: 'https://www.threads.com/' + (m[1] ? '@' + m[1] + '/post/' : 't/') + m[2] });
+  });
+  return out;
+}
+
+/**
+ * 作者自己的接續串文（replyType=author_thread），從主文照 parentCode 一路串下去。
+ * 串得完整 → method='parent'；串不起來（例如全掛在主文底下）→ 照時間排、method='time'、orderOk=false。
+ * 純函式：PR-A 的串文合併會用同一份。
+ */
+function clipThreadsAuthorChain_(rootCode, rows) {
+  var thread = (rows || []).filter(function (x) { return x && x.recordType !== 'status' && x.replyType === 'author_thread'; });
+  var byParent = {};
+  thread.forEach(function (x) { (byParent[x.parentCode] = byParent[x.parentCode] || []).push(x); });
+  var chain = [];
+  var seen = {};
+  var cur = rootCode;
+  while (byParent[cur] && byParent[cur].length === 1 && !seen[cur]) {
+    seen[cur] = true;
+    chain.push(byParent[cur][0]);
+    cur = byParent[cur][0].code;
+  }
+  var ts = function (x) { return String(x.timestamp || ''); };
+  if (chain.length === thread.length) {
+    var timeOk = chain.every(function (x, i) { return i === 0 || !ts(x) || !ts(chain[i - 1]) || ts(chain[i - 1]) <= ts(x); });
+    return { rows: chain, method: 'parent', orderOk: timeOk };
+  }
+  var sorted = thread.slice().sort(function (a, b) { return ts(a) < ts(b) ? -1 : ts(a) > ts(b) ? 1 : 0; });
+  return { rows: sorted, method: 'time', orderOk: false };
+}
+
+/** 一列的圖片／影片網址（欄位可能是字串陣列或物件陣列） */
+function clipThreadsMedia_(row, field) {
+  var arr = row && row[field];
+  if (!Array.isArray(arr)) return [];
+  return arr.map(function (x) { return typeof x === 'string' ? x : String(clipPick_(x || {}, ['url', 'src', 'displayUrl', 'imageUrl', 'videoUrl'])); })
+    .filter(function (u) { return !!u; });
+}
+
+function clipThreadsPostRecord_(post, items, ms) {
+  var rec = { code: post.code, url: post.url, ok: false, error: '', textChars: 0, images: 0, imagesOk: 0, imageErrors: [],
+    videos: 0, thread: 0, threadOrderOk: true, threadMethod: '', threadChars: 0, others: 0, authorOtherReplies: 0,
+    rows: 0, replyRows: 0, ms: ms, capped: false };
+  var status = items.filter(function (x) {
+    if (!x || x.recordType !== 'status') return false;
+    var n = clipThreadsProbeList_(x.url)[0];
+    return n && n.code === post.code;
+  })[0];
+  var root = items.filter(function (x) { return x && x.recordType === 'post' && x.code === post.code; })[0];
+  if (!root) {
+    rec.error = status ? status.status + '（' + (status.reason || '') + '）' : 'Apify 結果裡找不到這篇的主文';
+    return rec;
+  }
+  var replies = items.filter(function (x) { return x && x.recordType === 'reply' && x.rootPostCode === post.code; });
+  var chain = clipThreadsAuthorChain_(post.code, replies);
+  rec.rows = 1 + replies.length;
+  rec.replyRows = replies.length;
+  rec.textChars = String(root.text || '').length;
+  rec.thread = chain.rows.length;
+  rec.threadMethod = chain.method;
+  rec.threadOrderOk = chain.orderOk;
+  rec.threadChars = chain.rows.reduce(function (s, x) { return s + String(x.text || '').length; }, 0);
+  rec.others = replies.filter(function (x) { return !x.isAuthor; }).length;
+  rec.authorOtherReplies = replies.filter(function (x) { return x.isAuthor && x.replyType !== 'author_thread'; }).length;
+
+  var own = [root].concat(chain.rows);
+  var images = [];
+  own.forEach(function (x) { images = images.concat(clipThreadsMedia_(x, 'images')); rec.videos += clipThreadsMedia_(x, 'videos').length; });
+  rec.images = images.length;
+  clipFetchAll_(images).forEach(function (res, i) {
+    var type = res && res.res ? String(res.res.getBlob().getContentType() || '').split(';')[0] : '';
+    if (res && res.status === 200 && /^image\//.test(type)) rec.imagesOk++;
+    else rec.imageErrors.push('第 ' + (i + 1) + ' 張：' + (res ? (res.status === 200 ? '回的不是圖片（' + (type || '未知') + '）' : clipHead_(res)) : '沒有回應'));
+  });
+  rec.ok = (rec.textChars > 0 || rec.images > 0 || rec.videos > 0) && rec.imagesOk === rec.images;
+  if (!rec.ok && !rec.error) rec.error = rec.imagesOk < rec.images ? '圖片下載不完整' : '沒有主文也沒有圖片';
+  return rec;
+}
+
+function clipThreadsLogPost_(rec) {
+  if (rec.error && !rec.rows) { console.log('[' + rec.code + '] ❌ ' + rec.error); return; }
+  console.log('[' + rec.code + '] ' + (rec.ok ? '✅' : '❌') + '｜主文 ' + rec.textChars + ' 字｜圖片 ' + rec.imagesOk + '／' + rec.images +
+    ' 張下載得到｜影片 ' + (rec.videos ? rec.videos + ' 支' : '無') +
+    '｜作者串文 ' + rec.thread + ' 則（' + rec.threadChars + ' 字' + (rec.thread ? '，順序' + (rec.threadOrderOk ? '照 parentCode 串得起來' : '沒把握：照時間排') : '') + '）' +
+    '｜混入別人留言 ' + rec.others + ' 則、作者回別人 ' + rec.authorOtherReplies + ' 則（都會濾掉，但有計費）' +
+    '｜約 ' + rec.ms + 'ms' + (rec.capped ? '｜⚠️ 回覆被 ' + CLIP_THREADS_MAX_REPLIES + ' 列上限截斷，串文可能沒收完' : '') +
+    (rec.error ? '｜' + rec.error : ''));
+  rec.imageErrors.forEach(function (e) { console.log('    ' + e); });
+}
+
+/** RUN_SUMMARY.perPost（每篇有沒有被上限截斷）；讀不到就當沒有，不影響結論 */
+function clipThreadsRunSummary_(token, kvs) {
+  if (!kvs) return [];
+  var r = clipFetch_(CLIP_APIFY_BASE + '/key-value-stores/' + encodeURIComponent(kvs) + '/records/RUN_SUMMARY', { headers: { Authorization: 'Bearer ' + token } });
+  var j = r.status === 200 ? clipJson_(r) : null;
+  return j && Array.isArray(j.perPost) ? j.perPost : [];
+}
+
+/**
+ * 費用：Apify 有回 usageTotalUsd 就用它，否則照列數×單價估。每月推估＝每篇 × CLIP_THREADS_MONTHLY_POSTS，
+ * 再加上 IG 現況（apifyUsage 工作存的本月 Apify 用量），對 ADR-020 的每月 US$3 門檻
+ */
+function clipThreadsCost_(r, recs) {
+  var rows = recs.reduce(function (s, x) { return s + x.replyRows; }, 0);
+  var est = recs.length * CLIP_THREADS_USD_POST + rows * CLIP_THREADS_USD_REPLY;
+  var runUsd = typeof r.usd === 'number' ? r.usd : est;
+  var per = runUsd / Math.max(recs.length, 1);
+  var usage = typeof clipsUsage_ === 'function' ? clipsUsage_() : null;
+  var igUsd = usage && typeof usage.usd === 'number' ? usage.usd : 0;
+  var monthly = per * CLIP_THREADS_MONTHLY_POSTS;
+  var cap = typeof CLIPS_USAGE_RED_USD === 'number' ? CLIPS_USAGE_RED_USD : 3;
+  return { runUsd: runUsd, estUsd: est, reported: typeof r.usd === 'number', perPostUsd: per, monthlyUsd: monthly, igUsd: igUsd,
+    totalUsd: monthly + igUsd, cap: cap, withinCap: monthly + igUsd <= cap };
+}
+
+function clipThreadsConclude_(report) {
+  var recs = report.posts;
+  if (report.verdict !== 'fail') {
+    if (!recs.length || recs.some(function (x) { return !x.ok; })) report.verdict = 'fail';
+    else report.verdict = recs.some(function (x) { return x.thread > 0; }) ? 'ok' : 'main_only';
+  }
+  console.log('—— 總結（回貼到交棒頁執行日誌）——');
+  if (recs.length) {
+    var n = recs.length;
+    console.log((recs.every(function (x) { return x.ok; }) ? '✅ ' : '❌ ') + '主文與圖片：' + recs.filter(function (x) { return x.ok; }).length + '／' + n + ' 篇收齊');
+    var withThread = recs.filter(function (x) { return x.thread > 0; });
+    console.log((withThread.length ? '✅ ' : '⚠️ ') + '作者串文：' + withThread.length + '／' + n + ' 篇抓得到' +
+      (withThread.length ? '，順序' + (withThread.every(function (x) { return x.threadOrderOk; }) ? '都串得起來' : '有沒把握的（見上）') : '') +
+      (recs.some(function (x) { return x.capped; }) ? '｜⚠️ 有篇被回覆上限截斷' : ''));
+  }
+  var c = report.cost;
+  if (c) {
+    console.log((c.withinCap ? '✅ ' : '❌ ') + '費用：本次 US$' + c.runUsd.toFixed(4) + (c.reported ? '（Apify 回報）' : '（照列數估）') +
+      '｜每篇約 US$' + c.perPostUsd.toFixed(4) + '｜每月 ' + CLIP_THREADS_MONTHLY_POSTS + ' 篇約 US$' + c.monthlyUsd.toFixed(3) +
+      '＋IG 本月 US$' + c.igUsd.toFixed(3) + '＝US$' + c.totalUsd.toFixed(3) + (c.withinCap ? '，在 US$' + c.cap + ' 內' : '，超過 US$' + c.cap + '（D-4）'));
+  }
+  var line = { ok: '✅ 結論：可行（主文、圖片、作者串文都抓得到）→ 請 Neil 看完同意後開 PR-A',
+    main_only: '⚠️ 結論：只能抓主文（沒有任何一篇抓到作者串文；若挑的那篇確實有串文，PR-A 走 D-6 退回路線）',
+    fail: '❌ 結論：不可行 → 停在這裡回報 Neil，不要自行改用其他付費方案（D-4）',
+    not_run: '❌ 結論：未測' }[report.verdict];
+  console.log(line);
+  if (c && !c.withinCap) console.log('⚠️ 推估費用超過 US$' + c.cap + '：即使可行，也要 Neil 決定要不要做');
+}

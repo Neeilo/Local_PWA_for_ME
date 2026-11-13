@@ -124,6 +124,7 @@
 | `adr-024-clip-vision-frontend.test.mjs` | 圖書館 | 🤖 AI 辨識（前端） |
 | `adr-024-clip-vision.test.mjs` | 圖書館、AI 供應商 | 🤖 AI 辨識 callAiVision_＋clipVision（後端） |
 | `adr-024-ocr-probe.test.mjs` | 圖書館（探針） | 文字辨識探針與共用的 clipOcrImage_ |
+| `adr-027-threads-probe.test.mjs` | 圖書館（探針） | Threads 收藏探針 probeClipThreads：網址辨識、作者串文排序、圖片下載、費用推估與結論 |
 | `adr-025-read-state-frontend.test.mjs` | 圖書館 | 閱讀狀態三態（前端） |
 | `adr-025-read-state.test.mjs` | 圖書館 | 閱讀狀態三態（後端） |
 | `adr-026-logs.test.mjs` | PWA 同步、管理與設定 | logs 補齊（PWA 改狀態的動作都寫 logs） |

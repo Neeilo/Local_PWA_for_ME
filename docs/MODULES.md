@@ -22,7 +22,7 @@
 | `api-cost.gs` | 外部呼叫唯一出口 `callApi_`／`callApiAll_`、用量記帳、價目表與成本卡 | API 成本 |
 | `scheduler.gs` | 唯一的時間觸發器 `runScheduler` 與工作登記表 `schedulerJobs_()` | 排程總管 |
 | `sheet-guide.gs` | 分頁登記表 `guideRegistry_()` 與 `_guide` 產生器 `refreshGuide` | `_guide` |
-| `lab-clip.gs` | **實驗用探針，不是功能**：`probeClipSources()`、`probeClipOcr()`，只在編輯器手動執行。目前隨正式版一起部署 | 圖書館（探針） |
+| `lab-clip.gs` | **實驗用探針，不是功能**：`probeClipSources()`、`probeClipOcr()`、`probeClipThreads()`（ADR-027 PR-0），只在編輯器手動執行。目前隨正式版一起部署 | 圖書館（探針） |
 | `appsscript.json` | Apps Script 專案設定（時區、授權範圍） | — |
 | `build-info.gs` | **不在 repo**：CI 部署時產生的發行號 `BUILD_INFO` | LINE 入口（版本尾行） |
 
