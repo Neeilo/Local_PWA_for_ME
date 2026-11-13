@@ -25,6 +25,14 @@ const TOKEN = 'apify_api_should-never-be-logged';
 const P1 = 'https://www.threads.com/@demo.user/post/AAA111';
 const P2 = 'https://threads.net/t/BBB222?xmt=abc';
 const P3 = 'https://www.threads.net/@other_demo/post/CCC333/';
+/** LINE 分享出來的都是 /share/短碼；伺服器 302 轉到 /@帳號/post/代碼?xmt=… */
+const S1 = 'https://www.threads.com/share/Shr0001aa';
+const S2 = 'https://www.threads.com/share/Shr0002bb';
+const SHARES = {
+  Shr0001aa: 'https://www.threads.com/@demo.user/post/AAA111?xmt=AQF0demo',
+  Shr0002bb: '/@demo.user/post/BBB222?xmt=AQF0demo',
+  ShrLogin00: 'https://www.threads.com/login?next=%2Fshare'
+};
 
 /* ---------- 合成的 Apify 結果 ---------- */
 
@@ -58,7 +66,7 @@ function fakeFetch(responder) {
     return {
       getResponseCode: () => r.status,
       getContentText: () => body,
-      getHeaders: () => ({ 'Content-Type': r.type || 'application/json' }),
+      getHeaders: () => ({ 'Content-Type': r.type || 'application/json', ...(r.headers || {}) }),
       getBlob: () => ({ getBytes: () => new Array(r.bytes || body.length).fill(0), getContentType: () => r.type || 'application/json' })
     };
   };
@@ -79,6 +87,11 @@ function happy({ items = happyItems(), usd = 0.012, imageStatus = 200 } = {}) {
     if (url.startsWith('https://api.apify.com/v2/datasets/ds1/items')) return { status: 200, body: items };
     if (url.startsWith('https://api.apify.com/v2/key-value-stores/kv1/records/RUN_SUMMARY')) {
       return { status: 200, body: { status: 'COMPLETE', perPost: [{ url: P1, capped: false, exhausted: true, coverage: 1 }] } };
+    }
+    if (url.startsWith('https://www.threads.com/share/')) {
+      const target = SHARES[url.split('/share/')[1]];
+      if (target === undefined) return { status: 200, type: 'text/html', body: '<html>login</html>' };
+      return { status: 302, type: 'text/html', body: '', headers: { Location: target } };
     }
     if (url.startsWith('https://cdn.example/')) return imageStatus === 200 ? { status: 200, type: 'image/jpeg', bytes: 120000 } : { status: imageStatus, type: 'text/html' };
     throw new Error('沒預期的網址 ' + url);
@@ -225,5 +238,57 @@ describe('探針整體', () => {
     const { env } = run();
     assert.equal(env.pushes.length, 0);
     assert.equal(env.transactions.length, 0);
+  });
+});
+
+/* ========================================================================== */
+describe('LINE 分享的 /share/ 短網址與各種分隔符號', () => {
+  const inputs = (s) => loadCodeGs({ extraFiles: ['lab-clip.gs'] }).call('clipThreadsProbeInputs_', s);
+
+  test('全形逗號、頓號、空白都能分開；/share/ 短網址認得、代碼後面多的路徑也去掉', () => {
+    const r = inputs(S1 + '， ' + S2 + '、' + P1 + '/media ' + '不是網址');
+    assert.deepEqual(r.items.map((x) => x.share || x.code), ['Shr0001aa', 'Shr0002bb', 'AAA111']);
+    assert.equal(r.items[2].url, 'https://www.threads.com/@demo.user/post/AAA111');
+    assert.deepEqual(r.bad, ['不是網址']);
+  });
+
+  test('短網址照 Location 轉成貼文網址（相對路徑也行），不自動跟轉址、走 callApi_', () => {
+    const net = fakeFetch(happy());
+    const e = loadCodeGs({ extraFiles: ['lab-clip.gs'], overrides: { UrlFetchApp: net.UrlFetchApp } });
+    const a = e.call('clipThreadsResolveShare_', S1);
+    assert.equal(a.ok, true);
+    assert.equal(a.post.code, 'AAA111');
+    assert.equal(a.post.url, 'https://www.threads.com/@demo.user/post/AAA111', '分享參數 xmt 去掉');
+    assert.equal(net.calls[0].opts.followRedirects, false);
+    assert.equal(e.call('clipThreadsResolveShare_', S2).post.code, 'BBB222');
+  });
+
+  test('轉到登入頁、或 200 沒轉址 → 失敗並寫明原因', () => {
+    const net = fakeFetch(happy());
+    const e = loadCodeGs({ extraFiles: ['lab-clip.gs'], overrides: { UrlFetchApp: net.UrlFetchApp } });
+    const login = e.call('clipThreadsResolveShare_', 'https://www.threads.com/share/ShrLogin00');
+    assert.equal(login.ok, false);
+    assert.match(login.error, /不是貼文.*login/);
+    const none = e.call('clipThreadsResolveShare_', 'https://www.threads.com/share/Unknown999');
+    assert.equal(none.ok, false);
+    assert.match(none.error, /HTTP 200.*沒有轉址/);
+  });
+
+  test('探針整體：貼短網址就能跑，送 Apify 的是轉好的貼文網址；總結印轉址成功幾個', () => {
+    const { report, net, log } = run({ properties: { APIFY_TOKEN: TOKEN, CLIP_THREADS_PROBE_URLS: S1 + '，' + S2 } });
+    const start = net.calls.find((c) => c.url.startsWith('https://api.apify.com/v2/acts/'));
+    assert.deepEqual(JSON.parse(start.opts.payload).postUrls,
+      ['https://www.threads.com/@demo.user/post/AAA111', 'https://www.threads.com/@demo.user/post/BBB222']);
+    assert.equal(report.shares.length, 2);
+    assert.equal(report.verdict, 'ok');
+    assert.match(log, /短網址轉址.*2／2/);
+  });
+
+  test('短網址全部轉不出來 → 不打 Apify（省錢）、結論不可行並點出要另想辦法', () => {
+    const { report, net, log } = run({ properties: { APIFY_TOKEN: TOKEN, CLIP_THREADS_PROBE_URLS: 'https://www.threads.com/share/Unknown999' } });
+    assert.ok(!net.calls.some((c) => c.url.startsWith('https://api.apify.com/')));
+    assert.equal(report.verdict, 'fail');
+    assert.match(log, /短網址轉址.*0／1/);
+    assert.match(log, /另想辦法/);
   });
 });
