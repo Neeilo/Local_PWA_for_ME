@@ -238,6 +238,9 @@
   .clip-meta b{color:var(--ink); font-weight:600;}
   .clip-lines{font-size:14px; color:var(--ink); margin-top:4px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;}
   .clip-tag{font-size:11px; padding:1px 8px; border-radius:999px; background:var(--line); color:var(--muted);}
+  .clip-pick{width:18px; height:18px; flex:none; margin:4px 6px 0 0;}
+  .clip-rep-item{display:flex; gap:8px; align-items:flex-start; padding:8px 0; border-bottom:1px solid var(--line); cursor:pointer;}
+  .clip-rep-item small{display:block; color:var(--muted);}
   .clip-tag.clip-bad{background:var(--danger-soft); color:var(--danger);}
   /* 閱讀狀態（ADR-025 D-4，只在 2.0）：未讀小藍點、📖 閱讀中標籤、已讀整張淡化 */
   .clip-dot{width:8px; height:8px; border-radius:50%; flex:none; background:var(--compass);}
@@ -1280,12 +1283,18 @@ nav button:active{opacity:.6;}
     </div>
     </div>
     <div id="clipCards" hidden>
+      <!-- 2.0（ADR-028）：📚 收藏｜📊 週報。1.0 不出現 -->
+      <div class="seg" id="clipPaneSeg" hidden></div>
+      <div class="card" id="clipReportCard" hidden><div id="clipReportBody"></div></div>
       <div class="card" id="clipListCard">
         <div class="clip-head"><h2>📚 收藏</h2><button class="btn-ghost" onclick="loadClips('manual')">重新整理</button></div>
         <!-- 2.0（ADR-021 D-12、D-13）：全部／未讀、＋ 加網址。1.0 不出現 -->
         <div class="seg" id="clipFilterSeg" hidden></div>
         <!-- 2.0（ADR-023 D-7）：分類篩選（全部／各分類／未分類）。1.0 不出現 -->
         <div class="cat-row" id="clipCatSeg" hidden></div>
+        <!-- 2.0（ADR-028 D-5）：🤖 AI 建議篩選（全部／⭐ 推薦／🗑️ 可略過），可與上面兩排並用 -->
+        <div class="cat-row" id="clipAiSeg" hidden></div>
+        <div id="clipSkipBar"></div>
         <div class="clip-add" id="clipAddRow" hidden>
           <input type="text" id="clipAddUrl" inputmode="url" autocomplete="off" placeholder="貼上網址">
           <button class="btn" onclick="addClipUrl()">＋ 加網址</button>
@@ -3374,7 +3383,7 @@ function costSummaryHtml(d){
   const apis = d.by_api.length ? d.by_api.map(x=>`<div class="sys-row"><div class="who">${name(x.api_id)}</div><div class="meta">${usd(x.usd)}（${d.total_usd>0?Math.round(x.usd/d.total_usd*100):0}%）${costBar(x.usd,d.total_usd)}</div></div>`).join('')
     : '<div class="empty-hint">這個月還沒有算得出金額的用量</div>';
   const featTotal=d.by_feature.reduce((s,x)=>s+x.usd,0);
-  const FEAT={query:'查/', clip_ai:'收藏 AI 整理', clip_vision:'收藏 AI 辨識', diagnose:'診斷', price_check:'查價'};
+  const FEAT={query:'查/', clip_ai:'收藏 AI 整理', clip_vision:'收藏 AI 辨識', clip_report:'圖書館週報', diagnose:'診斷', price_check:'查價'};
   const feats = d.by_feature.length ? `<p class="perf-sub">各功能（AI）</p>`+d.by_feature.map(x=>`<div class="sys-row"><div class="who">${esc(FEAT[x.feature]||x.feature)}</div><div class="meta">${usd(x.usd)}（${featTotal>0?Math.round(x.usd/featTotal*100):0}%）${costBar(x.usd,featTotal)}</div></div>`).join('') : '';
   const quotas = d.quotas.length ? `<p class="perf-sub">免費額度（最近一天）</p>`+d.quotas.map(q=>{
     const pct=q.pct, red=pct!=null && pct>=100, warn=pct!=null && pct>=80;
@@ -5739,11 +5748,14 @@ function clipsListHtml(list){
       + (bad ? `<span class="clip-tag clip-bad">${c.status==='failed'?'失敗':'缺圖'}</span>`
       : c.status==='pending' ? '<span class="clip-tag">處理中</span>' : link ? '<span class="clip-tag">🔗 只存連結</span>' : '')
       + (isV2() && c.category ? `<span class="clip-tag">${esc(clipCatLabel(c.category))}</span>` : '')
-      + (isV2() && !link ? clipSourceTag(c) : '');
+      + (isV2() && !link ? clipSourceTag(c) : '')
+      + (isV2() ? clipVerdictTag(c) : '');
     const thumb = ids[0] ? `<img class="clip-thumb" src="${clipThumb(ids[0],400)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
       : `<div class="clip-thumb clip-thumb-empty">${link?'🔗':'📚'}</div>`;
     const day=clipTpe(c.collected_at).slice(5,10).replace('-','/');
-    return `<div class="clip-item${bad?' bad':''}${rs==='read'?' clip-done':''}" onclick="openClip('${id}')">${thumb}
+    const pick = isV2() && clipAiFilter==='skip' && rs && rs!=='read'
+      ? `<input type="checkbox" class="clip-pick" aria-label="標為已讀" ${clipSkipOff.has(String(c.id))?'':'checked'} onclick="event.stopPropagation(); toggleClipSkip('${id}')">` : '';
+    return `<div class="clip-item${bad?' bad':''}${rs==='read'?' clip-done':''}" onclick="openClip('${id}')">${pick}${thumb}
       <div class="clip-body">
         <div class="clip-meta">${tag}<b>${esc(link ? clipDomain(c.url) : (c.author||'（作者不明）'))}</b><span>${esc(day)}</span>${link?'':`<span>${Number(c.media_saved)||0} 張</span>`}</div>
         <div class="clip-lines">${lines.length ? lines.map(esc).join('<br>') : (c.status==='pending' ? '等排程收齊…' : '（沒有內文）')}</div>
@@ -5764,6 +5776,7 @@ function clipReaderHtml(c){
   const imgs=ids.map((x,i)=>`<img class="clip-img" src="${clipThumb(x,1200)}" alt="第 ${i+1} 張" loading="lazy" onerror="clipImgFallback(this,'${esc(x)}')">`).join('');
   return `<div class="clip-reader-head"><button class="btn-ghost" onclick="closeClip()">← 返回</button><b>${esc(c.author||'（作者不明）')}</b>${isV2() ? clipSourceTag(c) : ''}</div>${isV2() ? clipStatePickHtml(c) : ''}
     ${isV2() && clipThreadIncomplete(c) ? '<p class="perf-sub">🧵 串文可能不完整：作者的接續回覆可能沒收完，完整內容請開啟原文</p>' : ''}
+    ${isV2() ? clipVerdictLine(c) : ''}
     ${ids.length ? `<div class="clip-strip">${imgs}</div>` : ''}
     ${clipVideoLine(c)}
     <div class="clip-caption">${esc(c.caption||'')}</div>
@@ -5818,15 +5831,191 @@ async function setClipCfg(key, value){
   toast(!r ? '連不上雲端，這次沒有改到' : (CLIP_CFG_ERRORS[r.error]||'沒有改到，稍後再試'));
   return false;
 }
+/* ADR-028：「我的關注」是每個人自己的，所以這張卡有圖書館權限就看得到；存圖片／影片、強制續抓仍只給管理者 */
 function renderClipCfg(){
-  const on=isV2() && isAdmin() && featureAllowed('clips') && clipOpenId==null;
+  const on=isV2() && featureAllowed('clips') && clipOpenId==null && clipPane==='list';
   setHidden('clipCfgCard', !on);
   const el=document.getElementById('clipCfgBody');
   if(!on || !el) return;
-  el.innerHTML = clipCfgLoading ? '<div class="empty-hint">讀取中…</div>'
+  const admin = !isAdmin() ? ''
+    : clipCfgLoading ? '<div class="empty-hint">讀取中…</div>'
     : !clipCfg ? ''
     : !clipCfg.success ? `<div class="empty-hint">讀不到（${esc(clipCfg.error||'連線失敗')}） <button class="link" onclick="loadClipCfg()">重試</button></div>`
     : clipCfgHtml(clipCfg);
+  el.innerHTML = clipFocusHtml() + admin;
+}
+
+/* ---------- 📊 圖書館週報（ADR-028，只在 2.0） ----------
+   週報由後端每週五 19:00 產生；這裡只讀、手動預覽、一鍵標已讀。AI 只建議：標已讀一定要本人按、先確認筆數。
+   可略過清單與「🗑️ 可略過」篩選共用一份「取消勾選」名單（clipSkipOff），預設全勾 */
+let clipPane='list';             // list｜report
+let clipAiFilter='';             // ''｜recommend｜skip
+let clipSkipOff=new Set();
+let clipReport=null, clipReportLoading=false, clipReportBusy=false, clipMarkBusy=false;
+let clipFocus=null, clipFocusDraft=null, clipFocusBusy=false;
+const CLIP_VERDICT_LABEL={ recommend:'⭐ 推薦', normal:'😐 普通', skip:'🗑️ 可略過' };
+const CLIP_REPORT_ERRORS={ forbidden:'這個功能還沒對你開放', not_found:'找不到這一期，按「重新整理」看看', busy:'雲端忙碌中，稍後再試',
+  invalid_ids:'沒有要標的篇', not_ready:'雲端還沒準備好：請管理者在 LINE 傳「初始化」', too_long:'太長了（上限 2,000 字）', save_failed:'雲端存不進去，稍後再試' };
+function clipVerdictTag(c){
+  const v=String((c||{}).report_verdict||'');
+  return v==='recommend' ? '<span class="clip-tag">⭐ 推薦</span>' : v==='skip' ? '<span class="clip-tag">🗑️ 可略過</span>' : '';
+}
+function clipVerdictLine(c){
+  const v=String((c||{}).report_verdict||'');
+  if(!CLIP_VERDICT_LABEL[v]) return '';
+  return `<p class="perf-sub">🤖 ${CLIP_VERDICT_LABEL[v]}：${esc(c.report_reason||'')}（${esc(clipTpe(c.report_at).slice(5,10).replace('-','/'))} 週報）</p>`;
+}
+function clipInAi(c){ return !clipAiFilter || String(c.report_verdict||'')===clipAiFilter; }
+function pickClipAiFilter(f){ clipAiFilter = f==='recommend'||f==='skip' ? f : ''; renderClips(); }
+function clipAiFilterHtml(){
+  const all=clipsData||[], n=(v)=>all.filter(c=>String(c.report_verdict||'')===v).length;
+  return [['', '🤖 全部'], ['recommend', '⭐ 推薦 '+n('recommend')], ['skip', '🗑️ 可略過 '+n('skip')]]
+    .map(([k,l])=>`<button class="cat-btn${clipAiFilter===k?' sel':''}" onclick="pickClipAiFilter('${k}')">${l}</button>`).join('');
+}
+function toggleClipSkip(id){ id=String(id); if(clipSkipOff.has(id)) clipSkipOff.delete(id); else clipSkipOff.add(id); renderClips(); }
+/* 還沒讀、而且沒被取消勾選的 */
+function clipSkipPicked(ids){
+  const byId=new Map((clipsData||[]).map(c=>[String(c.id), c]));
+  return ids.map(String).filter(id=>!clipSkipOff.has(id) && byId.has(id) && clipReadState(byId.get(id))!=='read');
+}
+function clipSkipBarHtml(list){
+  if(clipAiFilter!=='skip') return '';
+  const ids=clipSkipPicked(list.map(c=>c.id));
+  return `<div class="row" style="margin-bottom:8px"><button class="btn" onclick="markClipsRead(${esc(JSON.stringify(ids))})" ${!ids.length||clipMarkBusy?'disabled':''}>✅ 全部標為已讀（${ids.length}）</button></div>`;
+}
+/* 一鍵標已讀（D-4）：先確認筆數；雲端改好才更新畫面 */
+async function markClipsRead(ids){
+  ids=(ids||[]).map(String);
+  if(!ids.length || clipMarkBusy) return false;
+  if(!confirm('把 '+ids.length+' 篇標為已讀？（只標已讀，不會刪除）')) return false;
+  clipMarkBusy=true; renderClips();
+  let r=null;
+  try{ r=await cloudPost({action:'clipMarkRead', ids, trigger:'write'}); }catch(e){ r=null; }
+  clipMarkBusy=false;
+  if(r && r.success){
+    const done=new Set((r.ids||[]).map(String));
+    (clipsData||[]).forEach(c=>{ if(done.has(String(c.id))) c.read_status='read'; });
+    toast('已標為已讀 '+done.size+' 篇 ✅');
+    renderClips(); renderNav();
+    return true;
+  }
+  renderClips();
+  toast(!r ? '連不上雲端，這次沒有改到' : (CLIP_REPORT_ERRORS[r.error]||'沒有改到，稍後再試'));
+  return false;
+}
+function pickClipPane(p){
+  clipPane = p==='report' ? 'report' : 'list';
+  if(clipPane==='report'){ clipOpenId=null; if(!clipReport && !clipReportLoading) loadClipReport(); }
+  renderClips(); window.scrollTo(0,0);
+}
+async function loadClipReport(id){
+  clipReportLoading=true; renderClips();
+  let r=null;
+  try{ r=await cloudPost(Object.assign({action:'clipReport', trigger:'manual'}, id?{id:String(id)}:{})); }catch(e){ r=null; }
+  clipReportLoading=false;
+  clipReport=r||{success:false};
+  renderClips();
+  return !!(r && r.success);
+}
+/* 📊 立即產生（預覽）：會花 AI 費用；跑中禁用。產生後重讀這一期與收藏（各篇判斷變了） */
+async function runClipReport(){
+  if(clipReportBusy) return false;
+  clipReportBusy=true; renderClips();
+  let r=null;
+  try{ r=await cloudPost({action:'clipReportRun', trigger:'manual'}); }catch(e){ r=null; }
+  clipReportBusy=false;
+  if(!r || (!r.report && !r.success)){ renderClips(); toast(!r ? '連不上雲端，這次沒有產生' : (CLIP_REPORT_ERRORS[r.error]||'沒有產生，稍後再試')); return false; }
+  toast(r.success ? '週報預覽產生好了 📊' : '這次失敗：'+(r.reason||'原因不明'));
+  await Promise.all([loadClipReport(r.report.id), loadClips('manual')]);
+  return !!r.success;
+}
+function openClipFromReport(id){ clipPane='list'; return openClip(id); }
+function openClipFocus(){
+  clipPane='list'; clipOpenId=null;
+  if(!foldOpen.clipCfg) toggleFold('clipCfg');
+  renderClips();
+}
+function clipReportItemTitle(id){
+  const c=(clipsData||[]).find(x=>String(x.id)===String(id));
+  if(!c) return null;
+  const first=String(c.caption||'').split('\n').map(x=>x.trim()).filter(Boolean)[0] || c.author || c.url || '';
+  return first.length>40 ? first.slice(0,40)+'…' : first;
+}
+function clipReportListHtml(items, withPick){
+  if(!items.length) return '<div class="empty-hint">這一期沒有</div>';
+  return items.map(x=>{
+    const title=clipReportItemTitle(x.id);
+    const c=(clipsData||[]).find(y=>String(y.id)===String(x.id));
+    const read = c && clipReadState(c)==='read';
+    const pick = withPick && c && !read ? `<input type="checkbox" class="clip-pick" aria-label="標為已讀" ${clipSkipOff.has(String(x.id))?'':'checked'} onclick="event.stopPropagation(); toggleClipSkip(${esc(JSON.stringify(String(x.id)))})">` : '';
+    return `<div class="clip-rep-item" onclick="openClipFromReport(${esc(JSON.stringify(String(x.id)))})">${pick}<div><b>${esc(title==null?'（這篇已刪除或還沒載入）':title)}</b>${read?' <span class="clip-tag">✅ 已讀</span>':''}<small>${esc(x.reason||'')}</small></div></div>`;
+  }).join('');
+}
+function clipReportSummaryHtml(s){
+  if(!s || typeof s!=='object') return '';
+  const delta = s.unread_delta==null ? '' : '（比上期'+(s.unread_delta>0?'多 ':s.unread_delta<0?'少 ':'持平')+(s.unread_delta?Math.abs(s.unread_delta)+' 篇':'')+'）';
+  const lines=[
+    '🆕 本週新收 '+(s.new_total||0)+' 篇（IG '+(s.new_ig||0)+'・Threads '+(s.new_threads||0)+'）',
+    '📚 未讀 '+(s.unread||0)+delta+'・閱讀中 '+(s.reading||0)+'・已讀 '+(s.read||0),
+    '🤖 本期 ⭐ '+(s.recommend||0)+'・😐 '+(s.normal||0)+'・🗑️ '+(s.skip||0),
+    s.prev_rec_total ? '🎯 上期推薦已讀 '+(s.prev_rec_read||0)+'／'+s.prev_rec_total : ''
+  ].filter(Boolean);
+  return `<div class="perf-sub">${lines.map(esc).join('<br>')}</div>`;
+}
+function clipReportHtml(d){
+  const head=`<div class="clip-head"><h2>📊 週報</h2><button class="btn" onclick="runClipReport()" ${clipReportBusy?'disabled':''}>${clipReportBusy?'產生中…':'📊 立即產生'}</button></div>
+    <p class="slot-hint">每週五 19:00 自動產生並推 LINE。「立即產生」會產生 AI 費用、只是預覽（不算這週正式那一期）。</p>`;
+  if(clipReportLoading && !d) return head+'<div class="empty-hint">讀取中…</div>';
+  if(!d) return head;
+  if(!d.success) return head+`<div class="empty-hint">讀不到（${esc(CLIP_REPORT_ERRORS[d.error]||d.error||'連線失敗')}） <button class="link" onclick="loadClipReport()">重試</button></div>`;
+  const r=d.report;
+  if(!r) return head+'<div class="empty-hint">還沒有週報：每週五 19:00 會自動產生，也可以先按「📊 立即產生」看看</div>';
+  const when=clipTpe(r.period_start).slice(5,10).replace('-','/')+'～'+clipTpe(r.period_end).slice(5,10).replace('-','/');
+  const focusHint = !d.focus_set ? `<div class="sys-warn">⚠️ 尚未設定關注，推薦僅供參考 <button class="link" onclick="openClipFocus()">前往設定</button></div>` : '';
+  const failed = r.status==='failed' ? `<div class="sys-warn">⚠️ 這一期產生失敗：${esc(r.error||'原因不明')}（可以按「📊 立即產生」重跑）</div>` : '';
+  const rec=r.recommended||[], skip=r.skippable||[];
+  const picked=clipSkipPicked(skip.map(x=>x.id));
+  const hist=(d.history||[]).map(h=>`<button class="cat-btn${String(h.id)===String(r.id)?' sel':''}" onclick="loadClipReport(${esc(JSON.stringify(String(h.id)))})">${esc(clipTpe(h.created_at).slice(5,10).replace('-','/'))}${h.type==='manual'?' 預覽':''}${h.status==='failed'?' ⚠️':''}</button>`).join('');
+  return head+focusHint+`<p class="clip-times">${r.type==='manual'?'（預覽）':'第 '+esc(r.week||'')+' 週'}・${esc(when)}${r.provider?'・'+esc(r.provider):''}</p>`
+    +failed+clipReportSummaryHtml(r.summary)
+    +(r.status==='ok' ? `<div class="clip-block"><div class="clip-block-head"><b>⭐ 推薦｜本週新收</b></div>${clipReportListHtml(rec.filter(x=>x.group==='new'), false)}</div>
+      <div class="clip-block"><div class="clip-block-head"><b>⭐ 推薦｜舊庫存</b></div>${clipReportListHtml(rec.filter(x=>x.group!=='new'), false)}</div>
+      <div class="clip-block"><div class="clip-block-head"><b>🗑️ 可略過（${skip.length}）</b><small class="dash-sub">取消勾選的不會標</small></div>${clipReportListHtml(skip, true)}
+        ${skip.length?`<div class="row" style="margin-top:8px"><button class="btn" onclick="markClipsRead(${esc(JSON.stringify(picked))})" ${!picked.length||clipMarkBusy?'disabled':''}>✅ 全部標為已讀（${picked.length}）</button></div>`:''}</div>` : '')
+    +(hist ? `<div class="clip-block"><div class="clip-block-head"><b>歷史各期</b></div><div class="cat-row">${hist}</div></div>` : '');
+}
+
+/* ✏️ 我的關注（ADR-028 D-7）：每人一份、預設空白；存檔前不送雲端 */
+async function loadClipFocus(){
+  let r=null;
+  try{ r=await cloudPost({action:'clipFocus', trigger:'manual'}); }catch(e){ r=null; }
+  clipFocus = r && r.success ? String(r.focus||'') : '';
+  renderClipCfg();
+  return !!(r && r.success);
+}
+function clipFocusInput(v){ clipFocusDraft=String(v); const n=document.getElementById('clipFocusCount'); if(n) n.textContent=clipFocusDraft.length+'／2000 字'; }
+function clipFocusHtml(){
+  const v = clipFocusDraft!=null ? clipFocusDraft : (clipFocus||'');
+  return `<div class="clip-block" style="margin-top:0;border-top:0;padding-top:0"><div class="clip-block-head"><b>✏️ 我的關注</b><small class="dash-sub" id="clipFocusCount">${v.length}／2000 字</small></div>
+    <p class="slot-hint">每次產生週報會送給 AI 當判斷標準；空白就用通用標準（實用、可執行、不重複）。</p>
+    <textarea id="clipFocusInput" maxlength="2000" placeholder="例如：我想看的主題、不想看的類型…" oninput="clipFocusInput(this.value)">${esc(v)}</textarea>
+    <div class="row" style="margin-top:8px"><button class="btn" onclick="saveClipFocus()" ${clipFocusBusy||clipFocus===null?'disabled':''}>${clipFocusBusy?'儲存中…':'儲存'}</button></div></div>`;
+}
+async function saveClipFocus(){
+  if(clipFocusBusy) return false;
+  const text = clipFocusDraft!=null ? clipFocusDraft : (clipFocus||'');
+  clipFocusBusy=true; renderClipCfg();
+  let r=null;
+  try{ r=await cloudPost({action:'clipFocusSet', focus:text, trigger:'write'}); }catch(e){ r=null; }
+  clipFocusBusy=false;
+  if(r && r.success){
+    clipFocus=String(r.focus||''); clipFocusDraft=null;
+    if(clipReport && clipReport.success) clipReport.focus_set=!!clipFocus;
+    toast('已存 ✅'); renderClips(); return true;
+  }
+  renderClipCfg();
+  toast(!r ? '連不上雲端，這次沒有存到（打的字還在）' : (CLIP_REPORT_ERRORS[r.error]||'沒有存到，稍後再試'));
+  return false;
 }
 /* Reels 的影片（RD-HF1）：存了就連到這篇的 Drive 資料夾（影片是私人的，PWA 這版不播放） */
 function clipVideoLine(c){
@@ -5857,14 +6046,28 @@ function renderClips(){
   if(!v2) clipCatFilter='';
   const catSeg=document.getElementById('clipCatSeg');
   if(catSeg && v2) catSeg.innerHTML=clipCatFilterHtml();
+  // ADR-028：🤖 AI 建議篩選、📚 收藏｜📊 週報（只在 2.0）
+  if(!v2){ clipAiFilter=''; clipPane='list'; }
+  setHidden('clipAiSeg', !v2);
+  const aiSeg=document.getElementById('clipAiSeg');
+  if(aiSeg && v2) aiSeg.innerHTML=clipAiFilterHtml();
+  setHidden('clipPaneSeg', !v2);
+  const pane=document.getElementById('clipPaneSeg');
+  if(pane && v2) pane.innerHTML=[['list','📚 收藏'],['report','📊 週報']].map(([k,l])=>`<button class="${clipPane===k?'sel':''}" onclick="pickClipPane('${k}')">${l}</button>`).join('');
+  const rep = v2 && clipPane==='report';
+  setHidden('clipReportCard', !rep);
+  const repBody=document.getElementById('clipReportBody');
+  if(repBody) repBody.innerHTML = rep ? clipReportHtml(clipReport) : '';
+  const shown = clipsData===null ? null : clipsData.filter(c=>clipInFilter(c) && clipInCat(c, clipCatFilter) && (!v2 || clipInAi(c)));
+  const bar=document.getElementById('clipSkipBar');
+  if(bar) bar.innerHTML = v2 && shown ? clipSkipBarHtml(shown) : '';
   const list=document.getElementById('clipList');
-  if(list) list.innerHTML = clipsData===null ? '<div class="empty-hint">讀取中…</div>'
-    : clipsListHtml(clipsData.filter(c=>clipInFilter(c) && clipInCat(c, clipCatFilter)));
+  if(list) list.innerHTML = shown===null ? '<div class="empty-hint">讀取中…</div>' : clipsListHtml(shown);
   const open = clipOpenId && Array.isArray(clipsData) ? clipsData.find(c=>String(c.id)===String(clipOpenId)) : null;
   const reader=document.getElementById('clipReader');
-  if(reader) reader.innerHTML = open ? clipReaderHtml(open) : '';
-  setHidden('clipReader', !open);
-  setHidden('clipListCard', !!open);
+  if(reader) reader.innerHTML = open && !rep ? clipReaderHtml(open) : '';
+  setHidden('clipReader', !open || rep);
+  setHidden('clipListCard', !!open || rep);
   renderClipCfg();
 }
 function openClip(id){
@@ -7162,7 +7365,7 @@ const FOLD_LOAD={
   gmailRules: ()=>{ if(!(sysData.gmail||{}).success) loadSysTab('gmail'); },     // 2.0 郵件頁（D-14）
   mailArchive: ()=>{ if(!(mailArchiveState.data||{}).success) loadMailArchive(); },   // ADR-026 D-3
   expCfg:  ()=>{ if(!(sysData.config||{}).success) loadSysTab('config'); },       // 2.0 記帳頁（D-14）
-  clipCfg: ()=>{ if(!(clipCfg||{}).success) loadClipCfg(); },                       // 2.0 圖書館頁（ADR-027）
+  clipCfg: ()=>{ if(clipFocus===null) loadClipFocus(); if(isAdmin() && !(clipCfg||{}).success) loadClipCfg(); },   // 2.0 圖書館頁（ADR-027、028）
   push:    ()=>{ if(!pushState.groups) loadPushGroups(); },
   perf:    ()=>{ if(!perfSummaryCache) loadPerfSummary(); },
   ai:      ()=>{ if(!aiState.cfg) loadAiConfig(); },

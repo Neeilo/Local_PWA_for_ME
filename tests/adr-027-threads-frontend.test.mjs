@@ -84,7 +84,7 @@ describe('來源小標籤與「串文可能不完整」（D-5、D-6）', () => {
 });
 
 describe('⚙️ 圖書館設定（管理者、2.0）', () => {
-  test('只有 2.0 管理者看得到；閱讀頁打開時收起來', () => {
+  test('2.0 才有；閱讀頁打開時收起來；存圖片／影片開關只有管理者（ADR-028 起非管理者也看得到卡片，只有「我的關注」）', () => {
     const e = env();
     e.call('renderClips');
     assert.equal(e.hidden('clipCfgCard'), false);
@@ -92,8 +92,11 @@ describe('⚙️ 圖書館設定（管理者、2.0）', () => {
     e.call('renderClips');
     assert.equal(e.hidden('clipCfgCard'), true);
     const nonAdmin = env({ user: Object.assign({}, USER, { is_admin: '' }) });
+    nonAdmin.raw(`clipCfg = ${JSON.stringify({ success: true, settings: SETTINGS, gate: GATE })}`);
     nonAdmin.call('renderClips');
-    assert.equal(nonAdmin.hidden('clipCfgCard'), true);
+    assert.equal(nonAdmin.hidden('clipCfgCard'), false);
+    assert.doesNotMatch(nonAdmin.el('clipCfgBody'), /IG 存圖片|本月超過上限/);
+    assert.match(nonAdmin.el('clipCfgBody'), /我的關注/);
     const v1 = env({ ui: 'v1' });
     v1.call('renderClips');
     assert.equal(v1.hidden('clipCfgCard'), true);
