@@ -39,6 +39,7 @@
 | ADR-024 | 圖書館圖片辨識（文字辨識與 AI 辨識） | 現行 |
 | ADR-025 | 圖書館閱讀狀態 | 現行；logs 規則被 ADR-026 修訂 |
 | ADR-026 | Mail 整理 v2 與 logs 補齊 | 現行；正式封存開關只由專案擁有者在 App 開啟 |
+| ADR-029 | 到期提醒一天兩輪：07:00 主推＋16:00 補推 | 現行，正文 [029-due-twice.md](029-due-twice.md)；修訂 ADR-019 的重推時間（隔天 9 點 → 07:00）；重申 ADR-009 只推一次 |
 | ADR-028 | 圖書館週報：每週五 AI 挑推薦＋可略過清單、一鍵標已讀、我的關注 | 現行，正文 [028-clip-report.md](028-clip-report.md) |
 | ADR-027 | 圖書館 Threads 收藏：比照 IG 收齊＋作者串文合併；圖書館設定；Apify 上限兩個都停 | 現行，正文 [027-threads-clips.md](027-threads-clips.md)；修訂 ADR-021 D-12（Threads 例外）、ADR-020 的 Apify 上限處理 |
 

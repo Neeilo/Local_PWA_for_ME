@@ -208,7 +208,7 @@ describe('三種任務 × 三顆按鈕', () => {
     ['週期提醒', reminder({ id: '1', text: '繳管理費', recur_interval: 1, recur_unit: '週' })]]) {
     test(label + ' ⏰ → 到期日改成台北明天、清 notified', () => {
       const e = env({ tasks: [rec] });
-      assert.equal(tap(e, ME, cardFor(e, '繳管理費').tmr), '⏰ 明天再提醒');
+      assert.equal(tap(e, ME, cardFor(e, '繳管理費').tmr), '⏰ 明天 07:00 再提醒');
       assert.equal(taskOf(e, '1').due_date, '2026-10-08');
       assert.equal(taskOf(e, '1').notified, '');
     });
@@ -251,7 +251,7 @@ describe('只有建立者、冪等、群組回覆、鎖、logs', () => {
   test('建立者在群組按 ⏰／📅：回覆帶名字與內容', () => {
     const e = env({ tasks: [todo({ line_id: MOM, origin_chat: GROUP })] });
     const card = cardFor(e, '繳管理費', GROUP);
-    assert.equal(tap(e, MOM, card.tmr, { group: true }), '⏰ 裕仁 改成明天再提醒：繳管理費');
+    assert.equal(tap(e, MOM, card.tmr, { group: true }), '⏰ 裕仁 改成明天 07:00 再提醒：繳管理費');
     const e2 = env({ tasks: [todo({ line_id: MOM, origin_chat: GROUP })] });
     assert.match(tap(e2, MOM, cardFor(e2, '繳管理費', GROUP).pick, { group: true, date: '2026-10-20' }), /^📅 裕仁 改到 10\/20.*：繳管理費$/);
   });
@@ -377,7 +377,7 @@ describe('ADR-023 D-6：舊卡片改「略過」', () => {
 
   test('當天卡片行為不變：⏰ 照樣改到明天、記成功', () => {
     const e = env({ tasks: [todo()] });
-    assert.equal(tap(e, ME, cardFor(e, '繳管理費').tmr), '⏰ 明天再提醒');
+    assert.equal(tap(e, ME, cardFor(e, '繳管理費').tmr), '⏰ 明天 07:00 再提醒');
     assert.equal(taskOf(e, '1').due_date, '2026-10-08');
     assert.ok(e.transactions.some((t) => t[0] === '任務' && t[1] === '成功'));
     assert.equal(skipLogs(e).length, 0);

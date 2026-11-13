@@ -1234,7 +1234,7 @@ nav button:active{opacity:.6;}
         <h2>提醒</h2>
         <div id="reminderList"></div>
       </div>
-      <!-- 單次提醒過期：收進這裡，30 天後由 9 點排程封存（A-3） -->
+      <!-- 單次提醒過期：收進這裡，30 天後由 07:00 排程封存（A-3） -->
       <details class="card" id="reminderPastCard" hidden>
         <summary><h2 style="display:inline">已過（<span id="reminderPastCount">0</span>）</h2></summary>
         <div id="reminderPast"></div>
@@ -3671,7 +3671,7 @@ async function setGmailRule(i, field, value){
   rule[field]=typeof value==='boolean' ? (value?'TRUE':'FALSE') : value; renderSysCard();
   const saved=await saveGmailRule({rule_id:rule.rule_id, [field]:value});
   if(!saved){ rule[field]=before; renderSysCard(); return; }
-  Object.assign(rule, saved); renderSysCard(); toast('已存，明天 9 點起生效');
+  Object.assign(rule, saved); renderSysCard(); toast('已存，下一輪（07:00／16:00）起生效');
 }
 async function addGmailRule(){
   const v=id=>document.getElementById(id).value;
@@ -5563,10 +5563,10 @@ function reminderHtml(t, today){
 }
 function renderReminders(){
   const today=todayKey();
-  // 單次提醒在 LINE 到期卡片按了「✅ 處理了」會標 is_completed（ADR-019 C-2）：收起，過期 30 天由 9 點封存
+  // 單次提醒在 LINE 到期卡片按了「✅ 處理了」會標 is_completed（ADR-019 C-2）：收起，過期 30 天由 07:00 排程封存
   const all=state.tasks.filter(t=>isReminder(t) && !t.done && inScope(t))
     .sort((a,b)=>(a.due||'9999')<(b.due||'9999')?-1:(a.due||'9999')>(b.due||'9999')?1:a.ts-b.ts);
-  // 單次提醒過期 → 已過；週期提醒過期是排程還沒翻（隔天 9 點），留在清單
+  // 單次提醒過期 → 已過；週期提醒過期是排程還沒翻（隔天 07:00），留在清單
   const past=all.filter(t=>t.due && t.due<today && !t.recurUnit).reverse();
   const live=all.filter(t=>!past.includes(t));
   const list=document.getElementById('reminderList');

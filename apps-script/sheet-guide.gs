@@ -131,7 +131,7 @@ var GUIDE_STATUS_UNREGISTERED = '⚠️ 未登記';
 var GUIDE_STATUS_MISSING = '⚠️ 找不到分頁';
 
 var GUIDE_REFRESH_FUNCTION = 'refreshGuide';
-var GUIDE_REFRESH_HOUR = 6;      // 在九點的到期檢查之前，早上打開就是新的
+var GUIDE_REFRESH_HOUR = 6;      // 在 07:00 的到期檢查之前，早上打開就是新的
 
 /**
  * 依登記表重新產生整張 _guide。可重複執行：不存在就建，存在就整張重寫。

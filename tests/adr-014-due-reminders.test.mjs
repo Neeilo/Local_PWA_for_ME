@@ -100,7 +100,7 @@ describe('T1 排程修復：「初始化」一次裝好所有排程與欄位', (
     for (let i = 0; i < 3; i++) say(e, ME, '初始化', 'user');
     assert.deepEqual(e.triggers.map((t) => t.handler), ['runScheduler']);
     assert.match(initDetail(e), /runScheduler（每 5 分鐘，排程總管）/);
-    assert.match(e.lastText(), /到期提醒（每天 9 點後第一輪）/);
+    assert.match(e.lastText(), /到期提醒（每天 7、16 點後第一輪）/);
     assert.match(e.lastText(), /_guide 導覽（每天 6 點後第一輪）/);
     assert.match(e.lastText(), /未驗證彙總（每小時）/);
     assert.doesNotMatch(e.lastText(), /初始化沒有完成/);

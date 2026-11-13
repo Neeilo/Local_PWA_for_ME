@@ -1321,7 +1321,7 @@ function collectNotes_(rows, userId, since, category) {
   return { category: category, total: picked.length, items: picked.slice(0, max) };
 }
 
-/** 提醒：今天到今天＋30 天內到期的，依日期由近到遠（過期還沒翻頁的週期提醒不放：9 點排程會翻） */
+/** 提醒：今天到今天＋30 天內到期的，依日期由近到遠（過期還沒翻頁的週期提醒不放：07:00 排程會翻） */
 function collectReminders_(rows, today) {
   var end = addDaysKey_(today, QUERY_REMINDER_DAYS);
   return rows.filter(function (r) { return isReminder_(r); }).map(function (r) {
@@ -2872,7 +2872,7 @@ function applyTaskDue_(taskId, nonce, key, userId, input) {
 /* ---------- 提醒的第三段：重複（ADR-018 A-4） ----------
    不重複／每週／每月／每年。跟日期按鈕同一套：資料全在 postback data、只有建立者按得動、
    同一組按鈕只生效一次（nonce 另外一組，日期那組用過了不影響這組）。
-   週期跟著時間走（9 點排程翻頁），不像待辦跟著完成走。 */
+   週期跟著時間走（07:00 排程翻頁），不像待辦跟著完成走。 */
 var REMINDER_REPEAT_OPTIONS = [
   { label: '不重複', r: 'none' }, { label: '每週', r: '週' }, { label: '每月', r: '月' }, { label: '每年', r: '年' }
 ];
@@ -2945,7 +2945,7 @@ function reminderRepeatStep_(data, userId, input) {
 }
 
 /* ---------- 到期卡片的三顆按鈕（ADR-019 C-2～C-6） ----------
-   卡片由 9 點排程推出（Code.gs dueCardsMessage_），data：dc=1、a＝done／tmr／pick、t＝任務 id、d＝推播當時的到期日。
+   卡片由 07:00／16:00 排程推出（Code.gs dueCardsMessage_），data：dc=1、a＝done／tmr／pick、t＝任務 id、d＝推播當時的到期日。
    過門跟其他任務按鈕一樣（群組三道／一對一白名單 → 任務權限），再來只有建立者按得動（C-6，與 B-5 一致）。
    寫入拿 PWA 寫入同一把 script lock（PR-4）。冪等靠 d：到期日已經不是推播當時那天、或已完成／已刪，一律不動作——
    同一顆按兩次不會跳兩期，舊卡片也不會蓋掉後來在 App 改的日期。回覆用 replyToken（不吃推播額度） */
@@ -3000,7 +3000,7 @@ function dueCardStep_(data, params, inGroup, userId, input) {
     }
     var cur = keyValue_(rec.due_date);
     if (truthy_(rec.is_completed) || cur !== data.d) {
-      // ADR-023 D-6：舊卡片（卡片日期＝「那一次」，通常是循環提醒已被 9 點翻頁）與重複按都不是錯誤：
+      // ADR-023 D-6：舊卡片（卡片日期＝「那一次」，通常是循環提醒已被 07:00 排程翻頁）與重複按都不是錯誤：
       // 資料一格都不動、log 記「略過」
       var now = truthy_(rec.is_completed) ? (isReminder_(rec) ? '已處理' : '已完成') : cur ? shortDateLabel_(cur) + ' 到期' : '沒有到期日';
       logTransaction_('任務', '略過', input, '舊卡片或重複按，不動作（目前：' + now + '）', 'id=' + data.t + '｜card=' + data.d, rows[0], userId);
@@ -3014,11 +3014,11 @@ function dueCardStep_(data, params, inGroup, userId, input) {
     if (data.a === 'done') {
       var next = isReminder_(rec) ? nextDueDate_(cur, rec.recur_interval, rec.recur_unit, lineTodayKey_()) : '';
       if (isReminder_(rec) && next) {
-        // 週期提醒：跳下一期、清 notified（同 9 點翻頁的算法）
+        // 週期提醒：跳下一期、清 notified（同 07:00 排程翻頁的算法）
         setDeviceFields_(sheet, headers, rows[0], { due_date: next, notified: '' });
         result = '週期提醒跳到 ' + next;
       } else if (isReminder_(rec)) {
-        // 單次提醒：標 is_completed＝已處理（從提醒清單收起、不上首頁最急兩件；過期 30 天照舊由 9 點封存）
+        // 單次提醒：標 is_completed＝已處理（從提醒清單收起、不上首頁最急兩件；過期 30 天照舊由 07:00 排程封存）
         setDeviceFields_(sheet, headers, rows[0], { is_completed: 'TRUE' });
         result = '單次提醒已處理';
       } else {
@@ -3036,7 +3036,7 @@ function dueCardStep_(data, params, inGroup, userId, input) {
       setDeviceFields_(sheet, headers, rows[0], { due_date: key, notified: '' });
       result = '到期日 → ' + key;
       reply = data.a === 'tmr'
-        ? (inGroup ? '⏰ ' + who + ' 改成明天再提醒：' + text : '⏰ 明天再提醒')
+        ? (inGroup ? '⏰ ' + who + ' 改成明天 07:00 再提醒：' + text : '⏰ 明天 07:00 再提醒')
         : (inGroup ? '📅 ' + who + ' 改到 ' + shortDateLabel_(key) + '：' + text : '📅 改到 ' + shortDateLabel_(key));
     }
     logTransaction_('任務', '成功', input, result, 'id=' + data.t, rows[0], userId);

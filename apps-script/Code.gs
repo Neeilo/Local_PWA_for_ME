@@ -1081,7 +1081,7 @@ function completeRecurring_(body, caller, sheet) {
   const rec = keepOriginChat_(sheet, headers, body.record || {});
   var notOwner = boardOwnerDenied_(sheet, headers, rec, body.sheet, caller, 'completeRecurring');
   if (notOwner) return notOwner;
-  // ADR-018 A-2：提醒沒有「完成」，週期跟著時間走（9 點排程翻頁）。前端被拒會退回一般 upsert，那裡也會擋
+  // ADR-018 A-2：提醒沒有「完成」，週期跟著時間走（07:00 排程翻頁）。前端被拒會退回一般 upsert，那裡也會擋
   if (isReminder_(rec)) return { error: 'reminder_not_completable' };
   const next = nextDueDate_(rec.due_date, rec.recur_interval, rec.recur_unit,
                             keyValue_(body.today) || keyValue_(new Date()));
@@ -1768,7 +1768,8 @@ function shouldNotify_(record, todayKey) {
 
 var TASKS_SHEET = 'tasks';
 var DUE_CHECK_FUNCTION = 'checkDueReminders';
-var DUE_CHECK_HOUR = 9;          // 早上九點。到期提醒在半夜推沒有意義
+/** 到期提醒一天兩輪（ADR-029）：07:00 主推、16:00 只補推之後才新增或才到期的（notified 不變，不重複推）；與 Gmail 同時段 */
+var DUE_CHECK_HOURS = [7, 16];
 
 /**
  * 挑出這一輪該推通知的列。純函式，與 Sheet 和 LINE 都無關——
@@ -1906,11 +1907,12 @@ function reminderRollPlan_(records, todayKey) {
 }
 
 /**
- * 每天跑一次的到期檢查。由排程總管（scheduler.gs，ADR-019 D-1）每天 9 點後第一輪呼叫。
+ * 到期檢查。由排程總管（scheduler.gs，ADR-019 D-1）每天 07:00、16:00 後第一輪各呼叫一次（ADR-029）。
+ * 一天兩輪也不會重複推（推過就標 notified）、循環提醒也不會翻兩次（只翻到期日早於今天的，翻完就 ≥ 今天）。
  *
  * 推成功才標記 notified：推失敗就標記，等於這筆從此再也不會提醒，而使用者
- * 根本不知道有過這件事。寧可明天再推一次，也不要安靜地漏掉。
- * 推到群組失敗**不**改推個人（ADR-014 T2）：明天會再試，改推的話同一則可能兩邊都收到。
+ * 根本不知道有過這件事。寧可下一輪再推一次，也不要安靜地漏掉。
+ * 推到群組失敗**不**改推個人（ADR-014 T2）：下一輪會再試，改推的話同一則可能兩邊都收到。
  *
  * 每次執行都留紀錄，含「今天 0 筆」（ADR-014 D-16）：logs 一列＋performance 一列。
  * 9/30 到 10/7 這段排程根本沒裝，就是因為「沒紀錄」跟「今天沒事」看起來一模一樣。
@@ -1974,7 +1976,7 @@ function checkDueReminders(todayKey) {
       if (!result.ok) {
         failed += g.recs.length;
         notes.push('id=' + ids + ' 推' + (g.target.group ? '群組' : '個人') + '失敗：' + result.reason);
-        console.log('推播失敗，這幾筆保留未通知狀態，明天會再試：id=' + ids + '／' + result.reason);
+        console.log('推播失敗，這幾筆保留未通知狀態，下一輪會再試：id=' + ids + '／' + result.reason);
         return;
       }
       g.recs.forEach(function (rec) {
@@ -1984,7 +1986,7 @@ function checkDueReminders(todayKey) {
       });
     });
 
-    if (failed) notes.unshift('有 ' + failed + ' 筆推播失敗，未標記 notified，明天會再試');
+    if (failed) notes.unshift('有 ' + failed + ' 筆推播失敗，未標記 notified，下一輪會再試');
 
     // ADR-018 A-3：同一輪，推播之後再翻頁。這一期該推卻推失敗的不翻：翻了那一期就安靜地被跳過了
     var rolled = 0, archived = 0;
