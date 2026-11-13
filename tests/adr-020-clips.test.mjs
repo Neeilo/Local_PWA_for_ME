@@ -176,10 +176,10 @@ describe('抽網址（純函式）', () => {
     assert.deepEqual(out.map((x) => x.shortcode), ['AAA111', 'BBB222']);
   });
 
-  test('不是 IG 貼文 → 空（Threads／FB／X 等其他網址改由 ADR-021 D-12 只存連結，見 adr-021-library-e）', () => {
+  test('不是 IG 貼文 → 空（FB／X 等其他網址由 ADR-021 D-12 只存連結；Threads 貼文自 ADR-027 起排隊抓，見 adr-027-threads）', () => {
     const e = env();
     assert.deepEqual(e.call('clipExtractUrls_', 'https://www.instagram.com/someone/ 跟 https://example.com/p/abc/'), []);
-    assert.deepEqual(e.call('clipExtractUrls_', '看 https://www.threads.net/@a/post/xyz'), []);
+    assert.deepEqual(e.call('clipExtractUrls_', '看 https://www.threads.net/@a/post/xyz').map((x) => x.kind), ['threads']);
   });
 });
 
@@ -232,11 +232,12 @@ describe('LINE 登記（webhook 只登記、不抓取）', () => {
     assert.match(e.replies.at(-1), /看不懂這個指令/);
   });
 
-  test('Threads 網址：不排隊抓取（ADR-021 D-12 起只存連結，取代「目前只支援 Instagram」）', () => {
+  test('Threads 網址：排隊抓取（ADR-027 修訂 ADR-021 D-12 的「非 IG 只存連結」），webhook 一樣不打外部', () => {
     const e = env();
     say(e, '看 https://www.threads.net/@a/post/xyz');
-    assert.deepEqual(rows(e).map((r) => [r.kind, r.status]), [['link', 'link']]);
+    assert.deepEqual(rows(e).map((r) => [r.kind, r.status]), [['threads', 'pending']]);
     assert.equal(e.replies.at(-1), '收到 ✅');
+    assert.equal(e.net.calls.length, 0);
   });
 
   test('既有指令先走：「任務/」內容夾 IG 網址照樣建任務，不收藏', () => {

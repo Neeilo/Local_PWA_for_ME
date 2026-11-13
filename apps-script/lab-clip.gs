@@ -373,13 +373,8 @@ function clipOcrProbeRec_(target) {
  */
 var CLIP_THREADS_PROBE_PROP = 'CLIP_THREADS_PROBE_URLS';
 var CLIP_THREADS_PROBE_MAX = 3;
-var CLIP_THREADS_ACTOR = 'architekture~threads-replies-scraper';
-/** 每篇最多回幾列回覆（含別人的留言）；串文在這之內才收得到，探針會印出有沒有被截斷 */
-var CLIP_THREADS_MAX_REPLIES = 30;
 /** 一次探針最多扣多少（3 篇 × 30 列 × US$0.0025 ≈ US$0.23，留一點餘裕） */
 var CLIP_THREADS_PROBE_MAX_USD = 0.5;
-var CLIP_THREADS_USD_POST = 0.001;
-var CLIP_THREADS_USD_REPLY = 0.0025;
 /** 每月推估用的 Threads 收藏篇數（目前全部只存連結的 Threads 才 11 筆，這個數字偏寬） */
 var CLIP_THREADS_MONTHLY_POSTS = 20;
 
@@ -443,22 +438,7 @@ function probeClipThreads_() {
 
 /** 網址之間用什麼隔都可以：半形／全形逗號、頓號、分號、空白、換行（中文輸入法常打出全形） */
 var CLIP_THREADS_SPLIT_RE = /[\s,，、;；]+/;
-/** 短網址最多跟幾次轉址（share → /@帳號/post/代碼?xmt=… 通常一次就到） */
-var CLIP_THREADS_MAX_HOPS = 3;
 
-/**
- * 一個網址 → { code, user, url }（單篇貼文）｜{ share, url }（分享短網址 /share/代碼，要先轉址）｜null。
- * 認得 threads.com／threads.net、有無 www、/@帳號/post/代碼、/t/代碼；代碼後面的路徑、參數、# 都去掉，
- * 網域統一成 www.threads.com
- */
-function clipThreadsParse_(raw) {
-  var s = String(raw || '').trim().replace(/^["'「『(（<]+|["'」』)）>]+$/g, '');
-  var m = s.match(/^https?:\/\/(?:www\.)?threads\.(?:com|net)\/(?:@([A-Za-z0-9._]+)\/post|t)\/([A-Za-z0-9_-]+)(?:[/?#].*)?$/i);
-  if (m) return { code: m[2], user: m[1] || '', url: 'https://www.threads.com/' + (m[1] ? '@' + m[1] + '/post/' : 't/') + m[2] };
-  var sh = s.match(/^https?:\/\/(?:www\.)?threads\.(?:com|net)\/share\/([A-Za-z0-9_-]+)(?:[/?#].*)?$/i);
-  if (sh) return { share: sh[1], url: 'https://www.threads.com/share/' + sh[1] };
-  return null;
-}
 
 /** 指令碼屬性的原文 → { items: [解析結果（照順序、同一個只留一次）], bad: [認不得的片段] } */
 function clipThreadsProbeInputs_(raw) {
@@ -482,31 +462,6 @@ function clipThreadsProbeList_(raw) {
   return clipThreadsProbeInputs_(raw).items.filter(function (p) { return p.code; }).slice(0, CLIP_THREADS_PROBE_MAX);
 }
 
-/**
- * 分享短網址 → 真正的貼文網址：不自動跟轉址，自己讀 Location（最多 CLIP_THREADS_MAX_HOPS 次），
- * 這樣才看得出 Google 機房打 threads.com 時是正常轉址、被擋，還是被導去登入頁。走 callApi_('web')。
- * 回 { ok, post（clipThreadsParse_ 的結果）, status, location, error }
- */
-function clipThreadsResolveShare_(url) {
-  var cur = url;
-  var last = { status: 0, location: '' };
-  for (var hop = 0; hop < CLIP_THREADS_MAX_HOPS; hop++) {
-    var r = clipFetch_(cur, { followRedirects: false });
-    var headers = r.res && r.res.getHeaders ? r.res.getHeaders() || {} : {};
-    var loc = '';
-    Object.keys(headers).forEach(function (k) { if (k.toLowerCase() === 'location') loc = String(headers[k] || ''); });
-    if (loc && loc.charAt(0) === '/') loc = 'https://www.threads.com' + loc;
-    last = { status: r.status, location: loc };
-    if (r.status === 0) return { ok: false, post: null, status: 0, location: '', error: clipHead_(r) };
-    var post = loc ? clipThreadsParse_(loc) : null;
-    if (post && post.code) return { ok: true, post: post, status: r.status, location: loc, error: '' };
-    // 只有轉到的還是短網址才再跟；轉去登入頁之類的就停下來照實回報
-    if (!loc || r.status < 300 || r.status >= 400 || !(post && post.share)) break;
-    cur = loc;
-  }
-  var why = last.location ? '轉到的不是貼文（' + last.location.split('?')[0] + '）' : 'HTTP ' + last.status + (last.status === 200 ? '，沒有轉址（可能是登入頁或要跑 JavaScript 才轉）' : '');
-  return { ok: false, post: null, status: last.status, location: last.location, error: why };
-}
 
 function clipThreadsPropsHint_() {
   return '沒設 ' + CLIP_THREADS_PROBE_PROP + '（或裡面沒有認得的 Threads 網址）：專案設定 → 指令碼屬性，填最多 ' +
@@ -533,39 +488,7 @@ function clipThreadsProbePosts_(items, report) {
   return posts;
 }
 
-/**
- * 作者自己的接續串文（replyType=author_thread），從主文照 parentCode 一路串下去。
- * 串得完整 → method='parent'；串不起來（例如全掛在主文底下）→ 照時間排、method='time'、orderOk=false。
- * 純函式：PR-A 的串文合併會用同一份。
- */
-function clipThreadsAuthorChain_(rootCode, rows) {
-  var thread = (rows || []).filter(function (x) { return x && x.recordType !== 'status' && x.replyType === 'author_thread'; });
-  var byParent = {};
-  thread.forEach(function (x) { (byParent[x.parentCode] = byParent[x.parentCode] || []).push(x); });
-  var chain = [];
-  var seen = {};
-  var cur = rootCode;
-  while (byParent[cur] && byParent[cur].length === 1 && !seen[cur]) {
-    seen[cur] = true;
-    chain.push(byParent[cur][0]);
-    cur = byParent[cur][0].code;
-  }
-  var ts = function (x) { return String(x.timestamp || ''); };
-  if (chain.length === thread.length) {
-    var timeOk = chain.every(function (x, i) { return i === 0 || !ts(x) || !ts(chain[i - 1]) || ts(chain[i - 1]) <= ts(x); });
-    return { rows: chain, method: 'parent', orderOk: timeOk };
-  }
-  var sorted = thread.slice().sort(function (a, b) { return ts(a) < ts(b) ? -1 : ts(a) > ts(b) ? 1 : 0; });
-  return { rows: sorted, method: 'time', orderOk: false };
-}
 
-/** 一列的圖片／影片網址（欄位可能是字串陣列或物件陣列） */
-function clipThreadsMedia_(row, field) {
-  var arr = row && row[field];
-  if (!Array.isArray(arr)) return [];
-  return arr.map(function (x) { return typeof x === 'string' ? x : String(clipPick_(x || {}, ['url', 'src', 'displayUrl', 'imageUrl', 'videoUrl'])); })
-    .filter(function (u) { return !!u; });
-}
 
 function clipThreadsPostRecord_(post, items, ms) {
   var rec = { code: post.code, url: post.url, ok: false, error: '', textChars: 0, images: 0, imagesOk: 0, imageErrors: [],
@@ -618,13 +541,6 @@ function clipThreadsLogPost_(rec) {
   rec.imageErrors.forEach(function (e) { console.log('    ' + e); });
 }
 
-/** RUN_SUMMARY.perPost（每篇有沒有被上限截斷）；讀不到就當沒有，不影響結論 */
-function clipThreadsRunSummary_(token, kvs) {
-  if (!kvs) return [];
-  var r = clipFetch_(CLIP_APIFY_BASE + '/key-value-stores/' + encodeURIComponent(kvs) + '/records/RUN_SUMMARY', { headers: { Authorization: 'Bearer ' + token } });
-  var j = r.status === 200 ? clipJson_(r) : null;
-  return j && Array.isArray(j.perPost) ? j.perPost : [];
-}
 
 /**
  * 費用：Apify 有回 usageTotalUsd 就用它，否則照列數×單價估。每月推估＝每篇 × CLIP_THREADS_MONTHLY_POSTS，

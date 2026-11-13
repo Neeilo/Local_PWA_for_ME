@@ -518,6 +518,8 @@ function bootAdminExtras_(out, perf) {
   if (apiAlerts.length) out.api_alerts = apiAlerts;
   var usage = perfStage_(perf, 'clips_usage', clipsUsage_);      // RD-HF1：讀一個指令碼屬性，不讀 Sheet
   if (usage) out.clips_usage = usage;
+  var gate = perfStage_(perf, 'clips_gate', function () { return clipsCostGate_(new Date()); });   // ADR-027：只讀指令碼屬性
+  if (usage && gate) out.clips_usage.gate = gate;
 }
 
 /* ---------- 2.0 開機只讀核心層（ADR-021 D-1｜PR-B） ----------
@@ -862,6 +864,9 @@ function routePwaSync_(body, perf) {
     return jsonOut(cc);
   }
   // 圖片辨識（ADR-024）：按了才跑、一次一篇，只限擁有者
+  // ADR-027：圖書館設定（各平台存不存圖片／影片、本月強制續抓），限管理者＋feat_clips
+  if (body.action === 'clipSettings') return jsonOut(clipSettingsView_(caller));
+  if (body.action === 'clipSettingsSet') return jsonOut(clipSettingsSet_(caller, body.key, body.value));
   if (body.action === 'clipOcr') return jsonOut(clipOcr_(caller, body.id, body.discard === true));
   if (body.action === 'clipVision') return jsonOut(clipVision_(caller, body.id, body.discard === true));
   // 搜尋（ADR-021 PR-F，search.gs）：只搜自己的（白板例外），按了才跑

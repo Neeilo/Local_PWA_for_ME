@@ -724,6 +724,13 @@ function initSteps_() {
       if (r.failed.length) lines.push('⚠️ 有沒重產到的，下次初始化會再試');
       return { level: r.failed.length ? 'warn' : 'ok', changed: r.fixed > 0, text: lines.join('\n　') };
     } },
+    // ADR-027 D-3：只存連結的 Threads 轉成等待抓取（只跑一次；欄位都保留）
+    { label: '收藏 Threads 補抓', run: function () {
+      var r = clipsThreadsBackfill_();
+      if (r.already) return { level: 'ok', text: 'Threads 已補過，略過' };
+      if (r.flag_failed) return { level: 'warn', text: '記不了「已補過」，這次沒有補（下次初始化再試）：' + r.flag_failed };
+      return { level: 'ok', changed: r.count > 0, text: r.count ? '補抓 ' + r.count + ' 篇 Threads（排程總管會收齊，閱讀狀態、筆記、分類都保留）' : '沒有要補抓的 Threads' };
+    } },
     { label: '收藏 Reels 補存影片', run: function () {
       var r = clipsRequeueReels_();
       return { level: 'ok', changed: r.requeued > 0, text: r.requeued ? '排回重抓 ' + r.requeued + ' 篇（排程總管會整篇重抓、存 video.mp4）' : '沒有要補的' };

@@ -28,6 +28,10 @@
 | `JINA_API_KEY` | 實驗探針的備援擷取服務金鑰（選填） | `lab-clip.gs` | 探針略過那一段 |
 | `CLIP_PROBE_URLS` | 實驗探針要測的網址清單（選填） | `lab-clip.gs` | 探針用內建清單 |
 | `CLIP_OCR_PROBE_ID` | 文字辨識探針要測的那一篇（收藏 id 或 Drive 資料夾 id） | `lab-clip.gs`（`CLIP_OCR_PROBE_PROP`） | 探針提示先設定 |
+| `clips_settings` | 圖書館設定：IG／Threads 存不存圖片、影片，「本月超過上限仍繼續抓」的月份（JSON；管理者在圖書館設定改） | `clips.gs`（`CLIPS_SETTINGS_KEY`） | IG 都存、Threads 存圖不存影片、不強制 |
+| `clips_threads_usage` | Threads 本月估算用量（列數×單價；JSON） | `clips.gs`（`CLIPS_THREADS_USAGE_KEY`） | 本月 0 |
+| `clips_paused_month` | 已寫過「本月 Apify 達上限、收藏暫停」logs 的月份（一個月只寫一次） | `clips.gs`（`CLIPS_PAUSED_KEY`） | 還沒寫過 |
+| `clips_threads_backfill` | 「初始化」把只存連結的 Threads 轉成等待抓取，做完的時間（只跑一次） | `clips.gs`（`CLIPS_THREADS_BACKFILL_KEY`） | 還沒做 |
 | `CLIP_THREADS_PROBE_URLS` | Threads 探針要測的貼文網址（逗號分隔、全形半形都可，最多 3 篇；可直接貼 `/share/` 短網址） | `lab-clip.gs`（`CLIP_THREADS_PROBE_PROP`） | 探針提示先設定、不打 Apify |
 
 ### 程式自己維護的（不要手動改）
