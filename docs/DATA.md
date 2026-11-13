@@ -25,7 +25,7 @@
 | `moods` | 資料（已退場） | `id` | | | `del`、`archive`；封存 | 018 |
 | `notes` | 資料 | `id` | | | `del`、`archive`；封存 | — |
 | `self_notes` | 資料 | `line_id` | ✓ | ✓ | — | 018 |
-| `clips` | 資料 | `id` | ✓ | | `del` | 020、021、023、024、025 |
+| `clips` | 資料 | `id` | ✓ | | `del` | 020、021、023、024、025、027 |
 | `widget_config` | 資料 | `line_id` | ✓ | ✓ | — | 021 |
 | `stock_trades` | 資料 | `id` | | | `del`、`archive` | 015 |
 | `stock_watch` | 資料 | `symbol` | | | `is_active` | 015 |
@@ -88,13 +88,13 @@
 - **專用寫入路徑**：只走 `selfNoteSet`（只能寫自己那列）；讀取只走 `boot`（只帶自己那列）。
 
 ### `clips`
-- **用途**：圖書館收藏，一篇一列。IG 貼文存全文與圖片；其他網址只存連結（`kind`／`status`＝`link`）。
+- **用途**：圖書館收藏，一篇一列。IG 貼文與 Threads 貼文（`kind`＝`threads`，ADR-027）存全文與圖片；其他網址只存連結（`kind`／`status`＝`link`）。Threads 的 `caption`＝主文＋作者自己的接續串文（每段「── 串文 i／N ──」）；`error` 在 `done` 列上可能是說明（`串文可能不完整`、`影片過大未保存`），不是失敗。
 - **主要欄位**：
   - 收集：`id`、`line_id`、`source_text`、`url`、`shortcode`、`kind`、`status`（`pending`／`done`／`partial`／`failed`／`link`）、`attempts`、`next_try_at`、`error`、`author`、`posted_at`、`caption`、`media_expected`、`media_saved`、`drive_folder_id`、`image_ids`、`video_saved`、`collected_at`、`last_collected_at`
   - 整理：`category`（單選、存名稱）、`read_status`（空白＝未讀／`reading`／`read`）、`last_read_at`、`note`、`note_revision`、`note_updated_at`、`ai_output`、`ai_provider`、`ai_at`
   - 圖片辨識：`ocr_output`、`ocr_at`（捨棄時清空結果、`ocr_at` 記捨棄時間）、`vision_output`、`vision_provider`、`vision_at`
   - 共通：`del`、`created_at`、`updated_at`
-- **專用寫入路徑**：LINE 一對一貼網址（登記）；排程 `clips`（抓取、存 Drive、重試）、`clipsOcr`（自動文字辨識）；PWA 只走 `clipRetry`、`clipDelete`、`clipRead`、`clipReadState`、`clipNote`、`clipAi`、`clipAdd`、`clipCategory`、`clipOcr`、`clipVision`（除 `clipAdd` 外只限擁有者）。
+- **專用寫入路徑**：LINE 一對一貼網址（登記）；排程 `clips`（抓取、存 Drive、重試）、`clipsOcr`（自動文字辨識）；PWA 只走 `clipRetry`、`clipDelete`、`clipRead`、`clipReadState`、`clipNote`、`clipAi`、`clipAdd`、`clipCategory`、`clipOcr`、`clipVision`（除 `clipAdd` 外只限擁有者）；LINE「初始化」一次性把只存連結的 Threads 轉成等待抓取（ADR-027 D-3）。
 - **讀取者**：PWA（`readMany` 只回自己的列）、搜尋、總覽閱讀 Widget。
 
 ### `widget_config`

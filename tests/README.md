@@ -124,6 +124,8 @@
 | `adr-024-clip-vision-frontend.test.mjs` | 圖書館 | 🤖 AI 辨識（前端） |
 | `adr-024-clip-vision.test.mjs` | 圖書館、AI 供應商 | 🤖 AI 辨識 callAiVision_＋clipVision（後端） |
 | `adr-024-ocr-probe.test.mjs` | 圖書館（探針） | 文字辨識探針與共用的 clipOcrImage_ |
+| `adr-027-threads.test.mjs` | 圖書館 | Threads 收藏：網址與短網址、轉址與判重、串文合併、圖書館設定、達上限兩個都停與本月強制續抓、初始化補抓 |
+| `adr-027-threads-frontend.test.mjs` | 圖書館 | Threads 來源標籤、「串文可能不完整」、⚙️ 圖書館設定、成本卡分開顯示 |
 | `adr-027-threads-probe.test.mjs` | 圖書館（探針） | Threads 收藏探針 probeClipThreads：網址辨識、作者串文排序、圖片下載、費用推估與結論 |
 | `adr-025-read-state-frontend.test.mjs` | 圖書館 | 閱讀狀態三態（前端） |
 | `adr-025-read-state.test.mjs` | 圖書館 | 閱讀狀態三態（後端） |

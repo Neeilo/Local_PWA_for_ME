@@ -1293,6 +1293,14 @@ nav button:active{opacity:.6;}
         <div id="clipList"></div>
       </div>
       <div class="card" id="clipReader" hidden></div>
+      <!-- ⚙️ 圖書館設定（ADR-027，Neil 2026-11-13）：只在 2.0、管理者。IG／Threads 各自存不存圖片、影片；本月超過上限仍繼續抓 -->
+      <div class="card fold" id="clipCfgCard" hidden>
+        <button class="fold-head" onclick="toggleFold('clipCfg')"><h2>⚙️ 圖書館設定</h2><span class="fold-arrow" id="foldArrow-clipCfg">▾</span></button>
+        <div class="fold-body" id="fold-clipCfg" hidden>
+          <div id="clipCfgBody"></div>
+          <p class="slot-hint">改動即時存進雲端，每一次都記在 LOG（來源「設定」）。只影響之後收的篇，已收好的不會重抓。</p>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -3472,7 +3480,19 @@ function clipsUsageHtml(u){
   const rate = u.rate==null ? '近 3 天沒有收藏' : '近 3 天收藏成功 '+u.done+'／'+u.total+'（'+Math.round(u.rate*100)+'%）';
   const red = (has && u.usd>CLIPS_USAGE_RED_USD) || (u.rate!=null && u.rate<CLIPS_RATE_RED);
   const text=esc('📚 '+money+'・'+rate);
-  return red ? `<div class="sys-warn">⚠️ ${text}</div>` : `<p class="perf-sub">${text}</p>`;
+  return (red ? `<div class="sys-warn">⚠️ ${text}</div>` : `<p class="perf-sub">${text}</p>`) + (isV2() ? clipsSplitHtml(u) : '');
+}
+/* ADR-027（只在 2.0）：IG 與 Threads 分開的用量、Threads 成功率、本月暫停／強制續抓 */
+function clipsSplitHtml(u){
+  const g=u.gate;
+  if(!g || typeof g!=='object') return '';
+  const thRate = u.threads_rate==null ? '' : '・Threads 近 3 天成功 '+u.threads_done+'／'+u.threads_total+'（'+Math.round(u.threads_rate*100)+'%）';
+  const text=esc('　IG 約 '+clipUsd(g.ig_usd)+'・Threads 約 '+clipUsd(g.threads_usd)+thRate);
+  const warns=[];
+  if(g.paused) warns.push('本月 Apify 已達上限：IG 與 Threads 收藏都暫停（圖書館設定可「本月超過上限仍繼續抓」）');
+  else if(g.forced) warns.push('本月超過上限仍繼續抓中（會付費）');
+  if(u.threads_rate!=null && u.threads_rate<CLIPS_RATE_RED) warns.push('Threads 近 3 天成功率低於 80%');
+  return `<p class="perf-sub">${text}</p>`+sysWarnHtml(warns);
 }
 function sysWarnHtml(w){
   return (w&&w.length) ? `<div class="sys-warn">⚠️ ${w.map(esc).join('<br>⚠️ ')}</div>` : '';
@@ -5710,7 +5730,7 @@ function clipTpe(v){
 }
 function clipsListHtml(list){
   if(!list || !list.length) return isV2() && CLIP_FILTER_EMPTY[clipFilter] ? `<div class="empty-hint">${CLIP_FILTER_EMPTY[clipFilter]}</div>`
-    : '<div class="empty-hint">在 LINE 私訊 bot 貼 IG 網址（分享到 LINE 也可以），幾分鐘後就收進這裡</div>';
+    : `<div class="empty-hint">在 LINE 私訊 bot 貼 ${isV2()?'IG 或 Threads':'IG'} 網址（分享到 LINE 也可以），幾分鐘後就收進這裡</div>`;
   return clipsSorted(list).map(c=>{
     const ids=clipImages(c), bad=clipBad(c), id=esc(c.id), link=clipIsLink(c);
     const lines=link ? [String(c.url||'')] : String(c.caption||'').split('\n').map(s=>s.trim()).filter(Boolean).slice(0,2);
@@ -5718,7 +5738,8 @@ function clipsListHtml(list){
     const tag = (rs==='unread' ? '<span class="clip-dot" title="未讀" aria-label="未讀"></span>' : rs==='reading' ? '<span class="clip-tag clip-reading">📖 閱讀中</span>' : '')
       + (bad ? `<span class="clip-tag clip-bad">${c.status==='failed'?'失敗':'缺圖'}</span>`
       : c.status==='pending' ? '<span class="clip-tag">處理中</span>' : link ? '<span class="clip-tag">🔗 只存連結</span>' : '')
-      + (isV2() && c.category ? `<span class="clip-tag">${esc(clipCatLabel(c.category))}</span>` : '');
+      + (isV2() && c.category ? `<span class="clip-tag">${esc(clipCatLabel(c.category))}</span>` : '')
+      + (isV2() && !link ? clipSourceTag(c) : '');
     const thumb = ids[0] ? `<img class="clip-thumb" src="${clipThumb(ids[0],400)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
       : `<div class="clip-thumb clip-thumb-empty">${link?'🔗':'📚'}</div>`;
     const day=clipTpe(c.collected_at).slice(5,10).replace('-','/');
@@ -5741,7 +5762,8 @@ function clipReaderHtml(c){
       <button class="btn-ghost danger" onclick="deleteClip('${id}')">刪除</button>
     </div>${isV2() ? clipCatPickHtml(c) + clipStudyHtml(c) : ''}`;
   const imgs=ids.map((x,i)=>`<img class="clip-img" src="${clipThumb(x,1200)}" alt="第 ${i+1} 張" loading="lazy" onerror="clipImgFallback(this,'${esc(x)}')">`).join('');
-  return `<div class="clip-reader-head"><button class="btn-ghost" onclick="closeClip()">← 返回</button><b>${esc(c.author||'（作者不明）')}</b></div>${isV2() ? clipStatePickHtml(c) : ''}
+  return `<div class="clip-reader-head"><button class="btn-ghost" onclick="closeClip()">← 返回</button><b>${esc(c.author||'（作者不明）')}</b>${isV2() ? clipSourceTag(c) : ''}</div>${isV2() ? clipStatePickHtml(c) : ''}
+    ${isV2() && clipThreadIncomplete(c) ? '<p class="perf-sub">🧵 串文可能不完整：作者的接續回覆可能沒收完，完整內容請開啟原文</p>' : ''}
     ${ids.length ? `<div class="clip-strip">${imgs}</div>` : ''}
     ${clipVideoLine(c)}
     <div class="clip-caption">${esc(c.caption||'')}</div>
@@ -5752,8 +5774,63 @@ function clipReaderHtml(c){
       <button class="btn-ghost danger" onclick="deleteClip('${id}')">刪除</button>
     </div>${isV2() ? clipCatPickHtml(c) + clipStudyHtml(c) : ''}`;
 }
+/* 來源小標籤（ADR-027 D-5，只在 2.0）：平台由 kind／網址推導（後端不另開欄） */
+function clipPlatform(c){ return c && (c.kind==='threads' || /^https?:\/\/(www\.)?threads\.(com|net)\//i.test(String(c.url||''))) ? 'Threads' : 'IG'; }
+function clipSourceTag(c){ return `<span class="clip-tag clip-src">${clipPlatform(c)}</span>`; }
+/* 後端把「串文可能不完整」寫在 error 欄當說明、status 仍是 done（D-6：不觸發重試） */
+function clipThreadIncomplete(c){ return !!c && c.kind==='threads' && String(c.error||'').includes('串文可能不完整'); }
+
+/* ---------- ⚙️ 圖書館設定（ADR-027，Neil 2026-11-13；只在 2.0 管理者） ----------
+   點開摺疊才向雲端要（clipSettings），不進冷開機。開關等雲端存好才變（每一下都是付費相關的決定，不先假裝成功）。
+   「本月超過上限仍繼續抓」會付費：先確認；只對這個月有效，下個月後端自動不認 */
+let clipCfg=null, clipCfgLoading=false;
+const CLIP_CFG_ROWS=[['ig_images','IG 存圖片'],['ig_videos','IG 存影片（Reels）'],['threads_images','Threads 存圖片'],['threads_videos','Threads 存影片']];
+const CLIP_CFG_ERRORS={ forbidden:'只有管理者可以改圖書館設定', invalid_key:'不認得這個設定，重新整理再試', invalid_value:'設定值不對，重新整理再試', save_failed:'雲端存不進去，稍後再試' };
+function clipUsd(v){ return 'US$'+(Number(v)||0).toFixed(2); }
+async function loadClipCfg(){
+  if(clipCfgLoading) return false;
+  clipCfgLoading=true; renderClipCfg();
+  let r=null;
+  try{ r=await cloudPost({action:'clipSettings', trigger:'manual'}); }catch(e){ r=null; }
+  clipCfgLoading=false;
+  clipCfg=r||{success:false};
+  renderClipCfg();
+  return !!(r && r.success);
+}
+function clipGateHtml(g){
+  if(!g || typeof g!=='object') return '';
+  const money='Apify 本月 '+clipUsd(g.usd)+'／上限 US$'+(g.cap||3)+'（IG 約 '+clipUsd(g.ig_usd)+'、Threads 約 '+clipUsd(g.threads_usd)+'）';
+  const state = g.paused ? '<div class="sys-warn">⚠️ 本月已達上限：IG 與 Threads 收藏都暫停抓取（打開下面的「本月超過上限仍繼續抓」才會繼續）</div>'
+    : g.forced ? '<div class="sys-warn">⚠️ 本月強制續抓中（會付費），下個月自動恢復上限</div>' : '';
+  return state+`<p class="perf-sub">${esc(money)}</p>`;
+}
+function clipCfgHtml(d){
+  const s=d.settings||{}, g=d.gate||{};
+  const btn=(k,on,onLabel,offLabel)=>`<button class="${on?'on':''}" onclick="setClipCfg('${k}', ${!on})">${on?onLabel:offLabel}</button>`;
+  const rows=CLIP_CFG_ROWS.map(([k,l])=>`<div class="sys-row"><div class="who">${l}</div><div class="adm-grid">${btn(k,!!s[k],'✅ 存','不存')}</div></div>`).join('');
+  return clipGateHtml(g)+rows+`<div class="sys-row"><div class="who">本月超過上限仍繼續抓<small>會付費；只對這個月有效</small></div><div class="adm-grid">${btn('force',!!g.forced,'✅ 續抓中','關')}</div></div>`;
+}
+async function setClipCfg(key, value){
+  if(key==='force' && value && !confirm('本月超過 US$3 仍繼續抓 IG 與 Threads？\n這會產生 Apify 費用；下個月自動關掉。')) return false;
+  let r=null;
+  try{ r=await cloudPost({action:'clipSettingsSet', key, value, trigger:'write'}); }catch(e){ r=null; }
+  if(r && r.success){ clipCfg=r; renderClipCfg(); toast('已存 ✅'); return true; }
+  toast(!r ? '連不上雲端，這次沒有改到' : (CLIP_CFG_ERRORS[r.error]||'沒有改到，稍後再試'));
+  return false;
+}
+function renderClipCfg(){
+  const on=isV2() && isAdmin() && featureAllowed('clips') && clipOpenId==null;
+  setHidden('clipCfgCard', !on);
+  const el=document.getElementById('clipCfgBody');
+  if(!on || !el) return;
+  el.innerHTML = clipCfgLoading ? '<div class="empty-hint">讀取中…</div>'
+    : !clipCfg ? ''
+    : !clipCfg.success ? `<div class="empty-hint">讀不到（${esc(clipCfg.error||'連線失敗')}） <button class="link" onclick="loadClipCfg()">重試</button></div>`
+    : clipCfgHtml(clipCfg);
+}
 /* Reels 的影片（RD-HF1）：存了就連到這篇的 Drive 資料夾（影片是私人的，PWA 這版不播放） */
 function clipVideoLine(c){
+  if(c.kind==='threads') return truthy(c.video_saved) ? `<p class="perf-sub">🎬 影片已保存（<a href="${clipFolderLink(c.drive_folder_id)}" target="_blank" rel="noopener">在 Drive 開啟</a>）</p>` : '';
   if(c.kind!=='reel') return '';
   if(truthy(c.video_saved)) return `<p class="perf-sub">🎬 Reels：影片已保存（<a href="${clipFolderLink(c.drive_folder_id)}" target="_blank" rel="noopener">在 Drive 開啟</a>）</p>`;
   return `<p class="perf-sub">🎬 Reels：${String(c.error)==='影片過大未保存' ? '影片過大未保存' : '影片未保存'}，只有封面與全文</p>`;
@@ -5788,6 +5865,7 @@ function renderClips(){
   if(reader) reader.innerHTML = open ? clipReaderHtml(open) : '';
   setHidden('clipReader', !open);
   setHidden('clipListCard', !!open);
+  renderClipCfg();
 }
 function openClip(id){
   if(String(clipOpenId)!==String(id)){ clipNoteDraft=null; clipNoteConflict=null; }   // 打的字只跟著那一篇
@@ -7084,6 +7162,7 @@ const FOLD_LOAD={
   gmailRules: ()=>{ if(!(sysData.gmail||{}).success) loadSysTab('gmail'); },     // 2.0 郵件頁（D-14）
   mailArchive: ()=>{ if(!(mailArchiveState.data||{}).success) loadMailArchive(); },   // ADR-026 D-3
   expCfg:  ()=>{ if(!(sysData.config||{}).success) loadSysTab('config'); },       // 2.0 記帳頁（D-14）
+  clipCfg: ()=>{ if(!(clipCfg||{}).success) loadClipCfg(); },                       // 2.0 圖書館頁（ADR-027）
   push:    ()=>{ if(!pushState.groups) loadPushGroups(); },
   perf:    ()=>{ if(!perfSummaryCache) loadPerfSummary(); },
   ai:      ()=>{ if(!aiState.cfg) loadAiConfig(); },

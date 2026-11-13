@@ -189,11 +189,13 @@ describe('非 IG 網址：只存連結（D-12）', () => {
     assert.equal(e.call('clipsPick_', e.sheets.clips, Date.now()).length, 0, '排程不會挑到它');
   });
 
-  test('Threads／FB／X 也只存連結（取代 ADR-020 A-3 的「目前只支援 Instagram」）', () => {
+  test('FB／X 只存連結；Threads 單篇貼文改排隊抓（ADR-027 修訂 D-12，見 adr-027-threads）；Threads 個人頁仍只存連結', () => {
     const e = env();
+    say(e, '看 https://www.facebook.com/a/posts/1 和 https://x.com/a/status/2 和 https://www.threads.net/@a');
+    assert.deepEqual(rows(e).map((r) => r.kind), ['link', 'link', 'link']);
     say(e, '看 https://www.threads.net/@a/post/xyz');
     assert.equal(e.replies.at(-1), '收到 ✅');
-    assert.equal(rows(e)[0].kind, 'link');
+    assert.deepEqual([rows(e)[3].kind, rows(e)[3].status], ['threads', 'pending']);
   });
 
   test('IG＋一般網址同一則：IG 照舊排隊、一般網址只存連結', () => {

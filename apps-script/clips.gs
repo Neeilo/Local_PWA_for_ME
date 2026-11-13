@@ -73,6 +73,28 @@ var CLIP_URL_RE = /https?:\/\/[^\s<>"'）)】」]+/g;
 var CLIP_NOTE_MAX = 20000;
 /** 送給 AI 的原文上限（筆記另計）：太長只會變貴，整理重點用不到 */
 var CLIP_AI_INPUT_MAX = 20000;
+/**
+ * ADR-027：Threads 收藏。kind＝'threads'（status 照 IG：pending／done／partial／failed）；平台由 kind／網址推導，不新增欄位。
+ * LINE 收到的一律是 /share/短碼：webhook 照原樣登記（shortcode 空白），排程輪到時才轉址取貼文代碼（webhook 不打外部）
+ */
+var CLIP_THREADS = 'threads';
+/** 串文可能沒收完（被回覆上限截斷、或順序串不起來改照時間排）：寫在 error 欄當說明、status 仍是 done，不觸發重試（D-6） */
+var CLIP_THREAD_INCOMPLETE_NOTE = '串文可能不完整';
+/** 一次 Threads run 每篇最多扣多少（30 列回覆＋主文 ≈ US$0.076，留餘裕）；走 maxTotalChargeUsd */
+var CLIP_THREADS_RUN_MAX_USD_PER_POST = 0.1;
+/**
+ * 圖書館設定（ADR-027，Neil 2026-11-13）：各平台存不存圖片／影片。存指令碼屬性 JSON，只有管理者在圖書館設定改。
+ * IG 預設維持原本行為（都存）；Threads 預設不存影片。force_month＝「本月超過上限仍繼續抓」打開的月份（台北 YYYY-MM），換月自動失效
+ */
+var CLIPS_SETTINGS_KEY = 'clips_settings';
+var CLIPS_SETTINGS_DEFAULTS = { ig_images: true, ig_videos: true, threads_images: true, threads_videos: false };
+var CLIPS_SETTINGS_LABELS = { ig_images: 'IG 存圖片', ig_videos: 'IG 存影片（Reels）', threads_images: 'Threads 存圖片', threads_videos: 'Threads 存影片', force: '本月超過上限仍繼續抓' };
+/** Threads 本月估算用量（列數×單價，因為 run 的 usageTotalUsd 不含按筆計費）：{ month, usd, posts } */
+var CLIPS_THREADS_USAGE_KEY = 'clips_threads_usage';
+/** 已經寫過「本月暫停」logs 的月份：一個月只寫一次，不每 5 分鐘洗版 */
+var CLIPS_PAUSED_KEY = 'clips_paused_month';
+/** 「初始化」一次性把只存連結的 Threads 列轉成等待抓取（D-3）：做過就記時間 */
+var CLIPS_THREADS_BACKFILL_KEY = 'clips_threads_backfill';
 
 /* -------------------------------------------------------------------------- */
 /* 共用：網址、Apify、欄位解析（探針 lab-clip.gs 也用）                             */
@@ -231,21 +253,172 @@ function clipItemFor_(post, items) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Threads（ADR-027）：網址、短網址轉址、作者串文（探針 lab-clip.gs 也用）            */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * 爬蟲：architekture~threads-replies-scraper（ADR-027 PR-0 探針 2026-11-13 實測：主文、圖片、作者串文 3／3）。
+ * 一次回主文（recordType=post）與回覆；作者自己的接續標 replyType=author_thread、帶 parentCode。
+ * 按筆計費（主文 US$0.001、回覆 US$0.0025），別人的留言也計費 → maxRepliesPerPost 一定要設上限。
+ * ⚠️ run 物件的 usageTotalUsd 不含按筆計費（實測回 US$0.021，照列數算是 US$0.138），成本一律照列數×單價估。
+ */
+/** 短網址最多跟幾次轉址（share → /@帳號/post/代碼?xmt=… 通常一次就到） */
+var CLIP_THREADS_MAX_HOPS = 3;
+var CLIP_THREADS_ACTOR = 'architekture~threads-replies-scraper';
+/** 每篇最多回幾列回覆（含別人的留言）；串文在這之內才收得到，探針會印出有沒有被截斷 */
+var CLIP_THREADS_MAX_REPLIES = 30;
+var CLIP_THREADS_USD_POST = 0.001;
+var CLIP_THREADS_USD_REPLY = 0.0025;
+
+/**
+ * 一個網址 → { code, user, url }（單篇貼文）｜{ share, url }（分享短網址 /share/代碼，要先轉址）｜null。
+ * 認得 threads.com／threads.net、有無 www、/@帳號/post/代碼、/t/代碼；代碼後面的路徑、參數、# 都去掉，
+ * 網域統一成 www.threads.com
+ */
+function clipThreadsParse_(raw) {
+  var s = String(raw || '').trim().replace(/^["'「『(（<]+|["'」』)）>]+$/g, '');
+  var m = s.match(/^https?:\/\/(?:www\.)?threads\.(?:com|net)\/(?:@([A-Za-z0-9._]+)\/post|t)\/([A-Za-z0-9_-]+)/i);
+  if (m) return { code: m[2], user: m[1] || '', url: 'https://www.threads.com/' + (m[1] ? '@' + m[1] + '/post/' : 't/') + m[2] };
+  var sh = s.match(/^https?:\/\/(?:www\.)?threads\.(?:com|net)\/share\/([A-Za-z0-9_-]+)/i);
+  if (sh) return { share: sh[1], url: 'https://www.threads.com/share/' + sh[1] };
+  return null;
+}
+
+/**
+ * 分享短網址 → 真正的貼文網址：不自動跟轉址，自己讀 Location（最多 CLIP_THREADS_MAX_HOPS 次），
+ * 這樣才看得出 Google 機房打 threads.com 時是正常轉址、被擋，還是被導去登入頁。走 callApi_('web')。
+ * 回 { ok, post（clipThreadsParse_ 的結果）, status, location, error }
+ */
+function clipThreadsResolveShare_(url) {
+  var cur = url;
+  var last = { status: 0, location: '' };
+  for (var hop = 0; hop < CLIP_THREADS_MAX_HOPS; hop++) {
+    var r = clipFetch_(cur, { followRedirects: false });
+    var headers = r.res && r.res.getHeaders ? r.res.getHeaders() || {} : {};
+    var loc = '';
+    Object.keys(headers).forEach(function (k) { if (k.toLowerCase() === 'location') loc = String(headers[k] || ''); });
+    if (loc && loc.charAt(0) === '/') loc = 'https://www.threads.com' + loc;
+    last = { status: r.status, location: loc };
+    if (r.status === 0) return { ok: false, post: null, status: 0, location: '', error: clipHead_(r) };
+    var post = loc ? clipThreadsParse_(loc) : null;
+    if (post && post.code) return { ok: true, post: post, status: r.status, location: loc, error: '' };
+    // 只有轉到的還是短網址才再跟；轉去登入頁之類的就停下來照實回報
+    if (!loc || r.status < 300 || r.status >= 400 || !(post && post.share)) break;
+    cur = loc;
+  }
+  var why = last.location ? '轉到的不是貼文（' + last.location.split('?')[0] + '）' : 'HTTP ' + last.status + (last.status === 200 ? '，沒有轉址（可能是登入頁或要跑 JavaScript 才轉）' : '');
+  return { ok: false, post: null, status: last.status, location: last.location, error: why };
+}
+
+/**
+ * 作者自己的接續串文（replyType=author_thread），從主文照 parentCode 一路串下去。
+ * 串得完整 → method='parent'；串不起來（例如全掛在主文底下）→ 照時間排、method='time'、orderOk=false。
+ * 純函式：PR-A 的串文合併會用同一份。
+ */
+function clipThreadsAuthorChain_(rootCode, rows) {
+  var thread = (rows || []).filter(function (x) { return x && x.recordType !== 'status' && x.replyType === 'author_thread'; });
+  var byParent = {};
+  thread.forEach(function (x) { (byParent[x.parentCode] = byParent[x.parentCode] || []).push(x); });
+  var chain = [];
+  var seen = {};
+  var cur = rootCode;
+  while (byParent[cur] && byParent[cur].length === 1 && !seen[cur]) {
+    seen[cur] = true;
+    chain.push(byParent[cur][0]);
+    cur = byParent[cur][0].code;
+  }
+  var ts = function (x) { return String(x.timestamp || ''); };
+  if (chain.length === thread.length) {
+    var timeOk = chain.every(function (x, i) { return i === 0 || !ts(x) || !ts(chain[i - 1]) || ts(chain[i - 1]) <= ts(x); });
+    return { rows: chain, method: 'parent', orderOk: timeOk };
+  }
+  var sorted = thread.slice().sort(function (a, b) { return ts(a) < ts(b) ? -1 : ts(a) > ts(b) ? 1 : 0; });
+  return { rows: sorted, method: 'time', orderOk: false };
+}
+
+/** 一列的圖片／影片網址（欄位可能是字串陣列或物件陣列） */
+function clipThreadsMedia_(row, field) {
+  var arr = row && row[field];
+  if (!Array.isArray(arr)) return [];
+  return arr.map(function (x) { return typeof x === 'string' ? x : String(clipPick_(x || {}, ['url', 'src', 'displayUrl', 'imageUrl', 'videoUrl'])); })
+    .filter(function (u) { return !!u; });
+}
+
+/** RUN_SUMMARY.perPost（每篇有沒有被上限截斷）；讀不到就當沒有，不影響結論 */
+function clipThreadsRunSummary_(token, kvs) {
+  if (!kvs) return [];
+  var r = clipFetch_(CLIP_APIFY_BASE + '/key-value-stores/' + encodeURIComponent(kvs) + '/records/RUN_SUMMARY', { headers: { Authorization: 'Bearer ' + token } });
+  var j = r.status === 200 ? clipJson_(r) : null;
+  return j && Array.isArray(j.perPost) ? j.perPost : [];
+}
+
+/** 網址 → 貼文代碼（不是單篇貼文或只是短網址就回空） */
+function clipThreadsCodeOf_(url) {
+  var p = clipThreadsParse_(url);
+  return p && p.code ? p.code : '';
+}
+
+/**
+ * 主文＋作者串文合併成一篇（content.md 與 clips.caption 共用，純函式）。主文放最前面不加標題
+ * （列表、Reading Widget 拿第一行當標題）；之後每段加「── 串文 i／N ──」，N 含主文
+ */
+function clipThreadsMerge_(root, chain) {
+  var parts = [String(root && root.text || '')].concat((chain || []).map(function (x) { return String(x && x.text || ''); }));
+  if (parts.length === 1) return parts[0];
+  return parts.map(function (t, i) { return i === 0 ? t : '── 串文 ' + (i + 1) + '／' + parts.length + ' ──\n' + t; }).join('\n\n');
+}
+
+/** 一次 run 的估算費用：主文列×US$0.001＋回覆列×US$0.0025（status 列免費） */
+function clipThreadsRunUsd_(items) {
+  var usd = 0;
+  (items || []).forEach(function (x) {
+    if (x && x.recordType === 'post') usd += CLIP_THREADS_USD_POST;
+    else if (x && x.recordType === 'reply') usd += CLIP_THREADS_USD_REPLY;
+  });
+  return Math.round(usd * 10000) / 10000;
+}
+
+/** 排程用的 Threads run：要作者串文、每篇回覆有上限、整次有花費上限；成功就讀 RUN_SUMMARY（有沒有被截斷）並記估算用量 */
+function clipThreadsRun_(token, urls, now) {
+  var r = clipApifyRun_({ token: token, actor: CLIP_THREADS_ACTOR, field: 'postUrls' }, urls, {
+    waitSec: CLIPS_APIFY_WAIT_SEC, maxPolls: CLIPS_APIFY_MAX_POLLS,
+    maxUsd: Math.round(urls.length * CLIP_THREADS_RUN_MAX_USD_PER_POST * 100) / 100,
+    input: { maxRepliesPerPost: CLIP_THREADS_MAX_REPLIES, includeAuthorThread: true, sortOrder: 'TOP' }
+  });
+  r.summary = [];
+  if (r.stage === 'ok') {
+    r.summary = clipThreadsRunSummary_(token, r.kvs);
+    clipsThreadsUsageAdd_(clipThreadsRunUsd_(r.items), urls.length, now);
+  }
+  return r;
+}
+
+/* -------------------------------------------------------------------------- */
 /* LINE 登記                                                                    */
 /* -------------------------------------------------------------------------- */
 
 /**
- * 從整則訊息抽 IG 貼文網址（不假設整則就是網址）。同一則重複的同一篇只算一筆，照出現順序。
- * 類型只分 post／reel：舊的 /tv/ 也是影片，但 Apify 對它回的形狀未實測，先當貼文收（有圖就存）。
+ * 從整則訊息抽要排隊抓的網址（不假設整則就是網址）。同一則重複的同一篇只算一筆，照出現順序。
+ * IG：類型只分 post／reel（舊的 /tv/ 先當貼文收）。Threads（ADR-027）：kind＝threads；/share/ 短網址照原樣存、
+ * shortcode 空白，等排程轉址（webhook 不打外部）；單篇貼文網址收成乾淨網址＋貼文代碼
  */
 function clipExtractUrls_(text) {
   var out = [];
   var seen = {};
   (String(text || '').match(CLIP_URL_RE) || []).forEach(function (u) {
     var n = clipNormalizeUrl_(u);
-    if (!n || seen[n.key]) return;
-    seen[n.key] = true;
-    out.push({ url: n.url, shortcode: n.key.slice(3), kind: n.kind === 'reel' ? 'reel' : 'post' });
+    if (n) {
+      if (seen[n.key]) return;
+      seen[n.key] = true;
+      out.push({ url: n.url, shortcode: n.key.slice(3), kind: n.kind === 'reel' ? 'reel' : 'post' });
+      return;
+    }
+    var t = clipThreadsParse_(u);
+    if (!t) return;
+    var key = t.code ? 'th:' + t.code : 'ths:' + t.share;
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push({ url: t.url, shortcode: t.code || '', kind: CLIP_THREADS });
   });
   return out;
 }
@@ -258,7 +431,7 @@ function clipLinkUrls_(text) {
   var out = [];
   var seen = {};
   (String(text || '').match(CLIP_URL_RE) || []).forEach(function (u) {
-    if (clipNormalizeUrl_(u)) return;
+    if (clipNormalizeUrl_(u) || clipThreadsParse_(u)) return;      // IG 與 Threads 貼文排隊抓（ADR-027）
     u = u.replace(/[.,;:!?。，、；：！？]+$/, '');
     if (u.length > CLIP_LINK_MAX || seen[u]) return;
     seen[u] = true;
@@ -422,9 +595,20 @@ function clipsPick_(sheet, nowMs) {
     var next = Date.parse(r.next_try_at);
     if (!isNaN(next) && next > nowMs) return;
     if (!canOwner(String(r.line_id))) return;
+    // ADR-027：Threads 短網址先轉址取貼文代碼，重複判斷才比得到同一篇。轉不出來算一次失敗（走既有重試）
+    if (r.kind === CLIP_THREADS && !String(r.shortcode == null ? '' : r.shortcode).trim()) {
+      var res = clipThreadsResolveShare_(String(r.url));
+      if (!res.ok) {
+        clipsRecordResult_(sheet, r, { ok: false, error: 'Threads 短網址轉不出貼文（' + res.error + '）' }, nowMs);
+        return;
+      }
+      clipsPatch_(sheet, r.id, { url: res.post.url, shortcode: res.post.code });
+      r.url = res.post.url;
+      r.shortcode = res.post.code;
+    }
 
     var older = t.rows.slice(0, idx).filter(function (o) {
-      return !clipDeleted_(o.rec) && String(o.rec.line_id) === String(r.line_id) && o.rec.url === r.url;
+      return !clipDeleted_(o.rec) && String(o.rec.line_id) === String(r.line_id) && clipSameClip_(o.rec, r);
     })[0];
     if (older) {
       var o = older.rec;
@@ -442,6 +626,13 @@ function clipsPick_(sheet, nowMs) {
   return batch;
 }
 
+/** 同一篇？Threads 兩邊都有貼文代碼就比代碼（同一篇可能有不同網址寫法），其餘比網址（IG 照舊） */
+function clipSameClip_(a, b) {
+  var ca = String(a.shortcode == null ? '' : a.shortcode), cb = String(b.shortcode == null ? '' : b.shortcode);
+  if (a.kind === CLIP_THREADS && b.kind === CLIP_THREADS && ca && cb) return ca === cb;
+  return a.url === b.url;
+}
+
 /**
  * 排程總管的 clips 工作。ctx.budgetLeft()：總管這一輪還剩多少毫秒（不夠一篇就不開始，留給下一輪）。
  * 回 { processed }。每篇寫 logs；效能紀錄走 ADR-019 的排隊（recordSchedulePerf_），不直接寫 performance。
@@ -452,20 +643,29 @@ function runClipsJob_(now, ctx) {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CLIPS_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return { processed: 0 };
   if (budgetLeft() < CLIPS_MIN_BUDGET_MS) return { processed: 0, reason: 'budget' };
-  var nowMs = (now instanceof Date ? now : new Date()).getTime();
+  var nowDate = now instanceof Date ? now : new Date();
+  var nowMs = nowDate.getTime();
+  // ADR-027 D-4（Neil 2026-11-13）：當月 Apify 合計達上限 → IG 與 Threads 都暫停；圖書館設定可「本月強制續抓」
+  var gate = clipsCostGate_(nowDate);
+  if (gate.paused) { clipsNotePause_(gate); return { processed: 0, reason: 'cost_cap' }; }
   var batch = clipsPick_(sheet, nowMs);
   if (!batch.length) return { processed: 0 };
 
+  var settings = clipsSettings_();
   var cfg = clipApifyConfig_(PropertiesService.getScriptProperties());
-  var apify = cfg.token
-    ? clipApifyRun_(cfg, batch.map(function (r) { return r.url; }), { waitSec: CLIPS_APIFY_WAIT_SEC, maxPolls: CLIPS_APIFY_MAX_POLLS })
+  var urlsOf = function (list) { return list.map(function (r) { return r.url; }); };
+  var ig = batch.filter(function (r) { return r.kind !== CLIP_THREADS; });
+  var th = batch.filter(function (r) { return r.kind === CLIP_THREADS; });
+  var apify = cfg.token && ig.length
+    ? clipApifyRun_(cfg, urlsOf(ig), { waitSec: CLIPS_APIFY_WAIT_SEC, maxPolls: CLIPS_APIFY_MAX_POLLS })
     : null;
+  var apifyTh = cfg.token && th.length ? clipThreadsRun_(cfg.token, urlsOf(th), nowDate) : null;
   var processed = 0;
   batch.forEach(function (rec) {
     if (budgetLeft() < CLIPS_POST_BUDGET_MS) return;          // 留給下一輪；不算一次失敗
     var result;
     try {
-      result = clipCollectOne_(rec, apify, nowMs);
+      result = clipCollectOne_(rec, rec.kind === CLIP_THREADS ? apifyTh : apify, nowMs, settings);
     } catch (err) {
       result = { ok: false, error: '處理時出錯：' + String(err && err.message || err) };
     }
@@ -489,7 +689,9 @@ function clipApifyError_(apify) {
  * 收一篇：Apify 的那一筆 → Drive。回 { ok, error, ...要寫回列的欄位 }。
  * 重跑整篇重抓：同一資料夾內的舊檔丟垃圾桶（setTrashed，不永久刪除）再重存。
  */
-function clipCollectOne_(rec, apify, nowMs) {
+function clipCollectOne_(rec, apify, nowMs, settings) {
+  settings = settings || clipsSettings_();
+  if (rec.kind === CLIP_THREADS) return clipCollectThreads_(rec, apify, nowMs, settings);
   var apifyErr = clipApifyError_(apify);
   if (apifyErr) return { ok: false, error: apifyErr };
   var item = clipItemFor_({ id: String(rec.shortcode), key: 'ig:' + rec.shortcode }, apify.items);
@@ -498,7 +700,8 @@ function clipCollectOne_(rec, apify, nowMs) {
   var info = clipInfo_(item);
   // 要存的圖：貼文＝每一張（輪播裡的影片存封面）；Reels＝封面（影片另存 video.mp4，見下面）
   var media = clipMediaOf_(item);
-  var urls = rec.kind === 'reel'
+  // 圖書館設定關掉「IG 存圖片」：一張都不存，也不算失敗（ADR-027）
+  var urls = !settings.ig_images ? [] : rec.kind === 'reel'
     ? (function () {
         var cover = media.filter(function (m) { return m.type === 'video'; }).map(function (m) { return m.cover_url; })[0] ||
           String(clipPick_(item, ['displayUrl', 'thumbnailUrl', 'imageUrl']));
@@ -506,41 +709,21 @@ function clipCollectOne_(rec, apify, nowMs) {
       })()
     : media.map(function (m) { return m.type === 'video' ? m.cover_url : m.source_url; });
   var out = Object.assign({ ok: false, error: '', media_expected: urls.length, media_saved: 0, drive_folder_id: '', image_ids: '[]', video_saved: '' }, info);
-  if (rec.kind !== 'reel' && !urls.length) { out.error = 'Apify 沒有回任何圖片'; return out; }
+  if (rec.kind !== 'reel' && settings.ig_images && !urls.length) { out.error = 'Apify 沒有回任何圖片'; return out; }
 
   var folder = clipsFolder_(rec, info.author);
   out.drive_folder_id = folder.getId();
   var old = folder.getFiles();
   while (old.hasNext()) old.next().setTrashed(true);
 
-  var errors = [];
-  var ids = [];
-  var names = [];
-  var responses = clipFetchAll_(urls);
-  urls.forEach(function (u, i) {
-    var n = i + 1;
-    var label = '第 ' + n + ' 張';
-    if (!u) { errors.push(label + '沒有圖片網址'); return; }
-    var r = responses[i];
-    if (!r || r.status !== 200) { errors.push(label + '下載失敗（' + (r ? clipHead_(r) : '沒有回應') + '）'); return; }
-    var blob = r.res.getBlob();
-    var type = String(blob.getContentType() || '').split(';')[0];
-    if (!/^image\//.test(type)) { errors.push(label + '回的不是圖片（' + (type || '未知') + '）'); return; }
-    var name = (n < 10 ? '0' : '') + n + '.' + (CLIP_EXT[type] || 'jpg');
-    try {
-      var file = folder.createFile(blob.setName(name));
-      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-      ids.push(file.getId());
-      names.push(name);
-    } catch (err) {
-      errors.push(label + '寫入 Drive 失敗（' + String(err && err.message || err) + '）');
-    }
-  });
-  out.media_saved = ids.length;
-  out.image_ids = JSON.stringify(ids);
+  var saved = clipSaveImages_(folder, urls);
+  var errors = saved.errors;
+  var names = saved.names;
+  out.media_saved = saved.ids.length;
+  out.image_ids = JSON.stringify(saved.ids);
 
-  // Reels 要有 video.mp4 才算 done；太大不算失敗（done＋說明），下載失敗走既有重試
-  var video = rec.kind === 'reel' ? clipSaveVideo_(folder, clipVideoUrl_(item)) : null;
+  // Reels 要有 video.mp4 才算 done；太大不算失敗（done＋說明），下載失敗走既有重試。設定關掉「IG 存影片」就不存（ADR-027）
+  var video = rec.kind === 'reel' && settings.ig_videos ? clipSaveVideo_(folder, clipVideoUrl_(item)) : null;
   if (video && video.state === 'saved') out.video_saved = 'TRUE';
   if (video && video.state === 'failed') errors.push(video.error);
 
@@ -555,6 +738,94 @@ function clipCollectOne_(rec, apify, nowMs) {
 
   out.ok = rawOk && !errors.length && out.media_saved === out.media_expected;
   out.error = errors.length ? errors.join('；') : video && video.state === 'too_big' ? CLIP_VIDEO_TOO_BIG_NOTE : '';
+  return out;
+}
+
+/**
+ * 圖片依序下載存進資料夾：01.jpg、02.jpg…（IG 與 Threads 共用）。只有圖片檔開「知道連結的人可檢視」（E-2）。
+ * 「拿到網址」不算「存下來」：要 200、要是圖片、要真的寫進 Drive。回 { ids, names, errors }
+ */
+function clipSaveImages_(folder, urls) {
+  var out = { ids: [], names: [], errors: [] };
+  var responses = clipFetchAll_(urls);
+  urls.forEach(function (u, i) {
+    var n = i + 1;
+    var label = '第 ' + n + ' 張';
+    if (!u) { out.errors.push(label + '沒有圖片網址'); return; }
+    var r = responses[i];
+    if (!r || r.status !== 200) { out.errors.push(label + '下載失敗（' + (r ? clipHead_(r) : '沒有回應') + '）'); return; }
+    var blob = r.res.getBlob();
+    var type = String(blob.getContentType() || '').split(';')[0];
+    if (!/^image\//.test(type)) { out.errors.push(label + '回的不是圖片（' + (type || '未知') + '）'); return; }
+    var name = (n < 10 ? '0' : '') + n + '.' + (CLIP_EXT[type] || 'jpg');
+    try {
+      var file = folder.createFile(blob.setName(name));
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      out.ids.push(file.getId());
+      out.names.push(name);
+    } catch (err) {
+      out.errors.push(label + '寫入 Drive 失敗（' + String(err && err.message || err) + '）');
+    }
+  });
+  return out;
+}
+
+/**
+ * 收一篇 Threads（ADR-027 D-1）：主文＋作者自己的接續串文（照 parentCode 排）合併成一篇；別人的留言不存
+ * （raw.json 也只放主文與作者串文）。圖片照主文→串文的順序；影片看圖書館設定（預設不存）。
+ * 串文被回覆上限截斷、或順序只能照時間排 → done＋「串文可能不完整」（D-6：不用 partial，那會重跑）
+ */
+function clipCollectThreads_(rec, apify, nowMs, settings) {
+  var apifyErr = clipApifyError_(apify);
+  if (apifyErr) return { ok: false, error: apifyErr };
+  var code = String(rec.shortcode == null ? '' : rec.shortcode);
+  var items = apify.items || [];
+  var root = items.filter(function (x) { return x && x.recordType === 'post' && String(x.code) === code; })[0];
+  if (!root) {
+    var st = items.filter(function (x) { return x && x.recordType === 'status' && clipThreadsCodeOf_(x.url) === code; })[0];
+    return { ok: false, error: st ? 'Threads 找不到這篇（' + st.status + '）' : 'Apify 結果裡找不到這篇（可能是私人帳號、已刪除，或網址打錯）' };
+  }
+  var replies = items.filter(function (x) { return x && x.recordType === 'reply' && String(x.rootPostCode) === code; });
+  var chain = clipThreadsAuthorChain_(code, replies);
+  var per = (apify.summary || []).filter(function (p) { return clipThreadsCodeOf_(p && p.url) === code; })[0];
+  var incomplete = chain.method === 'time' || !!(per && per.capped && !per.exhausted);
+  var info = { author: String(root.authorUsername || ''), posted_at: String(root.timestamp || ''), caption: clipThreadsMerge_(root, chain.rows) };
+  var own = [root].concat(chain.rows);
+  var urls = [];
+  var videos = [];
+  own.forEach(function (x) {
+    if (settings.threads_images) urls = urls.concat(clipThreadsMedia_(x, 'images'));
+    if (settings.threads_videos) videos = videos.concat(clipThreadsMedia_(x, 'videos'));
+  });
+  var out = Object.assign({ ok: false, error: '', media_expected: urls.length, media_saved: 0, drive_folder_id: '', image_ids: '[]', video_saved: '' }, info);
+
+  var folder = clipsFolder_(rec, info.author);
+  out.drive_folder_id = folder.getId();
+  var old = folder.getFiles();
+  while (old.hasNext()) old.next().setTrashed(true);
+
+  var saved = clipSaveImages_(folder, urls);
+  var errors = saved.errors;
+  out.media_saved = saved.ids.length;
+  out.image_ids = JSON.stringify(saved.ids);
+  var notes = incomplete ? [CLIP_THREAD_INCOMPLETE_NOTE] : [];
+  var vids = videos.map(function (u, i) { return clipSaveVideo_(folder, u, i === 0 ? 'video.mp4' : 'video_' + (i < 9 ? '0' : '') + (i + 1) + '.mp4'); });
+  vids.forEach(function (v) { if (v.state === 'failed') errors.push(v.error); });
+  if (vids.some(function (v) { return v.state === 'too_big'; })) notes.push(CLIP_VIDEO_TOO_BIG_NOTE);
+  if (vids.length && vids.every(function (v) { return v.state === 'saved'; })) out.video_saved = 'TRUE';
+
+  var rawOk = false;
+  try {
+    folder.createFile(Utilities.newBlob(JSON.stringify({ post: root, author_thread: chain.rows }, null, 2), 'application/json', 'raw.json'));
+    rawOk = true;
+  } catch (err) { errors.push('raw.json 寫入失敗（' + String(err && err.message || err) + '）'); }
+  try {
+    var md = Object.assign(clipMdInput_(rec, info, saved.names, '', null), { platform: 'Threads', thread: chain.rows.length, incomplete: incomplete });
+    folder.createFile(clipContentBlob_(clipContentMd_(md)));
+  } catch (err) { errors.push('content.md 寫入失敗（' + String(err && err.message || err) + '）'); }
+
+  out.ok = rawOk && !errors.length && out.media_saved === out.media_expected;
+  out.error = errors.length ? errors.join('；') : notes.join('；');
   return out;
 }
 
@@ -576,13 +847,13 @@ function clipVideoUrl_(item) {
 }
 
 /** 下載影片存成 video.mp4（私人，不開分享）。回 { state: 'saved'｜'too_big'｜'failed', error } */
-function clipSaveVideo_(folder, url) {
+function clipSaveVideo_(folder, url, name) {
   if (!url) return { state: 'failed', error: '影片下載失敗（Apify 沒有回影片網址）' };
   var r = clipFetch_(url);
   if (r.error && CLIP_VIDEO_TOO_BIG.test(r.error)) return { state: 'too_big' };
   if (r.status !== 200) return { state: 'failed', error: '影片下載失敗（' + clipHead_(r) + '）' };
   try {
-    folder.createFile(r.res.getBlob().setName('video.mp4'));
+    folder.createFile(r.res.getBlob().setName(name || 'video.mp4'));
     return { state: 'saved' };
   } catch (err) {
     var m = String(err && err.message || err);
@@ -648,6 +919,9 @@ function clipTpe_(v) {
 }
 
 function clipKindLine_(r) {
+  if (r.kind === CLIP_THREADS) {
+    return '貼文' + (r.thread ? '（含作者串文 ' + r.thread + ' 則）' : '') + (r.incomplete ? '，' + CLIP_THREAD_INCOMPLETE_NOTE : '');
+  }
   if (r.kind !== 'reel') return '貼文';
   if (r.video === 'saved') return 'Reels，影片已保存（video.mp4' + (r.video_sec ? '，' + Math.round(r.video_sec) + ' 秒' : '') + '）';
   return r.video === 'too_big' ? 'Reels，' + CLIP_VIDEO_TOO_BIG_NOTE : 'Reels，影片未保存';
@@ -663,7 +937,7 @@ function clipContentMd_(r) {
   return [
     '---',
     '來源: ' + r.url,
-    '平台: Instagram',
+    '平台: ' + (r.platform || 'Instagram'),
     '類型: ' + clipKindLine_(r),
     '作者: ' + (r.author || ''),
     '發文時間: ' + clipTpe_(r.posted_at),
@@ -1402,6 +1676,134 @@ function installClips_() {
 }
 
 /* -------------------------------------------------------------------------- */
+/* 圖書館設定與成本閘門（ADR-027，Neil 2026-11-13）                                   */
+/* -------------------------------------------------------------------------- */
+
+/** 讀設定：沒存過或壞掉的鍵用預設值（IG 都存、Threads 存圖不存影片）。回 { ig_images, ig_videos, threads_images, threads_videos, force_month } */
+function clipsSettings_() {
+  var raw = null;
+  try { raw = JSON.parse(PropertiesService.getScriptProperties().getProperty(CLIPS_SETTINGS_KEY) || 'null'); } catch (err) { raw = null; }
+  var s = {};
+  Object.keys(CLIPS_SETTINGS_DEFAULTS).forEach(function (k) {
+    s[k] = raw && typeof raw[k] === 'boolean' ? raw[k] : CLIPS_SETTINGS_DEFAULTS[k];
+  });
+  s.force_month = raw && typeof raw.force_month === 'string' ? raw.force_month : '';
+  return s;
+}
+
+/** 台北的月份 YYYY-MM */
+function clipsMonth_(d) {
+  return taipeiDateKey_(d instanceof Date ? d : new Date(d)).slice(0, 7);
+}
+
+/** Threads 本月估算用量 { month, usd, posts }；換月就從 0 算 */
+function clipsThreadsUsage_(now) {
+  var month = clipsMonth_(now || new Date());
+  var v = null;
+  try { v = JSON.parse(PropertiesService.getScriptProperties().getProperty(CLIPS_THREADS_USAGE_KEY) || 'null'); } catch (err) { v = null; }
+  if (!v || v.month !== month || typeof v.usd !== 'number') return { month: month, usd: 0, posts: 0 };
+  return { month: month, usd: v.usd, posts: Number(v.posts) || 0 };
+}
+
+function clipsThreadsUsageAdd_(usd, posts, now) {
+  var cur = clipsThreadsUsage_(now);
+  var next = { month: cur.month, usd: Math.round((cur.usd + (Number(usd) || 0)) * 10000) / 10000, posts: cur.posts + (Number(posts) || 0) };
+  try { PropertiesService.getScriptProperties().setProperty(CLIPS_THREADS_USAGE_KEY, JSON.stringify(next)); }
+  catch (err) { console.log('Threads 用量存不了：' + err); }
+  return next;
+}
+
+/**
+ * 成本閘門（D-4，Neil 2026-11-13：達上限兩個都停，給開關強制續抓）。
+ * 本月合計＝max(Apify 帳號本月用量（apifyUsage 每天更新）, Threads 估算)——帳號用量可能含也可能不含按筆計費（未實測），
+ * 取大的才不會低估；IG 部分＝帳號用量－Threads 估算（不小於 0），只給畫面看。
+ * 回 { month, usd, account_usd, threads_usd, ig_usd, cap, over, forced, paused }
+ */
+function clipsCostGate_(now) {
+  now = now || new Date();
+  var month = clipsMonth_(now);
+  var usage = clipsUsage_();
+  var acct = usage && typeof usage.usd === 'number' && usage.at && clipsMonth_(new Date(usage.at)) === month ? usage.usd : 0;
+  var th = clipsThreadsUsage_(now).usd;
+  var total = Math.max(acct, th);
+  var forced = clipsSettings_().force_month === month;
+  var over = total >= CLIPS_USAGE_RED_USD;
+  return { month: month, usd: total, account_usd: acct, threads_usd: th, ig_usd: Math.max(0, Math.round((acct - th) * 10000) / 10000),
+    cap: CLIPS_USAGE_RED_USD, over: over, forced: forced, paused: over && !forced };
+}
+
+/** 暫停時寫一筆 logs：一個月只寫一次 */
+function clipsNotePause_(gate) {
+  var props = PropertiesService.getScriptProperties();
+  try { if (props.getProperty(CLIPS_PAUSED_KEY) === gate.month) return; props.setProperty(CLIPS_PAUSED_KEY, gate.month); } catch (err) { return; }
+  logTransaction_(CLIPS_LOG_SOURCE, '失敗', 'clips', '本月 Apify 達上限，IG 與 Threads 收藏暫停抓取',
+    'US$' + gate.usd.toFixed(2) + '／US$' + gate.cap + '；要續抓請到圖書館設定打開「' + CLIPS_SETTINGS_LABELS.force + '」（會付費）', '', '');
+}
+
+/** 管理者＋feat_clips 才能看／改圖書館設定 */
+function clipsSettingsForbidden_(caller, action) {
+  var forbidden = adminForbidden_(caller, action);
+  if (forbidden) return forbidden;
+  if (canUse_(caller.user, CLIPS_FEATURE)) return null;
+  try { logTransaction_(SETTINGS_LOG_SOURCE, '失敗', action, '沒有「圖書館」功能的權限', '', '', caller.line_id); } catch (err) {}
+  return { error: 'forbidden' };
+}
+
+/** action=clipSettings：設定＋本月成本閘門現況（含 IG／Threads 分開的用量與成功率） */
+function clipSettingsView_(caller) {
+  var forbidden = clipsSettingsForbidden_(caller, 'clipSettings');
+  if (forbidden) return forbidden;
+  return { success: true, settings: clipsSettings_(), gate: clipsCostGate_(new Date()), threads: clipsThreadsUsage_(new Date()) };
+}
+
+/**
+ * action=clipSettingsSet：key＝ig_images｜ig_videos｜threads_images｜threads_videos｜force；value 布林。
+ * force＝true 存「本月」（下個月自動失效），false 清掉。每次切換寫 logs（來源「設定」）
+ */
+function clipSettingsSet_(caller, key, value) {
+  var forbidden = clipsSettingsForbidden_(caller, 'clipSettingsSet');
+  if (forbidden) return forbidden;
+  if (!Object.prototype.hasOwnProperty.call(CLIPS_SETTINGS_LABELS, key)) return { error: 'invalid_key' };
+  if (typeof value !== 'boolean') return { error: 'invalid_value' };
+  var s = clipsSettings_();
+  var month = clipsMonth_(new Date());
+  if (key === 'force') s.force_month = value ? month : '';
+  else s[key] = value;
+  try {
+    PropertiesService.getScriptProperties().setProperty(CLIPS_SETTINGS_KEY, JSON.stringify(s));
+  } catch (err) {
+    try { logTransaction_(SETTINGS_LOG_SOURCE, '失敗', 'clipSettingsSet ' + key, '存不進指令碼屬性', String(err), '', caller.line_id); } catch (e) {}
+    return { error: 'save_failed' };
+  }
+  settingsLog_(caller, 'clipSettingsSet ' + key, CLIPS_SETTINGS_LABELS[key] + '：' + (value ? '開' : '關'), key === 'force' ? '月份 ' + month : '');
+  return { success: true, settings: s, gate: clipsCostGate_(new Date()), threads: clipsThreadsUsage_(new Date()) };
+}
+
+/**
+ * D-3：只存連結、網址是 Threads 單篇貼文或分享短網址的列 → 等待抓取（kind＝threads、pending）。
+ * 只改 kind／status／url／shortcode／attempts／next_try_at／error；閱讀狀態、筆記、分類、AI、收藏時間都保留。
+ * 只跑一次（CLIPS_THREADS_BACKFILL_KEY）；先記旗標再改（比照閱讀狀態重設）。不拿鎖：初始化由 handleInitCommand_ 拿著。
+ * 回 { already, count, flag_failed? }
+ */
+function clipsThreadsBackfill_() {
+  var props = PropertiesService.getScriptProperties();
+  var out = { already: false, count: 0 };
+  if (props.getProperty(CLIPS_THREADS_BACKFILL_KEY)) { out.already = true; return out; }
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CLIPS_SHEET);
+  var t = sheet && sheet.getLastRow() >= 2 ? clipsTable_(sheet) : null;
+  var todo = t ? t.rows.filter(function (x) { return !clipDeleted_(x.rec) && x.rec.kind === CLIP_LINK && clipThreadsParse_(x.rec.url); }) : [];
+  try { props.setProperty(CLIPS_THREADS_BACKFILL_KEY, new Date().toISOString()); }
+  catch (err) { if (todo.length) out.flag_failed = String(err && err.message || err); }
+  if (out.flag_failed) return out;
+  todo.forEach(function (x) {
+    var p = clipThreadsParse_(x.rec.url);
+    clipsWriteRow_(sheet, t.headers, x, { kind: CLIP_THREADS, status: 'pending', url: p.url, shortcode: p.code || '', attempts: 0, next_try_at: '', error: '' });
+    out.count++;
+  });
+  return out;
+}
+
+/* -------------------------------------------------------------------------- */
 /* RD-HF1 補救（「初始化」的兩步，可重複執行）                                         */
 /* -------------------------------------------------------------------------- */
 
@@ -1418,7 +1820,7 @@ function clipsRebuildContentMd_() {
   if (!sheet || sheet.getLastRow() < 2) return out;           // 還沒有收藏：之後收的都已經有 BOM，不用記
   clipsTable_(sheet).rows.forEach(function (x) {
     var r = x.rec;
-    if (clipDeleted_(r) || r.status !== 'done') return;
+    if (clipDeleted_(r) || r.status !== 'done' || r.kind === CLIP_THREADS) return;   // Threads 的 raw.json 形狀不同，且一開始就有 BOM
     try {
       clipsRewriteMd_(r);
       out.fixed++;
@@ -1505,11 +1907,12 @@ function clipApifyUsd_(json) {
 }
 
 /** 近 CLIPS_RATE_DAYS 天（照收藏時間）done ÷ 全部，排除刪除。純函式；沒有收藏 rate＝null */
-function clipsSuccessRate_(rows, nowMs) {
+function clipsSuccessRate_(rows, nowMs, kind) {
   var since = nowMs - CLIPS_RATE_DAYS * 86400000;
   var done = 0, total = 0;
   (rows || []).forEach(function (r) {
     if (clipDeleted_(r) || r.kind === CLIP_LINK) return;     // 只存連結不經過 Apify
+    if (kind && r.kind !== kind) return;                      // ADR-027：Threads 另算一份
     var t = r.collected_at instanceof Date ? r.collected_at.getTime() : Date.parse(String(r.collected_at));
     if (isNaN(t) || t < since) return;
     total++;
@@ -1539,12 +1942,19 @@ function runApifyUsageJob_(now) {
     if (usd === null) error = r.status === 200 ? '回傳裡找不到 current.monthlyUsageUsd' : clipHead_(r);
   }
   var rate = { done: 0, total: 0, rate: null };
+  var rateTh = { done: 0, total: 0, rate: null };
   try {
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CLIPS_SHEET);
-    if (sheet && sheet.getLastRow() >= 2) rate = clipsSuccessRate_(clipsTable_(sheet).rows.map(function (x) { return x.rec; }), nowDate.getTime());
+    var recs = sheet && sheet.getLastRow() >= 2 ? clipsTable_(sheet).rows.map(function (x) { return x.rec; }) : [];
+    if (recs.length) {
+      rate = clipsSuccessRate_(recs, nowDate.getTime());
+      rateTh = clipsSuccessRate_(recs, nowDate.getTime(), CLIP_THREADS);
+    }
   } catch (err) { error = (error ? error + '；' : '') + '讀不到 clips（' + String(err && err.message || err) + '）'; }
   var out = { usd: usd !== null ? usd : (typeof prev.usd === 'number' ? prev.usd : null), at: usd !== null ? at : (prev.at || ''),
-    checked_at: at, error: error, done: rate.done, total: rate.total, rate: rate.rate };
+    checked_at: at, error: error, done: rate.done, total: rate.total, rate: rate.rate,
+    // ADR-027：Threads 的成功率另外記（連續 3 天低於 80% 管理頁提示，不自動停）
+    threads_done: rateTh.done, threads_total: rateTh.total, threads_rate: rateTh.rate };
   try { props.setProperty(CLIPS_USAGE_KEY, JSON.stringify(out)); } catch (err) { console.log('Apify 用量存不了：' + err); }
   logTransaction_(CLIPS_LOG_SOURCE, error ? '失敗' : '成功', 'apifyUsage',
     usd !== null ? 'Apify 本月 US$' + usd.toFixed(2) : 'Apify 本月用量讀不到',
