@@ -30,6 +30,7 @@
 - **短版文字抽成 `clipReportShortText_`**（週五通知與「週報」共用）；手動預覽那一期標「（預覽）」
 - **共用篩選 `notifyGroups_(field)`**：Mail 彙總（`gmailPushDigest_`）與圖書館週報共用；logs 露出群組 id 前 3 碼的 `groupIdShort_` 也共用
 - **「初始化」另開一步「圖書館群組」**（`installClipGroupColumns_`），不併進「欄位」步驟：補欄順序跟在 Mail 的兩欄後面，與 `LINE_GROUPS_HEADERS` 一致
+- **PWA 群組開關（上線後補）**：交棒票原本只靠 Sheet 打勾，但系統設定的群組卡片按鈕是寫死的清單，補上「📚 圖書館收藏」（`cmd_clips`）、「📊 週報推群組」（`notify_clips`）兩顆，走既有 `groupSet`；圖書館空白提示改成指向圖書館群組
 - **新加入群組**：`registerGroup_` 照舊只把 `cmd_expense`／`cmd_tasks`／`cmd_query` 預設開，`cmd_clips`／`notify_clips` 空白＝關
 
 ## 後果
