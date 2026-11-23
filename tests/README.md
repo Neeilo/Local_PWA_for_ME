@@ -126,6 +126,7 @@
 | `adr-024-ocr-probe.test.mjs` | 圖書館（探針） | 文字辨識探針與共用的 clipOcrImage_ |
 | `adr-027-threads.test.mjs` | 圖書館 | Threads 收藏：網址與短網址、轉址與判重、串文合併、圖書館設定、達上限兩個都停與本月強制續抓、初始化補抓 |
 | `adr-027-threads-frontend.test.mjs` | 圖書館 | Threads 來源標籤、「串文可能不完整」、⚙️ 圖書館設定、成本卡分開顯示 |
+| `adr-030-library-group.test.mjs` | 圖書館 | 圖書館群組：群組收藏的門（開 cmd_clips 才收、門不過不回不寫 logs）、一對一只指路、週報推 notify_clips 群組（只推管理者的、沒群組照存）、「週報」關鍵字三種情況、初始化補欄預設關、Mail 群組不變 |
 | `adr-029-due-twice.test.mjs` | 任務／提醒 | 到期提醒一天兩輪：07:00／16:00 時段、延遲只跑一次、不重複推、循環提醒只翻一次、文字同步 |
 | `adr-028-clip-report-frontend.test.mjs` | 圖書館 | 圖書館週報前端：📊 週報分段四種畫面、立即產生、一鍵標已讀（取消勾選、二次確認）、🤖 AI 建議篩選、閱讀頁理由、我的關注、1.0 不變 |
 | `adr-028-clip-report.test.mjs` | 圖書館 | 圖書館週報：週五時段、候選與分組、提示詞與解析、產生一期（不改 read_status）、排程與手動、一鍵標已讀、我的關注 |

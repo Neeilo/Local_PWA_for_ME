@@ -28,6 +28,7 @@ const FEATS = ['feat_tasks', 'feat_notes', 'feat_clips'];
 const USER_H = ['line_id', 'display_name', 'is_active', 'is_admin'].concat(FEATS);
 const LOG_H = ['id', 'ts', 'source', 'status', 'input', 'result', 'detail', 'target_row', 'user_id'];
 const DAY = 86400000;
+const LIB_GROUP = 'Clib';
 /** 2026-11-13（五）20:00 台北 */
 const FRI = new Date(Date.UTC(2026, 10, 13, 12, 0, 0));
 const iso = (ms) => new Date(ms).toISOString();
@@ -43,6 +44,8 @@ function env({ clips = [], ai = null, props = {}, push = null } = {}) {
   const sheets = {
     line_users: new FakeSheet('line_users', [USER_H, [ME, 'Neil', 'TRUE', 'TRUE', 'TRUE', 'TRUE', 'TRUE'], [DAD, '爸爸', 'TRUE', '', 'TRUE', 'TRUE', 'TRUE']]),
     logs: new FakeSheet('logs', [LOG_H]),
+    // ADR-030 D-3：週報推開了 notify_clips 的圖書館群組（不推一對一）
+    line_groups: new FakeSheet('line_groups', [['group_id', 'name', 'is_active', 'left_at', 'cmd_clips', 'notify_clips'], [LIB_GROUP, '圖書館', 'TRUE', '', 'TRUE', 'TRUE']]),
     clips: new FakeSheet('clips', [H].concat(clips.map((c) => H.map((h) => (c[h] == null ? '' : c[h])))))
   };
   const prompts = [];
@@ -223,20 +226,21 @@ describe('排程與手動', () => {
     assert.equal(JSON.parse(sched.summary).new_total, 1, '手動那一期沒有吃掉新收');
   });
 
-  test('排程：週五 19:00 後替每位有 feat_clips 的人跑一次、推 LINE；同一週不重跑', () => {
+  test('排程：週五 19:00 後替每位有 feat_clips 的人跑一次、管理者的推圖書館群組（ADR-030）；同一週不重跑', () => {
     const e = env({ clips: [clip('a'), clip('b')], ai: aiBy({ rec: ['a'], skip: ['b'] }) });
     const r1 = e.call('runClipReportJob_', FRI, { budgetLeft: () => 240000 });
     assert.equal(r1.processed, 2, 'Neil 與爸爸各一份');
-    const mine = e.pushes.find((p) => p.to === ME);
+    assert.deepEqual(e.pushes.map((p) => p.to), [LIB_GROUP], '只推群組、只推管理者的那份');
+    const mine = e.pushes[0];
     assert.match(mine.text, /📊 本週圖書館週報\n⭐ 推薦：\n・標題 a\n🗑️ 可略過 1 篇\n到圖書館 📊 週報看完整內容/);
     e.call('runClipReportJob_', new Date(FRI.getTime() + 600000), { budgetLeft: () => 240000 });
     assert.equal(reports(e).filter((r) => r.type === 'scheduled').length, 2, '同一週不重跑');
   });
 
-  test('排程失敗：LINE 通知、不自動重試', () => {
+  test('排程失敗：LINE 通知（圖書館群組）、不自動重試', () => {
     const e = env({ clips: [clip('a')], ai: () => ({ ok: false, reason: 'HTTP 500', label: 'Gemini' }) });
     e.call('runClipReportJob_', FRI, { budgetLeft: () => 240000 });
-    assert.match(e.pushes.find((p) => p.to === ME).text, /產生失敗（AI 呼叫失敗：HTTP 500）/);
+    assert.match(e.pushes.find((p) => p.to === LIB_GROUP).text, /產生失敗（AI 呼叫失敗：HTTP 500）/);
     e.call('runClipReportJob_', new Date(FRI.getTime() + 600000), { budgetLeft: () => 240000 });
     assert.equal(reports(e).filter((r) => r.line_id === ME).length, 1);
   });

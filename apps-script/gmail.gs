@@ -715,15 +715,13 @@ function gmailDigestLine_(it) {
  * ADR-026 D-7b：成功也記——「推播 ✅ 到 C1f…（群組名）」；失敗「推播 ❌ 到 …（群組名）：原因」。不存訊息內容
  */
 function gmailPushDigest_(text, notes) {
-  var all = readLineGroups_();
+  var all = notifyGroups_('notify_gmail');            // 與圖書館週報共用的篩選（ADR-030 D-3）
   if (!all.ok) { notes.push('讀不到 ' + LINE_GROUPS_SHEET + '，彙總沒有推（' + all.error + '）'); return; }
-  var targets = all.rows.map(function (r) { return r.record; }).filter(function (g) {
-    return truthy_(g.is_active) && truthy_(g.notify_gmail) && !keyValue_(g.left_at);
-  });
+  var targets = all.groups;
   if (!targets.length) { notes.push('沒有開 notify_gmail 的群組，彙總沒有推'); return; }
   targets.forEach(function (g) {
     var id = keyValue_(g.group_id);
-    var who = id.slice(0, 3) + '…（' + (gmailTrim_(g.name) || '群組') + '）';
+    var who = groupIdShort_(id) + '（' + (gmailTrim_(g.name) || '群組') + '）';
     var r = linePush_(id, text);
     notes.push(r.ok ? '推播 ✅ 到 ' + who : '推播 ❌ 到 ' + who + '：' + r.reason);
   });

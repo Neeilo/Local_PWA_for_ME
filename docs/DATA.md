@@ -33,7 +33,7 @@
 | `_module_registry` | 系統 | `module_id` | ✓ | ✓ | — | 021 |
 | `logs` | 系統 | `id` | | | — | 006、014 |
 | `line_users` | 系統 | `line_id` | | | `is_active` | 008 |
-| `line_groups` | 系統 | `group_id` | ✓ | ✓ | `is_active`、`left_at` | 013、014 |
+| `line_groups` | 系統 | `group_id` | ✓ | ✓ | `is_active`、`left_at` | 013、014、030 |
 | `line_devices` | 系統 | `device_id` | ✓ | ✓ | `revoked_at` | 010 |
 | `performance` | 系統 | `id` | ✓ | ✓ | — | 012、014 |
 | `_expense_config` | 系統 | `kind`＋`name` | ✓ | | `is_active` | 013 |
@@ -133,8 +133,9 @@
 - **讀取者**：GAS 閘門（有 5 分鐘快取）、PWA（管理者的成員與權限頁）。
 
 ### `line_groups`
-- **用途**：bot 加入過的 LINE 群組：啟用、開放哪些指令、要不要推到期提醒與郵件摘要。
-- **主要欄位**：`group_id`、`name`、`is_active`、`cmd_expense`、`cmd_tasks`、`cmd_query`、`cmd_gmail`、`notify_due`、`notify_gmail`、`joined_at`、`left_at`、`created_at`、`updated_at`。
+- **用途**：bot 加入過的 LINE 群組：啟用、開放哪些指令、要不要推到期提醒、郵件摘要與圖書館週報。
+- **主要欄位**：`group_id`、`name`、`is_active`、`cmd_expense`、`cmd_tasks`、`cmd_query`、`cmd_gmail`、`cmd_clips`、`notify_due`、`notify_gmail`、`notify_clips`、`joined_at`、`left_at`、`created_at`、`updated_at`。
+- **預設值**：新列 `cmd_expense`／`cmd_tasks`／`cmd_query` 為 TRUE；`notify_due`、`cmd_clips`、`notify_clips`（ADR-030，圖書館群組收藏與週報）一律空白＝關，「初始化」補欄也不會打開。
 - **專用寫入路徑**：GAS（join／leave 事件、群組第一次下指令時建列）；管理者在 App 用 `groupSet` 或直接在 Sheet 上改。
 
 ### `line_devices`

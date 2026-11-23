@@ -25,6 +25,10 @@ const USER_H = ['line_id', 'display_name', 'is_active', 'is_admin'].concat(FEATS
 const LOG_H = ['id', 'ts', 'source', 'status', 'input', 'result', 'detail', 'target_row', 'user_id'];
 const P1 = 'https://www.instagram.com/p/AAA111/';
 
+// ADR-030：收藏只在開了 cmd_clips 的圖書館群組收（修訂 ADR-020 B-1 的「只在一對一」）
+const LIB_GROUP = 'Clib';
+const libGroups = () => new FakeSheet('line_groups', [['group_id', 'name', 'is_active', 'left_at', 'cmd_clips', 'notify_clips'], [LIB_GROUP, '圖書館', 'TRUE', '', 'TRUE', 'TRUE']]);
+
 function env({ ai = null, clipsRows = null, headers = null } = {}) {
   const replies = [];
   const prompts = [];
@@ -34,7 +38,8 @@ function env({ ai = null, clipsRows = null, headers = null } = {}) {
       [DAD, '爸爸', 'TRUE', '', 'TRUE', 'TRUE', 'TRUE', 'TRUE'],
       [MOM, '媽媽', 'TRUE', '', 'TRUE', 'TRUE', '', 'TRUE']]),
     tasks: new FakeSheet('tasks', [['id', 'text', 'priority', 'is_completed', 'line_id', 'kind', 'due_date', 'created_at', 'origin_chat', 'del']]),
-    logs: new FakeSheet('logs', [LOG_H])
+    logs: new FakeSheet('logs', [LOG_H]),
+    line_groups: libGroups()
   };
   if (headers) sheets.clips = new FakeSheet('clips', [headers]);
   const e = loadCodeGs({
@@ -58,7 +63,8 @@ const clip = (extra = {}) => Object.assign({ id: 'c1', line_id: ME, url: P1, sho
 const rows = (e) => e.sheets.clips.toRecords();
 const post = (e, body, tok = TOK_ME) => JSON.parse(e.call('handlePwaSync_', { postData: { contents: JSON.stringify(Object.assign({ token: tok, trigger: 'write' }, body)) } }).body);
 const DM = (userId = ME) => ({ type: 'user', userId });
-const say = (e, text, source = DM()) => e.call('handleLineEvent_', { type: 'message', replyToken: 'rt', source, message: { type: 'text', text } });
+const LIB = (userId = ME) => ({ type: 'group', groupId: LIB_GROUP, userId });
+const say = (e, text, source = LIB()) => e.call('handleLineEvent_', { type: 'message', replyToken: 'rt', source, message: { type: 'text', text } });
 
 /* ========================================================================== */
 describe('筆記（D-10）：一篇一份、revision 比對', () => {
@@ -177,7 +183,7 @@ describe('AI 整理（D-11）：另存、不覆蓋', () => {
 
 /* ========================================================================== */
 describe('非 IG 網址：只存連結（D-12）', () => {
-  test('LINE 一對一貼一般網址：登記成「只存連結」、回「收到 ✅」、不進 Apify 佇列', () => {
+  test('LINE 圖書館群組貼一般網址：登記成「只存連結」、回「收到 ✅」、不進 Apify 佇列（ADR-030 起只在群組收）', () => {
     const e = env();
     say(e, '這篇不錯 https://example.com/post/1?a=b。');
     assert.equal(e.replies.at(-1), '收到 ✅');
@@ -214,7 +220,7 @@ describe('非 IG 網址：只存連結（D-12）', () => {
 
   test('「記帳/…」內容含網址：照舊走記帳，不收藏；沒有 feat_clips：照舊回看不懂', () => {
     const e = env();
-    say(e, '任務/讀 https://example.com/x');
+    say(e, '任務/讀 https://example.com/x', DM());
     assert.equal(rows(e).length, 0);
     assert.equal(e.sheets.tasks.toRecords().length, 1);
     say(e, 'https://example.com/x', DM(MOM));

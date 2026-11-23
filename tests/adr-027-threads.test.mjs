@@ -141,6 +141,10 @@ function drive() {
   };
 }
 
+// ADR-030：收藏只在開了 cmd_clips 的圖書館群組收（修訂 ADR-020 B-1 的「只在一對一」）
+const LIB_GROUP = 'Clib';
+const libGroups = () => new FakeSheet('line_groups', [['group_id', 'name', 'is_active', 'left_at', 'cmd_clips', 'notify_clips'], [LIB_GROUP, '圖書館', 'TRUE', '', 'TRUE', 'TRUE']]);
+
 function env(opts = {}) {
   const n = net(opts);
   const d = drive();
@@ -150,7 +154,8 @@ function env(opts = {}) {
       [ME, 'Neil', 'TRUE', 'TRUE', 'TRUE', 'TRUE', 'TRUE'],
       [DAD, '爸爸', 'TRUE', '', 'TRUE', 'TRUE', 'TRUE']]),
     tasks: new FakeSheet('tasks', [['id', 'text', 'priority', 'is_completed', 'line_id', 'kind', 'due_date', 'created_at', 'origin_chat', 'del']]),
-    logs: new FakeSheet('logs', [LOG_H])
+    logs: new FakeSheet('logs', [LOG_H]),
+    line_groups: libGroups()
   };
   const e = loadCodeGs({
     cache: true, propsWritable: true, extraFiles: ['line-router.gs', 'sheet-guide.gs', 'lab-clip.gs'],
@@ -164,7 +169,8 @@ function env(opts = {}) {
 }
 
 const DM = (userId = ME) => ({ type: 'user', userId });
-const say = (e, text, source = DM()) => e.call('handleLineEvent_', { type: 'message', replyToken: 'rt', source, message: { type: 'text', text } });
+const LIB = (userId = ME) => ({ type: 'group', groupId: LIB_GROUP, userId });
+const say = (e, text, source = LIB()) => e.call('handleLineEvent_', { type: 'message', replyToken: 'rt', source, message: { type: 'text', text } });
 const rows = (e) => e.sheets.clips.toRecords();
 const live = (e) => rows(e).filter((r) => String(r.del).toUpperCase() !== 'TRUE');
 const NOW = new Date(Date.UTC(2026, 10, 13, 4, 0, 0));
@@ -192,7 +198,7 @@ describe('網址辨識與登記（webhook 只登記、不打外部）', () => {
     assert.deepEqual(rows(e).map((r) => r.kind), ['link', 'link']);
   });
 
-  test('LINE 一對一貼短網址：一列 pending、回「收到 ✅」、不打外部；群組貼不收', () => {
+  test('LINE 圖書館群組貼短網址：一列 pending、回「收到 ✅」、不打外部；沒開 cmd_clips 的群組貼不收（ADR-030）', () => {
     const e = env();
     say(e, '這篇 ' + SHARE_A);
     assert.equal(e.replies.at(-1), '收到 ✅');

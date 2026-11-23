@@ -488,22 +488,24 @@ function clipRegisterResult_(found) {
 }
 
 /**
- * 一對一聊天、「不屬於任何指令」的訊息（routeLineMessage_ 查不到前綴才會到這裡）。
- * 本人有 feat_clips：IG 貼文一篇寫一列 pending；其他網址（含 Threads／FB／X）只存連結（ADR-021 D-12）；回「收到 ✅」。
- * 沒有網址回 null，交回原本的「看不懂這個指令」。白名單已由 handleLineEvent_ 的 writeGate_ 把關。
+ * 圖書館群組裡、「不屬於任何指令」的訊息（ADR-030：groupClipReply_ 過了群組與白名單的門才會到這裡；
+ * ADR-020 B-1 原本是一對一，ADR-030 D-1 改為只在群組）。收藏擁有者＝發話者。
+ * 本人有 feat_clips：IG／Threads 貼文一篇寫一列 pending；其他網址（FB／X…）只存連結（ADR-021 D-12）；回「收到 ✅」。
+ * 沒有 feat_clips 或沒有網址回 null（群組裡就是不回）。logs 的 detail 另記群組 id 前 3 碼
  */
-function clipLineReply_(text, userId) {
+function clipLineReply_(text, userId, chatId) {
   if (!canUse_(lineUserById_(userId), CLIPS_FEATURE)) return null;
   var found = clipFoundIn_(text);
   if (!found.length) return null;
+  var where = chatId ? 'group=' + groupIdShort_(chatId) + '｜' : '';
   try {
     var rowNumber = clipsRegister_(String(userId || '').trim(), text, found);
     logTransaction_(CLIPS_LOG_SOURCE, '成功', text, clipRegisterResult_(found),
-      found.map(function (f) { return f.url; }).join('、'), rowNumber, userId);
+      where + found.map(function (f) { return f.url; }).join('、'), rowNumber, userId);
     return found.length === 1 ? '收到 ✅' : '收到 ✅（' + found.length + ' 篇）';
   } catch (err) {
     console.log('收藏登記失敗：' + err);
-    logTransaction_(CLIPS_LOG_SOURCE, '失敗', text, '登記失敗', String(err && err.stack || err), '', userId);
+    logTransaction_(CLIPS_LOG_SOURCE, '失敗', text, '登記失敗', where + String(err && err.stack || err), '', userId);
     return '收藏登記失敗了：' + (err && err.message || err);
   }
 }

@@ -15,7 +15,7 @@
 | `modules.gs` | 模組登記表 `_module_registry` 與總開關 `moduleOn_`、`moduleSet_` | 模組總開關 |
 | `widgets.gs` | 2.0 總覽個人設定 `widget_config`、天氣 | Widget、天氣 |
 | `clips.gs` | 收藏搜集、圖書館（筆記、分類、閱讀狀態、AI 整理、文字辨識、AI 辨識） | 圖書館 |
-| `clip-report.gs` | 圖書館週報（候選挑選、提示詞、解析、數字總覽、排程、LINE 提醒、一鍵標已讀、我的關注；ADR-028） | 圖書館 |
+| `clip-report.gs` | 圖書館週報（候選挑選、提示詞、解析、數字總覽、排程、LINE 提醒推圖書館群組、「週報」關鍵字、一鍵標已讀、我的關注；ADR-028、ADR-030） | 圖書館 |
 | `search.gs` | 按需關鍵字搜尋 `search_` | 搜尋 |
 | `stock.gs` | 股票報價、持股、交易把關、提醒規則、再平衡、LINE 股票指令 | 股票 |
 | `gmail.gs` | Gmail 控制員、規則、封存（預設預演）、整理報告、即時內文 | 郵件 |
@@ -57,7 +57,7 @@
 | 欄位 | 內容 |
 |---|---|
 | 用途 | 讓家人在 LINE 一對一或群組裡快速記錄、查詢、管理 |
-| 負責範圍 | Webhook 分流、前綴路由（`ROUTE_TABLE`：任務、提醒、記帳、收入、幫我記）、股票前綴、「查/」AI 查詢、「分類」、「初始化」、指令字典「?」、IG 網址收藏登記、Quick Reply 按鈕（postback）、群組加入／離開、群組指令開關、logs |
+| 負責範圍 | Webhook 分流、前綴路由（`ROUTE_TABLE`：任務、提醒、記帳、收入、幫我記）、股票前綴、「查/」AI 查詢、「分類」、「初始化」、指令字典「?」、圖書館群組的網址收藏登記與「週報」（ADR-030；一對一只回指路）、Quick Reply 按鈕（postback）、群組加入／離開、群組指令開關、logs |
 | 不負責的事 | 各分頁的資料規則（由寫入的模組負責）；LINE 簽章驗證（Apps Script 讀不到 HTTP 標頭，見「已知限制」） |
 | 前端入口 | 無（PWA 端只有「📖 指令字典（ADR-018 B-3）」與「📣 群組推播（ADR-014 D-19）」兩個相關畫面） |
 | 後端入口 | `line-router.gs`：`doPost` → `handleLineWebhook_` → `runLineEvent_` → `handleLineEvent_` → `routeLineMessage_`／`groupMessageReply_`；`recordRoute_`、`appendToSheet_`、`handleQuery_`、`handleInitCommand_`、`initSteps_`、`COMMANDS`、`lineReply_`、`linePush_`、`logTransaction_` |
@@ -202,7 +202,7 @@
 | 外部服務 | Apify（IG 擷取；Threads 用 `architekture~threads-replies-scraper`，按筆計費）、threads.com（分享短網址轉址）、圖片下載、Drive API（文字辨識）、AI 供應商（AI 整理、AI 辨識）；探針另用 Jina |
 | 主要副作用 | 寫 `clips`；在 Drive 建資料夾、存圖片與原始檔；文字辨識建暫存文件後永久刪除；寫 logs |
 | 相關測試檔 | `adr-020-clips.test.mjs`、`adr-020-clips-frontend.test.mjs`、`adr-021-library-e.test.mjs`、`adr-021-library-e-frontend.test.mjs`、`adr-023-library-categories.test.mjs`、`adr-023-library-categories-frontend.test.mjs`、`adr-024-clip-ocr.test.mjs`、`adr-024-clip-ocr-frontend.test.mjs`、`adr-024-clip-vision.test.mjs`、`adr-024-clip-vision-frontend.test.mjs`、`adr-024-clip-ai-recog.test.mjs`、`adr-024-ocr-probe.test.mjs`、`adr-025-read-state.test.mjs`、`adr-025-read-state-frontend.test.mjs`、`clip-ocr-auto.test.mjs`、`rd-clip-probe.test.mjs`、`adr-027-threads.test.mjs`、`adr-027-threads-frontend.test.mjs`、`adr-027-threads-probe.test.mjs`、`adr-028-clip-report.test.mjs`、`adr-028-clip-report-frontend.test.mjs` |
-| 相關 ADR | 收藏搜集器（ADR-020）；圖書館閱讀、筆記 revision、AI 整理（ADR-021）；分類（ADR-023）；圖片辨識（ADR-024）；閱讀狀態（ADR-025）；Threads 收藏、圖書館設定、成本上限兩個都停（ADR-027）；圖書館週報（ADR-028） |
+| 相關 ADR | 收藏搜集器（ADR-020）；圖書館閱讀、筆記 revision、AI 整理（ADR-021）；分類（ADR-023）；圖片辨識（ADR-024）；閱讀狀態（ADR-025）；Threads 收藏、圖書館設定、成本上限兩個都停（ADR-027）；圖書館週報（ADR-028）；圖書館群組：收藏與週報搬進 LINE 群組（ADR-030） |
 | 已知限制 | `lab-clip.gs` 實驗探針目前隨正式版部署；文字辨識一張圖 3 個 Drive 請求，暫存刪不掉時要人工到 Drive 搜 `tmp_ocr_` |
 
 ### 11. 郵件

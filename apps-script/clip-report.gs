@@ -5,7 +5,8 @@
 /*
  * 每週五 19:00（台北）後，排程總管替每位有 feat_clips 的人產生一期週報：
  *   候選（本人、收齊、未刪、未讀或閱讀中）分成 🆕 本週新收＋📦 舊庫存一批 → 送 AI（照設定頁那一家，失敗不換家）
- *   → 每篇給 ⭐ 推薦／😐 普通／🗑️ 可略過＋一句理由 → 存 clip_reports 一列＋clips 的 report_* 欄 → LINE 短提醒。
+ *   → 每篇給 ⭐ 推薦／😐 普通／🗑️ 可略過＋一句理由 → 存 clip_reports 一列＋clips 的 report_* 欄 → LINE 短提醒
+ *   （ADR-030 起推圖書館群組、不推一對一；群組裡打「週報」回最近一期短版）。
  * 另有「📊 立即產生」（手動＝預覽：一樣寫一期、更新各篇判斷，但不推進期間訖、不推 LINE）。
  *
  *  - AI 只建議、不動手：產生週報不改任何 read_status；標已讀只有本人按 clipMarkRead
@@ -392,40 +393,85 @@ function runClipReportJob_(now, ctx) {
   return { processed: processed, week: slot.key, left: todo.length - processed };
 }
 
-/** LINE 一對一短提醒（D-6）；失敗通知（D-8）。推播成敗寫 logs */
-function clipReportNotify_(lineId, out) {
-  var text;
-  if (!out.ok) {
-    text = '📊 本週圖書館週報產生失敗（' + (out.error || '原因不明') + '），可到圖書館 📊 週報手動重跑';
+/**
+ * 週報短版的文字（週五通知與「週報」關鍵字共用，ADR-030 D-5）。純函式：byId 是 clips 的 id → 列（標題用）。
+ * 失敗的一期回失敗通知；手動那一期（預覽）標「（預覽）」
+ */
+function clipReportShortText_(out, byId) {
+  if (!out.ok) return '📊 本週圖書館週報產生失敗（' + (out.error || '原因不明') + '），可到圖書館 📊 週報手動重跑';
+  var r = out.report;
+  var title = '📊 本週圖書館週報' + (r.type === 'manual' ? '（預覽）' : '');
+  var rec = clipReportJson_(r.recommended, []);
+  var skip = clipReportJson_(r.skippable, []);
+  var sum = clipReportJson_(r.summary, {});
+  if (!rec.length && !skip.length && !sum.new_total && !(sum.unread + sum.reading)) return title + '：沒有待讀的收藏 🎉';
+  var lines = [title];
+  if (rec.length) {
+    lines.push('⭐ 推薦：');
+    rec.forEach(function (x) { if (byId[x.id]) lines.push('・' + clipReportTitle_(byId[x.id])); });
   } else {
-    var r = out.report;
-    var rec = clipReportJson_(r.recommended, []);
-    var skip = clipReportJson_(r.skippable, []);
-    var byId = {};
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CLIPS_SHEET);
-    if (sheet && sheet.getLastRow() >= 2) clipsTable_(sheet).rows.forEach(function (x) { byId[String(x.rec.id)] = x.rec; });
-    var sum = clipReportJson_(r.summary, {});
-    if (!rec.length && !skip.length && !sum.new_total && !(sum.unread + sum.reading)) {
-      text = '📊 本週圖書館週報：沒有待讀的收藏 🎉';
-    } else {
-      var lines = ['📊 本週圖書館週報'];
-      if (rec.length) {
-        lines.push('⭐ 推薦：');
-        rec.forEach(function (x) { if (byId[x.id]) lines.push('・' + clipReportTitle_(byId[x.id])); });
-      } else {
-        lines.push('這週沒有特別推薦的');
-      }
-      if (skip.length) lines.push('🗑️ 可略過 ' + skip.length + ' 篇');
-      lines.push('到圖書館 📊 週報看完整內容');
-      text = lines.join('\n');
-    }
+    lines.push('這週沒有特別推薦的');
   }
-  var res = { ok: false, reason: 'no_push' };
-  try { res = linePush_(lineId, text) || res; } catch (err) { res = { ok: false, reason: String(err && err.message || err) }; }
-  try {
-    logTransaction_('推播', res.ok ? '成功' : '失敗', 'clipReport', res.ok ? '週報提醒已送出' : '週報提醒沒送出：' + (res.reason || ''), '', '', lineId);
-  } catch (err) {}
-  return res;
+  if (skip.length) lines.push('🗑️ 可略過 ' + skip.length + ' 篇');
+  lines.push('到圖書館 📊 週報看完整內容');
+  return lines.join('\n');
+}
+
+/** clips 的 id → 列（短版文字的標題用） */
+function clipsById_() {
+  var byId = {};
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CLIPS_SHEET);
+  if (sheet && sheet.getLastRow() >= 2) clipsTable_(sheet).rows.forEach(function (x) { byId[String(x.rec.id)] = x.rec; });
+  return byId;
+}
+
+/**
+ * 週報短提醒與失敗通知（D-6、D-8），ADR-030 D-3 起推「圖書館群組」（啟用＋notify_clips＋bot 沒離開），不推一對一。
+ * 群組是多人共用的，LINE 查不到「週報擁有者在不在這個群組」→ 只有擁有者是管理者（is_admin）的週報才推群組；
+ * 其他人的週報照常存、不推，寫 logs 說明。沒有可推的群組也照常存、寫 logs。每個群組推播成敗各寫一筆（不存訊息內容）
+ */
+function clipReportNotify_(lineId, out) {
+  var log = function (ok, result) {
+    try { logTransaction_('推播', ok ? '成功' : '失敗', 'clipReport', result, '', '', lineId); } catch (err) {}
+  };
+  if (!truthy_((lineUserById_(lineId) || {}).is_admin)) {
+    log(false, '週報沒有推：擁有者不是管理者，圖書館群組只推管理者的週報');
+    return { ok: false, reason: 'not_admin', sent: 0 };
+  }
+  var targets = notifyGroups_('notify_clips');
+  if (!targets.ok) { log(false, '讀不到 ' + LINE_GROUPS_SHEET + '，週報沒有推（' + targets.error + '）'); return { ok: false, reason: 'read_failed', sent: 0 }; }
+  if (!targets.groups.length) { log(false, '沒有開 notify_clips 的群組，沒有推'); return { ok: false, reason: 'no_group', sent: 0 }; }
+  var text = clipReportShortText_(out, out.ok ? clipsById_() : {});
+  var sent = 0;
+  targets.groups.forEach(function (g) {
+    var id = keyValue_(g.group_id);
+    var who = groupIdShort_(id) + '（' + (String(g.name || '').trim() || '群組') + '）';
+    var res;
+    try { res = linePush_(id, text) || { ok: false, reason: 'no_push' }; } catch (err) { res = { ok: false, reason: String(err && err.message || err) }; }
+    if (res.ok) sent++;
+    log(res.ok, res.ok ? '週報提醒已送到 ' + who : '週報提醒沒送到 ' + who + '：' + (res.reason || ''));
+  });
+  return { ok: sent > 0, sent: sent };
+}
+
+/**
+ * 群組裡的「週報」（ADR-030 D-5）：回發話者本人最近一期 status＝ok 的週報短版（手動預覽也算，標「（預覽）」）。
+ * 用 reply、不 push、不呼叫 AI。群組門（cmd_clips、白名單）由 groupGate_ 把關，這裡驗 feat_clips。查詢寫 logs
+ */
+function clipReportReply_(text, userId) {
+  var me = String(userId || '').trim();
+  if (!canUse_(lineUserById_(me), CLIPS_FEATURE)) {
+    var label = FEATURE_LABEL[CLIPS_FEATURE] || CLIPS_FEATURE;
+    logTransaction_(CLIP_REPORT_LOG_SOURCE, '失敗', text, '沒有「' + label + '」功能的權限', 'code=forbidden｜' + CLIPS_FEATURE, '', me);
+    return '你沒有「' + label + '」功能的權限。\n需要的話請管理者到 App 的「成員與權限」打開。';
+  }
+  var latest = clipReportsOf_(me).filter(function (r) { return String(r.status || '') === 'ok'; })[0];
+  if (!latest) {
+    logTransaction_(CLIP_REPORT_LOG_SOURCE, '成功', text, '週報查詢：還沒有成功的週報', '', '', me);
+    return '還沒有週報，週五 19:00 見 📊';
+  }
+  logTransaction_(CLIP_REPORT_LOG_SOURCE, '成功', text, '週報查詢：回最近一期短版', String(latest.id), '', me);
+  return clipReportShortText_({ ok: true, report: latest }, clipsById_());
 }
 
 /* -------------------------------------------------------------------------- */

@@ -122,6 +122,10 @@ function drive() {
   };
 }
 
+// ADR-030：收藏只在開了 cmd_clips 的圖書館群組收（修訂 ADR-020 B-1 的「只在一對一」）
+const LIB_GROUP = 'Clib';
+const libGroups = () => new FakeSheet('line_groups', [['group_id', 'name', 'is_active', 'left_at', 'cmd_clips', 'notify_clips'], [LIB_GROUP, '圖書館', 'TRUE', '', 'TRUE', 'TRUE']]);
+
 function env({ items = {}, fail = [], big = [], limits = null, users = null, clips = null, props = {} } = {}) {
   const n = net({ items, fail, big, limits });
   const d = drive();
@@ -132,7 +136,8 @@ function env({ items = {}, fail = [], big = [], limits = null, users = null, cli
       [MOM, '媽媽', 'TRUE', '', 'TRUE', 'TRUE', ''],
       [DAD, '爸爸', 'TRUE', '', 'TRUE', 'TRUE', 'TRUE']]),
     tasks: new FakeSheet('tasks', [['id', 'text', 'priority', 'is_completed', 'line_id', 'kind', 'due_date', 'created_at', 'origin_chat', 'del']]),
-    logs: new FakeSheet('logs', [LOG_H])
+    logs: new FakeSheet('logs', [LOG_H]),
+    line_groups: libGroups()
   };
   if (clips) sheets.clips = clips;
   const e = loadCodeGs({
@@ -147,7 +152,8 @@ function env({ items = {}, fail = [], big = [], limits = null, users = null, cli
 }
 
 const DM = (userId = ME) => ({ type: 'user', userId });
-const say = (e, text, source = DM()) => e.call('handleLineEvent_', { type: 'message', replyToken: 'rt', source, message: { type: 'text', text } });
+const LIB = (userId = ME) => ({ type: 'group', groupId: LIB_GROUP, userId });
+const say = (e, text, source = LIB()) => e.call('handleLineEvent_', { type: 'message', replyToken: 'rt', source, message: { type: 'text', text } });
 const rows = (e) => e.sheets.clips.toRecords();
 const live = (e) => rows(e).filter((r) => String(r.del).toUpperCase() !== 'TRUE');
 const run = (e, now = new Date(), budget = 240000) => e.call('runClipsJob_', now, { budgetLeft: () => budget });
@@ -186,7 +192,7 @@ describe('抽網址（純函式）', () => {
 /* ========================================================================== */
 describe('LINE 登記（webhook 只登記、不抓取）', () => {
 
-  test('一對一＋有 feat_clips：寫一列 pending、回「收到 ✅」；不呼叫 Apify', () => {
+  test('圖書館群組＋有 feat_clips：寫一列 pending、回「收到 ✅」；不呼叫 Apify（ADR-030 起只在群組收）', () => {
     const e = env();
     say(e, '這篇好 ' + P1 + '?igsh=abc');
     assert.equal(e.replies.at(-1), '收到 ✅');
@@ -218,17 +224,19 @@ describe('LINE 登記（webhook 只登記、不抓取）', () => {
     assert.equal(rows(e).length, 2);
   });
 
-  test('群組貼 IG 網址：不登記、不回覆', () => {
+  test('沒開 cmd_clips 的群組貼 IG 網址：不登記、不回覆', () => {
     const e = env();
     say(e, P1, { type: 'group', groupId: 'Cfam', userId: ME });
     assert.equal(rows(e).length, 0);
     assert.ok(!e.replies.some((t) => /收到 ✅/.test(String(t))));
   });
 
-  test('沒有 feat_clips：不登記，照舊回「看不懂這個指令」', () => {
+  test('沒有 feat_clips：群組裡不登記、不回；一對一照舊回「看不懂這個指令」', () => {
     const e = env();
-    say(e, P1, DM(MOM));
+    say(e, P1, LIB(MOM));
     assert.equal(rows(e).length, 0);
+    assert.equal(e.replies.length, 0);
+    say(e, P1, DM(MOM));
     assert.match(e.replies.at(-1), /看不懂這個指令/);
   });
 
@@ -242,16 +250,16 @@ describe('LINE 登記（webhook 只登記、不抓取）', () => {
 
   test('既有指令先走：「任務/」內容夾 IG 網址照樣建任務，不收藏', () => {
     const e = env();
-    say(e, '任務/看完 ' + P1);
+    say(e, '任務/看完 ' + P1, DM());
     assert.equal(rows(e).length, 0);
     assert.equal(e.sheets.tasks.toRecords().length, 1);
   });
 
-  test('指令字典：有 feat_clips 的人看得到「（傳 IG 網址）」，沒有的看不到', () => {
+  test('指令字典：圖書館群組裡有 feat_clips 的人看得到「（傳 IG 網址）」，沒有的看不到', () => {
     const e = env();
     say(e, '?');
     assert.match(e.replies.at(-1), /傳 IG 網址/);
-    say(e, '?', DM(MOM));
+    say(e, '?', LIB(MOM));
     assert.doesNotMatch(e.replies.at(-1), /傳 IG 網址/);
   });
 });
@@ -504,7 +512,7 @@ describe('PWA：讀只看自己的，寫只限擁有者', () => {
   function seeded() {
     const e = env();
     say(e, P1);
-    say(e, P2, DM(DAD));
+    say(e, P2, LIB(DAD));
     return e;
   }
 
