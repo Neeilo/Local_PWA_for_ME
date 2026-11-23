@@ -4322,7 +4322,7 @@ function planAdjust_(caller, body) {
 /* ========================================================================== */
 
 var SETTINGS_LOG_SOURCE = '設定';
-var GROUP_SET_FIELDS = ['is_active', 'cmd_expense', 'cmd_tasks', 'cmd_query', 'notify_due', 'notify_gmail'];
+var GROUP_SET_FIELDS = ['is_active', 'cmd_expense', 'cmd_tasks', 'cmd_query', 'notify_due', 'notify_gmail', 'cmd_clips', 'notify_clips'];
 var CONFIG_SET_FIELDS = ['is_active', 'color', 'targets', 'aliases', 'sort'];
 var CONFIG_KINDS = ['category', 'sub', 'target'];
 var CONFIG_NAME_MAX = 20;

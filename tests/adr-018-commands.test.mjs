@@ -84,9 +84,10 @@ describe('登記表跟真的路由對齊（新增指令沒登記 → 紅燈）',
       assert.equal(c.scope, 'both', prefix);
       assert.equal(c.groupCmd, cmd, prefix);
     }
-    // 反過來：登記成群組能用、又有 groupCmd 的，路由也真的放行（分類走 groupCommandOf_ 的特例）
-    for (const c of cmds.filter((x) => x.groupCmd)) {
-      const sample = c.key === '分類' ? '分類' : c.key + '/x';
+    // 反過來：登記成群組能用、又有 groupCmd 的，路由也真的放行（分類、週報是整句指令，走 groupCommandOf_ 的特例）
+    // 「（傳 IG 網址）」不是前綴：群組裡由 groupClipReply_ 看 cmd_clips（ADR-030，見 adr-030-library-group）
+    for (const c of cmds.filter((x) => x.groupCmd && x.key !== e.read('CLIP_COMMAND_KEY'))) {
+      const sample = c.key === '分類' || c.key === '週報' ? c.key : c.key + '/x';
       assert.equal(e.call('groupCommandOf_', sample), c.groupCmd, c.key);
     }
     for (const k of e.read('Object.keys(STOCK_PREFIXES)')) assert.equal(cmds.find((x) => x.key === k).scope, 'private');

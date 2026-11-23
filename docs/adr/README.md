@@ -1,6 +1,6 @@
 # ADR 索引與治理規則
 
-> ADR（Architecture Decision Record）記錄「為什麼這樣做」。程式註解常寫「ADR-019 B-4」「D-8」這種編號，查它屬於哪一份決策就看這裡。狀態截至 2026-11-11。
+> ADR（Architecture Decision Record）記錄「為什麼這樣做」。程式註解常寫「ADR-019 B-4」「D-8」這種編號，查它屬於哪一份決策就看這裡。狀態截至 2026-11-23。
 
 ## 治理規則（2026-11-11 決議）
 
@@ -32,15 +32,16 @@
 | ADR-017 | AI 供應商切換 | 現行 |
 | ADR-018 | 減法與速度：提醒與待辦分家、首頁三層、等待畫面 | 現行（1.0 首頁） |
 | ADR-019 | 自用地基：佇列上限、upsert 鎖、白板只改自己的、排程總管、效能紀錄單一寫入者、到期卡片、PR CI | 現行；開機速度與自適應輪詢待議 |
-| ADR-020 | 閱讀收藏搜集器 | 現行 |
+| ADR-020 | 閱讀收藏搜集器 | 現行；B-1「收藏只在一對一」被 ADR-030 修訂為只在圖書館群組 |
 | ADR-021 | NeilOS 2.0：Shell、Widget、Apps、圖書館、搜尋、模組總開關 | 試營運中；保留切回 1.0 |
 | ADR-022 | API 成本與外部呼叫唯一出口 `callApi_` | 現行 |
 | ADR-023 | 2.0 試營運第一輪調整 | 現行 |
 | ADR-024 | 圖書館圖片辨識（文字辨識與 AI 辨識） | 現行 |
 | ADR-025 | 圖書館閱讀狀態 | 現行；logs 規則被 ADR-026 修訂 |
 | ADR-026 | Mail 整理 v2 與 logs 補齊 | 現行；正式封存開關只由專案擁有者在 App 開啟 |
+| ADR-030 | 圖書館群組：收藏與週報搬進專屬 LINE 群組（`cmd_clips`／`notify_clips`、「週報」關鍵字） | 現行，正文 [030-library-group.md](030-library-group.md)；修訂 ADR-020 B-1、ADR-028 D-6 |
 | ADR-029 | 到期提醒一天兩輪：07:00 主推＋16:00 補推 | 現行，正文 [029-due-twice.md](029-due-twice.md)；修訂 ADR-019 的重推時間（隔天 9 點 → 07:00）；重申 ADR-009 只推一次 |
-| ADR-028 | 圖書館週報：每週五 AI 挑推薦＋可略過清單、一鍵標已讀、我的關注 | 現行，正文 [028-clip-report.md](028-clip-report.md) |
+| ADR-028 | 圖書館週報：每週五 AI 挑推薦＋可略過清單、一鍵標已讀、我的關注 | 現行，正文 [028-clip-report.md](028-clip-report.md)；D-6「推一對一」被 ADR-030 修訂為推圖書館群組 |
 | ADR-027 | 圖書館 Threads 收藏：比照 IG 收齊＋作者串文合併；圖書館設定；Apify 上限兩個都停 | 現行，正文 [027-threads-clips.md](027-threads-clips.md)；修訂 ADR-021 D-12（Threads 例外）、ADR-020 的 Apify 上限處理 |
 
 本索引從 ADR-004 開始；ADR-001～003 程式沒有引用，是否存在、內容為何待確認。各 ADR 在程式裡的落點可用 `grep -rn "ADR-0NN" index.html apps-script/` 找；模組對應見 [MODULES.md](../MODULES.md)。

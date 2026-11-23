@@ -554,6 +554,12 @@ function routeLineMessage_(rawText, userId, chatId) {
 
   // 「分類」：唯讀，回傳整張分類表（ADR-013 D-11）。權限照記帳
   if (text === CATEGORY_COMMAND) return handleCategoryCommand_(text, userId);
+  // 「週報」（ADR-030 D-5）：群組回最近一期成功週報；一對一指路到圖書館群組
+  if (text === CLIP_REPORT_COMMAND) {
+    var reportReply = chatId ? clipReportReply_(text, userId) : clipDmHint_(userId, CLIP_REPORT_DM_HINT);
+    if (reportReply !== null) return reportReply;
+    return supportedPrefixesMessage_() + '\n' + versionLine_();
+  }
   if (text === INIT_COMMAND) return handleInitCommand_(text, userId);
 
   // 股票（ADR-015 T3）：不走查表那條路——持有者、賣超、代號有效都要另外判斷
@@ -564,10 +570,11 @@ function routeLineMessage_(rawText, userId, chatId) {
   var route = ROUTE_TABLE[prefix];
 
   if (!route) {
-    // 不屬於任何指令的訊息才看是不是 IG 網址（ADR-020 B-1）：只在一對一（chatId 空白＝不是群組）
-    if (!chatId) {
-      var clipReply = clipLineReply_(text, userId);
-      if (clipReply !== null) return clipReply;
+    // 不屬於任何指令的訊息才看有沒有網址。ADR-030 D-1、D-2（修訂 ADR-020 B-1）：一對一不再收藏，
+    // 有 feat_clips 的人丟網址只回一句指路，不登記、不寫 logs。群組的收藏在 groupMessageReply_ 先攔下
+    if (!chatId && clipFoundIn_(text).length) {
+      var clipHint = clipDmHint_(userId, CLIP_DM_HINT);
+      if (clipHint !== null) return clipHint;
     }
     return supportedPrefixesMessage_() + '\n' + versionLine_();
   }
@@ -715,6 +722,7 @@ function initSteps_() {
     { label: '收藏搜集器', run: installClips_ },
     { label: '圖書館分類', run: installClipCategories_ },
     { label: '圖書館週報', run: installClipReports_ },
+    { label: '圖書館群組', run: installClipGroupColumns_ },
     { label: '用量與成本記帳', run: installApiCost_ },
     // RD-HF1：兩個補救都可重複執行；要在補欄（installClips_ 補 video_saved）之後
     { label: '收藏 content.md 重產', run: function () {
@@ -1837,6 +1845,10 @@ function supportedPrefixesMessage_() {
 /* ========================================================================== */
 var HELP_COMMANDS = ['?', '？', '指令'];
 var CLIP_COMMAND_KEY = '（傳 IG 網址）';
+/** ADR-030：圖書館收藏與週報搬進圖書館群組 */
+var CLIP_REPORT_COMMAND = '週報';
+var CLIP_DM_HINT = '📚 收藏請丟到圖書館群組';
+var CLIP_REPORT_DM_HINT = '📚 請到圖書館群組查看';
 var COMMAND_GROUPS = ['任務', '記帳', '雜記', '查詢', '收藏', '股票', '帳號與裝置', '管理', '說明'];
 var COMMANDS = [
   { key: '任務', group: '任務', usage: ROUTE_TABLE['任務'].usage, example: '任務/繳電話費/H',
@@ -1853,9 +1865,11 @@ var COMMANDS = [
     note: '不用分類，之後進 App 雜記按 🏷️ 再分', scope: 'private', feat: 'feat_notes' },
   { key: QUERY_PREFIX, group: '查詢', usage: QUERY_USAGE, example: '查/這個月花多少',
     note: '問題裡加 [類別] 只查那一類雜記，例：查/[文章] 最近存了什麼', scope: 'both', groupCmd: 'cmd_query', feat: '' },
-  // ADR-020：不是前綴、是「訊息裡有 IG 網址」；路由在 routeLineMessage_ 查不到前綴時才攔（clipLineReply_）
+  // ADR-020：不是前綴、是「訊息裡有網址」。ADR-030：只在開了 cmd_clips 的群組收（groupClipReply_），一對一只回指路
   { key: CLIP_COMMAND_KEY, group: '收藏', usage: CLIP_COMMAND_KEY, example: 'https://www.instagram.com/p/…',
-    note: '自動收藏全文與每一張圖，幾分鐘後在 App 看；其他網址只存連結', scope: 'private', feat: 'feat_clips' },
+    note: '丟到圖書館群組：自動收藏全文與每一張圖，幾分鐘後在 App 看；其他網址只存連結', scope: 'group', groupCmd: 'cmd_clips', feat: 'feat_clips' },
+  { key: CLIP_REPORT_COMMAND, group: '收藏', usage: CLIP_REPORT_COMMAND, note: '看最近一期圖書館週報（短版）',
+    scope: 'group', groupCmd: 'cmd_clips', feat: 'feat_clips' },
   { key: '買', group: '股票', usage: STOCK_TRADE_USAGE, example: '買/0050/1000/190.5', scope: 'private', feat: 'feat_stock' },
   { key: '賣', group: '股票', usage: '賣/代號/數量/價格[/持有者]', example: '賣/0050/500/195', scope: 'private', feat: 'feat_stock' },
   { key: '股', group: '股票', usage: STOCK_QUOTE_USAGE, example: '股/0050', note: '現價與你的持股', scope: 'private', feat: 'feat_stock' },
@@ -2358,12 +2372,14 @@ function diagnoseGemini() {
 /* ========================================================================== */
 
 var LINE_GROUPS_HEADERS = ['group_id', 'name', 'is_active', 'cmd_expense', 'cmd_tasks', 'cmd_query',
-  'joined_at', 'left_at', 'created_at', 'updated_at', 'notify_due', 'cmd_gmail', 'notify_gmail'];
+  'joined_at', 'left_at', 'created_at', 'updated_at', 'notify_due', 'cmd_gmail', 'notify_gmail', 'cmd_clips', 'notify_clips'];
+/** 圖書館群組（ADR-030 D-6）：比照 notify_due，新列與既有列都預設關——家族群組不能因為初始化就開始收網址 */
+var CLIP_GROUP_FIELDS = ['cmd_clips', 'notify_clips'];
 var GROUP_CMD_FIELDS = ['cmd_expense', 'cmd_tasks', 'cmd_query'];
 /** 前綴 → 群組的指令開關。「分類」是記帳的一部分；初始化不在這裡（只限一對一） */
 var GROUP_CMD_BY_PREFIX = { '記帳': 'cmd_expense', '收入': 'cmd_expense', '任務': 'cmd_tasks', '提醒': 'cmd_tasks' };
 GROUP_CMD_BY_PREFIX[QUERY_PREFIX] = 'cmd_query';
-var GROUP_CMD_LABEL = { cmd_expense: '記帳', cmd_tasks: '任務', cmd_query: '查詢' };
+var GROUP_CMD_LABEL = { cmd_expense: '記帳', cmd_tasks: '任務', cmd_query: '查詢', cmd_clips: '圖書館' };
 var GROUP_LOG_SOURCE = '群組';
 /** join 之後這麼快就 leave：多半是群組裡已經有別的官方帳號（LINE 一個群組只能有一個） */
 var GROUP_QUICK_LEAVE_MS = 60000;
@@ -2509,6 +2525,7 @@ function handleLeave_(event) {
 function groupCommandOf_(text) {
   var t = String(text || '').trim();
   if (t === CATEGORY_COMMAND) return 'cmd_expense';
+  if (t === CLIP_REPORT_COMMAND) return 'cmd_clips';
   if (t === INIT_COMMAND) return '';
   var slash = t.indexOf('/');
   if (slash === -1) return null;
@@ -2554,6 +2571,60 @@ function groupGate_(source, cmd, text, userId) {
   return null;
 }
 
+/**
+ * 開了 notify_* 的群組：啟用、這個開關打勾、bot 沒離開（ADR-014 notify_* 同一套判斷）。
+ * 回 { ok, groups:[line_groups 那一列] }；讀不到回 { ok:false, error }。Mail 彙總與圖書館週報共用（ADR-030 D-3）
+ */
+function notifyGroups_(field) {
+  var all = readLineGroups_();
+  if (!all.ok) return { ok: false, error: all.error };
+  return { ok: true, groups: all.rows.map(function (r) { return r.record; }).filter(function (g) {
+    return truthy_(g.is_active) && truthy_(g[field]) && !keyValue_(g.left_at);
+  }) };
+}
+
+/** logs 只露群組 id 前 3 碼（比照 Gmail 推播，ADR-026 D-7b） */
+function groupIdShort_(id) {
+  return String(id == null ? '' : id).trim().slice(0, 3) + '…';
+}
+
+/**
+ * 群組裡不是指令的一句話：圖書館群組收網址（ADR-030 D-1、D-4）。
+ * 門依序：訊息裡有網址 → 群組啟用、bot 沒離開、cmd_clips 打勾 → 發話者在白名單且啟用 → feat_clips（clipLineReply_）。
+ * **任一門不過都回 null、不寫 logs**：家族群組裡丟連結是聊天，不能被收、也不能插嘴。
+ * 所以這裡不用 groupGate_／writeGate_（它們擋下來會回話、寫 logs），而是直接讀（有快取的）群組設定與名單。
+ */
+function groupClipReply_(text, source, userId) {
+  if (!userId || !clipFoundIn_(text).length) return null;
+  var all = lineGroupsCached_();
+  if (!all.ok) return null;
+  var chatId = chatIdOf_(source);
+  var g = findGroup_(all, chatId);
+  if (!g || !truthy_(g.record.is_active) || keyValue_(g.record.left_at) || !truthy_(g.record.cmd_clips)) return null;
+  var roster = lineUsersRoster_();
+  var user = roster.ok ? roster.users[String(userId).trim()] : null;
+  if (!user || !truthy_(user.is_active)) return null;
+  return clipLineReply_(text, userId, chatId);
+}
+
+/** 一對一碰到圖書館的東西：有 feat_clips 才指路（ADR-030 D-2、D-5）；沒有的人回 null，照舊「看不懂這個指令」。不寫 logs */
+function clipDmHint_(userId, hint) {
+  return canUse_(lineUserById_(userId), CLIPS_FEATURE) ? hint : null;
+}
+
+/**
+ * 「初始化」：line_groups 補 cmd_clips、notify_clips（ADR-030 D-6）。補上的欄是空白＝關，
+ * 既有群組（包括家族群組）不會因為初始化就開始收網址或收週報。可重複執行
+ */
+function installClipGroupColumns_() {
+  var g = ensureColumnsOnSheet_(ensureLineGroupsSheet_(), CLIP_GROUP_FIELDS);
+  if (g.reason) return { level: 'warn', changed: false, text: '⚠️ ' + LINE_GROUPS_SHEET + ' 沒有表頭，沒有補 ' + CLIP_GROUP_FIELDS.join('／') };
+  if (g.added.length) invalidateLineGroupsCache_();
+  return { level: 'ok', changed: g.added.length > 0,
+    text: (g.added.length ? LINE_GROUPS_SHEET + ' 補上：' + g.added.join('、') : LINE_GROUPS_SHEET + ' 的 ' + CLIP_GROUP_FIELDS.join('／') + ' 已齊備') +
+      '（預設關；圖書館群組那一列請勾 is_active、cmd_clips、notify_clips）' };
+}
+
 /** 群組裡的一句話 → 要回的訊息；null＝不回（不是指令） */
 function groupMessageReply_(text, source, userId) {
   // 配對／驗證裝置：在群組一律拒絕（它自己會講原因），不必過門
@@ -2564,7 +2635,8 @@ function groupMessageReply_(text, source, userId) {
   if (waited !== null) return waited;
   if (isHelpCommand_(text)) return groupHelpReply_(text, source, userId);
   var cmd = groupCommandOf_(text);
-  if (cmd === null) return null;
+  // 不是指令：只有圖書館群組（cmd_clips）收網址，其餘照舊不回（ADR-030 D-4）
+  if (cmd === null) return groupClipReply_(text, source, userId);
   if (cmd === '') return '「' + String(text).trim() + '」只能在跟 bot 的一對一聊天室用。';
   var denied = groupGate_(source, cmd, text, userId);
   if (denied !== null) return denied;
