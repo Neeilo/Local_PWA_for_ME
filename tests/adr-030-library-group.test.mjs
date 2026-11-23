@@ -19,6 +19,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadCodeGs, FakeSheet } from './fake-apps-script.mjs';
+import { loadFrontend } from './fake-browser.mjs';
 
 const ME = 'Uadmin';                   // 管理者，有 feat_clips
 const DAD = 'Umember';                 // 一般成員，有 feat_clips
@@ -305,5 +306,25 @@ describe('群組欄位（D-6）', () => {
     const g = e.sheets.line_groups.toRecords()[0];
     assert.equal(g.cmd_expense, 'TRUE');
     assert.deepEqual([g.cmd_clips, g.notify_clips], ['', '']);
+  });
+});
+
+/* ========================================================================== */
+describe('PWA 系統設定（群組開關）', () => {
+
+  test('群組列有「📚 圖書館收藏」（cmd_clips）、「📊 週報推群組」（notify_clips），亮暗跟著雲端值；後端 groupSet 收得下', () => {
+    const front = loadFrontend();
+    const html = front.call('sysGroupsHtml', { rows: [{ group_id: 'Cg', name: '圖書館', is_active: 'TRUE', cmd_clips: 'TRUE', notify_clips: '' }] });
+    assert.match(html, /class="on" onclick="setGroupFlag\(0,'cmd_clips'\)">📚 圖書館收藏/);
+    assert.match(html, /class="" onclick="setGroupFlag\(0,'notify_clips'\)">📊 週報推群組/);
+    const F = env().read('GROUP_SET_FIELDS');
+    for (const f of [...html.matchAll(/setGroupFlag\(0,'([a-z_]+)'\)/g)].map((m) => m[1])) assert.ok(F.includes(f), f + ' 要在 GROUP_SET_FIELDS');
+  });
+
+  test('圖書館空白提示指向圖書館群組，不再叫人私訊 bot', () => {
+    const front = loadFrontend();
+    const hint = front.call('clipsListHtml', []);
+    assert.match(hint, /圖書館群組/);
+    assert.doesNotMatch(hint, /私訊/);
   });
 });
